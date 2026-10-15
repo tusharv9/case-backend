@@ -8,13 +8,30 @@ namespace CaseManagement.Api.HostIntegration;
 public static class Permissions
 {
     public const string CasesRead = "cases.read";
+
+    /// <summary>Open a new case.</summary>
+    public const string CasesCreate = "cases.create";
+
+    /// <summary>Work a case: status, notes, escalation, co-workers, links, attachments, assignment within one's own teams.</summary>
     public const string CasesWrite = "cases.write";
+
+    /// <summary>Move a case to another team.</summary>
+    public const string CasesTransfer = "cases.transfer";
+
+    /// <summary>Resolve, close, cancel or reopen a case.</summary>
+    public const string CasesResolve = "cases.resolve";
 
     /// <summary>
     /// Change who holds ANY case (assign, reassign, transfer). Without it a person may do so only for cases they own or that
     /// belong to a team they lead or are an active member of.
     /// </summary>
     public const string CasesAssign = "cases.assign";
+
+    /// <summary>
+    /// See every team's cases. Without it a person sees the cases they hold or take part in, and those of the teams
+    /// they lead or are an active member of (<see cref="ICaseAccessScope"/>).
+    /// </summary>
+    public const string CasesViewAll = "cases.viewall";
     public const string CustomersRead = "customers.read";
     public const string CustomersWrite = "customers.write";
     public const string ConfigManage = "config.manage";
@@ -33,7 +50,7 @@ public static class Permissions
 
     public static readonly string[] All =
     {
-        CasesRead, CasesWrite, CasesAssign, CustomersRead, CustomersWrite, ConfigManage,
+        CasesRead, CasesCreate, CasesWrite, CasesTransfer, CasesResolve, CasesAssign, CasesViewAll, CustomersRead, CustomersWrite, ConfigManage,
         TeamsManage, MonitoringView, MonitoringNudge, AuditView, PiiUnmask
     };
 
@@ -44,9 +61,9 @@ public static class Permissions
     public static readonly IReadOnlyDictionary<string, string[]> DefaultRolePermissions =
         new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
         {
-            ["Agent"] = new[] { CasesRead, CasesWrite, CustomersRead, CustomersWrite },
-            ["Team Lead"] = new[] { CasesRead, CasesWrite, CasesAssign, CustomersRead, CustomersWrite, MonitoringView, MonitoringNudge, AuditView },
-            ["Supervisor"] = new[] { CasesRead, CasesWrite, CasesAssign, CustomersRead, CustomersWrite, MonitoringView, MonitoringNudge, AuditView, TeamsManage },
+            ["Agent"] = new[] { CasesRead, CasesCreate, CasesWrite, CasesResolve, CustomersRead, CustomersWrite },
+            ["Team Lead"] = new[] { CasesRead, CasesCreate, CasesWrite, CasesTransfer, CasesResolve, CasesAssign, CustomersRead, CustomersWrite, MonitoringView, MonitoringNudge, AuditView },
+            ["Supervisor"] = new[] { CasesRead, CasesCreate, CasesWrite, CasesTransfer, CasesResolve, CasesAssign, CasesViewAll, CustomersRead, CustomersWrite, MonitoringView, MonitoringNudge, AuditView, TeamsManage },
             ["Admin"] = new[] { Everything, PiiUnmask }
         };
 }

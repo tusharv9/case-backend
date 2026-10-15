@@ -79,6 +79,9 @@ public class AttentionCaseSummary
     public DateTime? SlaPausedAt { get; set; }
     public int SlaTotalPausedMinutes { get; set; }
     public string CustomerName { get; set; } = string.Empty;
+    /// <summary>Local or Customer360 — a Customer 360 customer's name is not stored, so CustomerName is empty for them.</summary>
+    public string CustomerSource { get; set; } = "Local";
+    public string? CustomerType { get; set; }
     public DateTime CreatedAt { get; set; }
 
     /// <summary>The SLA clock's verdict for this case, so the dashboard reads exactly like the board.</summary>

@@ -31,8 +31,12 @@ public class DashboardService : IDashboardService
     private readonly ISlaClockProvider _slaClock;
     private readonly IPiiMaskingService? _piiMasking;
 
-    public DashboardService(AppDbContext context, ISlaClockProvider slaClock, IPiiMaskingService? piiMasking = null)
+    private readonly HostIntegration.ICaseAccessScope? _caseAccess;
+
+    /// <param name="caseAccess">Every figure and list covers only the cases the caller may see.</param>
+    public DashboardService(AppDbContext context, ISlaClockProvider slaClock, IPiiMaskingService? piiMasking = null, HostIntegration.ICaseAccessScope? caseAccess = null)
     {
+        _caseAccess = caseAccess;
         _context = context;
         _slaClock = slaClock;
         _piiMasking = piiMasking;
@@ -73,7 +77,7 @@ public class DashboardService : IDashboardService
         var clock = await _slaClock.GetAsync(ct);
         var zone = clock.Calendar.TimeZone;
 
-        IQueryable<Case> query = _context.Cases.AsNoTracking();
+        IQueryable<Case> query = _caseAccess?.Apply(_context.Cases.AsNoTracking()) ?? _context.Cases.AsNoTracking();
         if (q.DepartmentId.HasValue) query = query.Where(c => c.DepartmentId == q.DepartmentId.Value);
         if (!string.IsNullOrWhiteSpace(q.CaseType)) query = query.Where(c => c.CaseType == q.CaseType);
         if (!string.IsNullOrWhiteSpace(q.Severity)) query = query.Where(c => c.Severity == q.Severity);
@@ -213,7 +217,8 @@ public class DashboardService : IDashboardService
             OwnerName = c.Owner != null ? c.Owner.Name : string.Empty, OwnerId = c.OwnerId,
             DepartmentName = c.Department != null ? c.Department.Name : string.Empty,
             SlaStartTime = c.SlaStartTime, SlaTargetHours = c.SlaTargetHours, SlaBreachedAt = c.SlaBreachedAt, SlaPausedAt = c.SlaPausedAt,
-            SlaTotalPausedMinutes = c.SlaTotalPausedMinutes, CustomerName = c.Customer != null ? c.Customer.FullName : string.Empty, CreatedAt = c.CreatedAt
+            SlaTotalPausedMinutes = c.SlaTotalPausedMinutes, CustomerName = c.Customer != null ? c.Customer.FullName : string.Empty,
+            CustomerSource = c.CustomerSource, CustomerType = c.CustomerType, CreatedAt = c.CreatedAt
         }).ToDictionaryAsync(c => c.Id, ct);
 
         // Inputs for the few listed cases that were not part of the open set (recent finished ones).

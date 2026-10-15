@@ -27,10 +27,11 @@ public class PermissionProviderTests
         new("u1", "U", null, roles, permissions ?? Array.Empty<string>());
 
     [Fact]
-    public void AuthenticatedUserWithNoRoles_GetsOnlyTheBaseline()
+    public void AuthenticatedUserWithNoRolesOrCapabilities_GetsNothing()
     {
+        // Signing in to the OmniConnect Host must not, by itself, open Case Management.
         var granted = Provider().Resolve(P(Array.Empty<string>()));
-        Assert.Equal(new[] { Permissions.CasesRead, Permissions.CustomersRead }.OrderBy(x => x), granted.OrderBy(x => x));
+        Assert.Empty(granted);
     }
 
     [Fact]
@@ -63,10 +64,17 @@ public class PermissionProviderTests
     }
 
     [Fact]
-    public void PermissionsAssertedDirectlyByTheHost_AreHonoured()
+    public void CapabilitiesGrantedByTheHost_AreHonoured_InTheHostsOwnFormat()
     {
-        var granted = Provider().Resolve(P(Array.Empty<string>(), new[] { Permissions.AuditView }));
+        var granted = Provider().Resolve(P(Array.Empty<string>(), new[] { "remote.casemanagement.audit:View" }));
         Assert.Contains(Permissions.AuditView, granted);
+    }
+
+    [Fact]
+    public void InternalPermissionNamesInTheToken_AreNotTakenAtFaceValue()
+    {
+        var granted = Provider().Resolve(P(Array.Empty<string>(), new[] { Permissions.AuditView, Permissions.Everything }));
+        Assert.Empty(granted);
     }
 }
 
@@ -287,8 +295,9 @@ public class HostModeTests
 
         async Task<HttpStatusCode> Status(string url, string token) => (await client.SendAsync(AppUnderTest.Get(url, token))).StatusCode;
 
-        // Reading cases: baseline for everyone signed in.
-        Assert.Equal(HttpStatusCode.OK, await Status("/api/cases?pageSize=1", nobody));
+        // Reading cases needs cases.read: being signed in to the Host is not enough on its own.
+        Assert.Equal(HttpStatusCode.Forbidden, await Status("/api/cases?pageSize=1", nobody));
+        Assert.Equal(HttpStatusCode.OK, await Status("/api/cases?pageSize=1", agent));
         // Monitoring needs monitoring.view: agent no, supervisor yes.
         Assert.Equal(HttpStatusCode.Forbidden, await Status("/api/team-monitoring/overview", agent));
         Assert.Equal(HttpStatusCode.OK, await Status("/api/team-monitoring/overview", supervisor));

@@ -18,6 +18,8 @@ public class Case : AuditableEntity
     public string PreferredCommunicationChannel { get; set; } = "Phone";
     public string CommunicationChannel { get; set; } = "Voice";
     public string? Subcategory { get; set; }
+    /// <summary>The language to use with the customer on this case, from the Create Case form. Null on cases created before it was kept.</summary>
+    public string? PreferredLanguage { get; set; }
     
     // SLA Tracking
     public DateTime SlaStartTime { get; set; }
@@ -63,8 +65,25 @@ public class Case : AuditableEntity
     public Guid DepartmentId { get; set; }
     public Department Department { get; set; } = null!;
     
-    public Guid CustomerId { get; set; }
-    public Customer Customer { get; set; } = null!;
+    // Who the case is for. Exactly one of two shapes (CK_Cases_CustomerReference):
+    //  - Local: a customer created in Case Management (New Customer) — CustomerId points at the local record.
+    //  - Customer360: an existing Customer 360 customer — identifiers only, never a copy of their profile. The
+    //    profile is read from Customer 360 when it is shown (Customer360CustomerService).
+    public string CustomerSource { get; set; } = CustomerSources.Local;
+
+    public Guid? CustomerId { get; set; }
+    public Customer? Customer { get; set; }
+
+    /// <summary>Customer 360 only: Individual or NonIndividual.</summary>
+    public string? CustomerType { get; set; }
+    /// <summary>Customer 360 only: the CRM's own key for the customer (phprId / customerId) — tells matches apart.</summary>
+    public string? ExternalCustomerId { get; set; }
+    /// <summary>Customer 360 only: the search that finds the customer again, e.g. NRIC, BRN, SecondaryID:PASSPORT.</summary>
+    public string? CustomerLookupType { get; set; }
+    /// <summary>Customer 360 only: the identifier for that search (NRIC, BRN…), encrypted (CustomerIdentifierProtector).</summary>
+    public string? CustomerLookupKeyEncrypted { get; set; }
+    /// <summary>Customer 360 only: keyed hash of type + identifier, so a customer's cases are found without decrypting.</summary>
+    public string? CustomerLookupKeyHash { get; set; }
     
     public Guid OwnerId { get; set; }
     public User Owner { get; set; } = null!;
@@ -89,4 +108,20 @@ public class Case : AuditableEntity
     public Case? LinkedSourceCase { get; set; }
 
     public string SubcaseType { get; set; } = "Original"; // Original, ReopenedSubcase, LinkedSubcase
+}
+
+/// <summary>Where a case's customer lives.</summary>
+public static class CustomerSources
+{
+    /// <summary>Created in Case Management (New Customer) and stored locally.</summary>
+    public const string Local = "Local";
+    /// <summary>An existing Customer 360 customer, referenced by identifiers only.</summary>
+    public const string Customer360 = "Customer360";
+}
+
+/// <summary>Customer 360's two kinds of customer.</summary>
+public static class CustomerTypes
+{
+    public const string Individual = "Individual";
+    public const string NonIndividual = "NonIndividual";
 }

@@ -9,9 +9,13 @@ public class CustomerRepository : ICustomerRepository
 {
     private readonly AppDbContext _context;
 
-    public CustomerRepository(AppDbContext context)
+    private readonly HostIntegration.ICaseAccessScope? _caseAccess;
+
+    /// <param name="caseAccess">A customer's cases and timeline cover only the cases the caller may see.</param>
+    public CustomerRepository(AppDbContext context, HostIntegration.ICaseAccessScope? caseAccess = null)
     {
         _context = context;
+        _caseAccess = caseAccess;
     }
 
     public async Task<CustomerDetailDto?> GetCustomerDetailAsync(Guid id, CancellationToken ct = default)
@@ -227,6 +231,11 @@ public class CustomerRepository : ICustomerRepository
         var query = _context.CaseEvents.AsNoTracking()
             .Where(e => e.CaseId != null && e.Case!.CustomerId == customerId)
             .Where(e => milestones.Contains(e.EventType) || !e.IsInternal);
+        if (_caseAccess is { SeesAll: false })
+        {
+            var visible = _caseAccess.Apply(_context.Cases.AsNoTracking()).Select(c => c.Id);
+            query = query.Where(e => visible.Contains(e.CaseId!.Value));
+        }
 
         var total = await query.CountAsync(ct);
         var items = await query
@@ -244,8 +253,7 @@ public class CustomerRepository : ICustomerRepository
 
     public async Task<PagedResponseDto<CaseSummaryDto>> GetCustomerCasesAsync(Guid customerId, int page, int pageSize, CancellationToken ct = default)
     {
-        var query = _context.Cases
-            .AsNoTracking()
+        var query = (_caseAccess?.Apply(_context.Cases.AsNoTracking()) ?? _context.Cases.AsNoTracking())
             .Where(c => c.CustomerId == customerId);
 
         var totalCount = await query.CountAsync(ct);
@@ -278,10 +286,13 @@ public class CustomerRepository : ICustomerRepository
                 OwnerName = caseItem.Owner != null ? caseItem.Owner.Name : string.Empty,
                 CreatedAt = caseItem.CreatedAt,
                 CustomerId = caseItem.CustomerId,
+                CustomerSource = caseItem.CustomerSource,
+                CustomerType = caseItem.CustomerType,
+ExternalCustomerId = caseItem.ExternalCustomerId,
                 CustomerName = caseItem.Customer != null ? caseItem.Customer.FullName : string.Empty,
                 CaseType = string.IsNullOrEmpty(caseItem.CaseType) ? (caseItem.CaseNumber.StartsWith("S-") ? "Service" : ((caseItem.CaseNumber.StartsWith("I-") || caseItem.CaseNumber.StartsWith("E-")) ? "Inquiry" : "Complaint")) : caseItem.CaseType,
                 Subcategory = caseItem.Subcategory ?? "General Inquiry",
-                PreferredLanguage = caseItem.Customer != null ? caseItem.Customer.PreferredLanguage : "Bahasa Malaysia",
+                PreferredLanguage = caseItem.PreferredLanguage ?? (caseItem.Customer != null ? caseItem.Customer.PreferredLanguage : null),
                 SourceChannel = caseItem.SourceChannel ?? caseItem.CommunicationChannel ?? "Voice",
                 PreferredCommunicationChannel = caseItem.PreferredCommunicationChannel ?? "Phone",
                 CommunicationChannel = caseItem.SourceChannel ?? caseItem.CommunicationChannel ?? "Voice",

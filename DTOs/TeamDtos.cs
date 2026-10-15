@@ -32,6 +32,8 @@ public class TeamMemberDto
 {
     public Guid Id { get; set; }
     public Guid UserId { get; set; }
+    /// <summary>The Host's id for the person; null for a person who exists only in Case Management (pre-Host sample data).</summary>
+    public string? ExternalUserId { get; set; }
     public string Name { get; set; } = string.Empty;
     public string Email { get; set; } = string.Empty;
     public string Role { get; set; } = string.Empty;

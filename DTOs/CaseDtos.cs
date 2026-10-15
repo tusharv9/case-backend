@@ -24,7 +24,10 @@ public class CreateCaseDto
 {
     public string Title { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
-    public Guid CustomerId { get; set; }
+    /// <summary>A customer created in Case Management (New Customer). Exactly one of this and <see cref="Customer360"/>.</summary>
+    public Guid? CustomerId { get; set; }
+    /// <summary>An existing Customer 360 customer, as chosen from the search results. Only identifiers are stored.</summary>
+    public Customer360SelectionDto? Customer360 { get; set; }
     public Guid DepartmentId { get; set; }
     public string Severity { get; set; } = string.Empty;
 

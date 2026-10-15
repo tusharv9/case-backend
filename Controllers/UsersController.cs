@@ -42,6 +42,7 @@ public class UsersController : BaseApiController
     /// Host id, and the permissions the UI uses to show or hide features.
     /// </summary>
     [HttpGet("me")]
+    [NoPermissionRequired]   // someone without access still learns that they have none
     public async Task<IActionResult> GetMe(CancellationToken ct)
     {
         var me = await _context.Users.AsNoTracking()

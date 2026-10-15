@@ -47,7 +47,9 @@ public sealed class JwtIdentityResolver : IHostIdentityResolver
             First(user, _claims.Name),
             First(user, _claims.Email),
             Many(user, _claims.Roles),
-            Many(user, _claims.Permissions)));
+            Many(user, _claims.Permissions),
+            // Exactly "true", as AuthService writes it — never inferred from a role or any other claim.
+            !string.IsNullOrWhiteSpace(_claims.Administrator) && First(user, _claims.Administrator) == "true"));
     }
 
     private static string? First(ClaimsPrincipal user, string type) =>

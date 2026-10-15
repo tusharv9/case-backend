@@ -141,6 +141,31 @@ public class TeamMonitoringService : ITeamMonitoringService
             OccupancyTargetMax = _options.OccupancyTargetMax,
         };
 
+        // Teams as configured on the Teams page: live member counts (people in several teams count in each), leads and open work.
+        var teamRows = await _context.Departments.AsNoTracking()
+            .Where(d => teamId == null ? d.IsActive : d.Id == teamId)
+            .OrderBy(d => d.Name)
+            .Select(d => new { d.Id, d.Name, LeadName = d.Owner != null && d.Owner.IsActive ? d.Owner.Name : null })
+            .ToListAsync(ct);
+        var teamIds = teamRows.Select(t => t.Id).ToList();
+        var openByTeam = await _context.Cases.AsNoTracking()
+            .Where(c => teamIds.Contains(c.DepartmentId) && c.Status != CaseStatus.Resolved && c.Status != CaseStatus.Closed && c.Status != CaseStatus.Cancelled)
+            .GroupBy(c => c.DepartmentId).Select(g => new { g.Key, Count = g.Count() }).ToDictionaryAsync(g => g.Key, g => g.Count, ct);
+        var teams = teamRows.Select(t =>
+        {
+            var members = memberRows.Where(m => m.DepartmentId == t.Id).Select(m => m.User).DistinctBy(u => u.Id).ToList();
+            return new TeamMembershipItemDto
+            {
+                TeamId = t.Id,
+                Name = t.Name,
+                LeadName = t.LeadName,
+                MemberCount = members.Count,
+                OnlineCount = members.Count(u => u.Status is UserStatus.Available or UserStatus.Busy),
+                OpenCaseCount = openByTeam.GetValueOrDefault(t.Id),
+            };
+        }).ToList();
+        summary.TeamsCount = teams.Count;
+
         // Queue health per configured source channel, plus any channel cases actually use that is not in the list (nothing hidden).
         var configured = await _context.LookupValues.AsNoTracking()
             .Where(v => v.LookupType!.Code == "SOURCE_CHANNEL" && v.IsActive).OrderBy(v => v.DisplayOrder).Select(v => v.Value).ToListAsync(ct);
@@ -180,7 +205,7 @@ public class TeamMonitoringService : ITeamMonitoringService
         return new TeamMonitoringOverviewDto
         {
             TeamId = teamId, TeamName = teamName, GeneratedAt = now,
-            Summary = summary, Agents = agentItems, Queues = queues, SlaAtRisk = atRisk,
+            Summary = summary, Teams = teams, Agents = agentItems, Queues = queues, SlaAtRisk = atRisk,
         };
     }
 

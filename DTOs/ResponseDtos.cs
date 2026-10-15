@@ -31,8 +31,19 @@ public class CaseSummaryDto
     public Guid OwnerId { get; set; }
     public string? OwnerRole { get; set; }
     public DateTime CreatedAt { get; set; }
-    public Guid CustomerId { get; set; }
+    /// <summary>The local customer (New Customer); null for a Customer 360 customer.</summary>
+    public Guid? CustomerId { get; set; }
+    /// <summary>
+    /// The local customer's name. Empty for a Customer 360 customer: their name is not stored, and is shown on the
+    /// case itself, read live from Customer 360 (GET api/cases/{id}/customer360).
+    /// </summary>
     public string CustomerName { get; set; } = string.Empty;
+    /// <summary>Local or Customer360.</summary>
+    public string CustomerSource { get; set; } = "Local";
+    /// <summary>Customer 360 only: Individual or NonIndividual.</summary>
+    public string? CustomerType { get; set; }
+    /// <summary>Customer 360 only: Customer 360's own key for the customer — names them when listing their cases. Not shown.</summary>
+    public string? ExternalCustomerId { get; set; }
 
     public string CaseType { get; set; } = "Complaint";
     public string? Subcategory { get; set; }

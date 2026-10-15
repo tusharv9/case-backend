@@ -44,8 +44,17 @@ public class HostIntegrationOptions
     /// </summary>
     public Dictionary<string, string[]> RolePermissions { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>Granted to every authenticated Host user in addition to role permissions.</summary>
-    public string[] BaselinePermissions { get; set; } = { Permissions.CasesRead, Permissions.CustomersRead };
+    /// <summary>
+    /// Granted to every authenticated Host user in addition to what their token grants. Empty by default:
+    /// being able to sign in to the OmniConnect Host must not, by itself, open Case Management.
+    /// </summary>
+    public string[] BaselinePermissions { get; set; } = Array.Empty<string>();
+
+    /// <summary>
+    /// The key this app is registered under in Setup → Applications. Every Host permission for it reads
+    /// <c>remote.{AppKey}.{module}:{Capability}</c> (see <see cref="HostPermissionCatalog"/>).
+    /// </summary>
+    public string AppKey { get; set; } = HostPermissionCatalog.DefaultAppKey;
 
     /// <summary>Permissions of the standalone dev user. "*" = everything.</summary>
     public string[] StandalonePermissions { get; set; } = { "*" };
@@ -68,6 +77,13 @@ public class HostIntegrationOptions
         public string? Issuer { get; set; }
         public string? Audience { get; set; }
 
+        /// <summary>
+        /// PEM public key the Host signs its RS256 tokens with — the OmniConnect platform's
+        /// <c>Jwt__SigningKeyPublic</c>, the same value every service uses. AuthService publishes no discovery
+        /// document, so this (not <see cref="Authority"/>) is how its tokens are validated.
+        /// </summary>
+        public string? SigningKeyPublic { get; set; }
+
         /// <summary>HMAC signing key. For local development and automated tests ONLY; use Authority in real deployments.</summary>
         public string? SymmetricKey { get; set; }
 
@@ -81,7 +97,14 @@ public class HostIntegrationOptions
         public string Name { get; set; } = "name";
         public string Email { get; set; } = "email";
         public string Roles { get; set; } = "role";
-        public string Permissions { get; set; } = "permissions";
+        /// <summary>A JSON array of Host permission strings — AuthService's <c>perms</c> claim.</summary>
+        public string Permissions { get; set; } = "perms";
+
+        /// <summary>
+        /// The Host's administrator flag. Only the exact value <c>"true"</c> counts, matching every other
+        /// OmniConnect service. Empty disables it.
+        /// </summary>
+        public string Administrator { get; set; } = "administrator";
     }
 
     public class DirectorySettings

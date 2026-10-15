@@ -3,8 +3,10 @@ namespace CaseManagement.Api.HostIntegration;
 using Microsoft.Extensions.Options;
 
 /// <summary>
-/// Permissions = baseline + permissions asserted directly by the Host (claim) + permissions of each
-/// role, from configuration. Roles are matched exactly (case-insensitive) — never by substring.
+/// Permissions = baseline + this app's capabilities granted in the Host token (translated through
+/// <see cref="HostPermissionCatalog"/>) + permissions of each role, from configuration. Roles are matched
+/// exactly (case-insensitive) — never by substring. A Host administrator gets everything except
+/// <see cref="Permissions.PiiUnmask"/>, which stays deny-by-default and must be granted by name.
 /// </summary>
 public sealed class ConfiguredPermissionProvider : IPermissionProvider
 {
@@ -16,7 +18,12 @@ public sealed class ConfiguredPermissionProvider : IPermissionProvider
     {
         var result = new HashSet<string>(_options.BaselinePermissions, StringComparer.OrdinalIgnoreCase);
 
-        foreach (var permission in principal.Permissions) result.Add(permission);
+        if (principal.IsAdministrator) result.Add(Permissions.Everything);
+
+        // Only this app's own capabilities count. A token entry is never taken at face value, so a stray
+        // "*" or "cases.read" string in the claim grants nothing.
+        foreach (var permission in HostPermissionCatalog.Translate(principal.Permissions, _options.AppKey))
+            result.Add(permission);
 
         var map = _options.RolePermissions.Count > 0
             ? _options.RolePermissions

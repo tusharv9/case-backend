@@ -40,6 +40,7 @@ public sealed class HostIdentityMiddleware
             HttpMethods.IsGet(context.Request.Method) &&
             context.Request.Path.Equals("/api/users", StringComparison.OrdinalIgnoreCase))
         {
+            context.Items[PermissionAuthorizationFilter.OpenBeforeSignInKey] = true;
             await _next(context);
             return;
         }

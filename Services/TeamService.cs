@@ -53,6 +53,7 @@ public class TeamService : ITeamService
                 {
                     Id = m.Id,
                     UserId = m.UserId,
+                    ExternalUserId = m.User.ExternalUserId,
                     Name = m.User.Name,
                     Email = m.User.Email,
                     Role = !string.IsNullOrWhiteSpace(m.MemberRole) ? m.MemberRole : (string.IsNullOrWhiteSpace(m.User.Role) ? "Service Agent" : m.User.Role),

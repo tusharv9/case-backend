@@ -164,8 +164,31 @@ namespace CaseManagement.Api.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<Guid>("CustomerId")
+                    b.Property<Guid?>("CustomerId")
                         .HasColumnType("uuid");
+
+                    b.Property<string>("CustomerLookupKeyEncrypted")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<string>("CustomerLookupKeyHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("CustomerLookupType")
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)");
+
+                    b.Property<string>("CustomerSource")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("Local");
+
+                    b.Property<string>("CustomerType")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
 
                     b.Property<Guid>("DepartmentId")
                         .HasColumnType("uuid");
@@ -179,6 +202,10 @@ namespace CaseManagement.Api.Migrations
 
                     b.Property<int>("EscalationLevel")
                         .HasColumnType("integer");
+
+                    b.Property<string>("ExternalCustomerId")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
 
                     b.Property<DateTime?>("ExternalResolutionDueAt")
                         .HasColumnType("timestamp with time zone");
@@ -216,6 +243,9 @@ namespace CaseManagement.Api.Migrations
 
                     b.Property<string>("PreferredCommunicationChannel")
                         .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("PreferredLanguage")
                         .HasColumnType("text");
 
                     b.Property<string>("ResolutionNote")
@@ -284,6 +314,9 @@ namespace CaseManagement.Api.Migrations
 
                     b.HasIndex("CustomerId");
 
+                    b.HasIndex("CustomerLookupKeyHash")
+                        .HasDatabaseName("IX_Cases_CustomerLookupKeyHash");
+
                     b.HasIndex("LinkedSourceCaseId");
 
                     b.HasIndex("ParentCaseId");
@@ -297,6 +330,9 @@ namespace CaseManagement.Api.Migrations
                     b.HasIndex("SlaStartTime")
                         .HasDatabaseName("IX_Cases_Open_SlaStart")
                         .HasFilter("\"Status\" NOT IN ('Resolved', 'Closed', 'Cancelled')");
+
+                    b.HasIndex("CustomerType", "ExternalCustomerId")
+                        .HasDatabaseName("IX_Cases_CustomerType_ExternalCustomerId");
 
                     b.HasIndex("DepartmentId", "CreatedAt")
                         .IsDescending(false, true);
@@ -312,7 +348,10 @@ namespace CaseManagement.Api.Migrations
                     b.HasIndex("Status", "CreatedAt")
                         .IsDescending(false, true);
 
-                    b.ToTable("Cases");
+                    b.ToTable("Cases", t =>
+                        {
+                            t.HasCheckConstraint("CK_Cases_CustomerReference", "(\"CustomerSource\" = 'Local' AND \"CustomerId\" IS NOT NULL AND \"ExternalCustomerId\" IS NULL AND \"CustomerLookupKeyEncrypted\" IS NULL) OR (\"CustomerSource\" = 'Customer360' AND \"CustomerId\" IS NULL AND \"CustomerType\" IN ('Individual','NonIndividual') AND \"ExternalCustomerId\" IS NOT NULL AND \"CustomerLookupType\" IS NOT NULL AND \"CustomerLookupKeyEncrypted\" IS NOT NULL AND \"CustomerLookupKeyHash\" IS NOT NULL)");
+                        });
                 });
 
             modelBuilder.Entity("CaseManagement.Api.Models.CaseAttachment", b =>
@@ -1620,8 +1659,7 @@ namespace CaseManagement.Api.Migrations
                     b.HasOne("CaseManagement.Api.Models.Customer", "Customer")
                         .WithMany("Cases")
                         .HasForeignKey("CustomerId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
+                        .OnDelete(DeleteBehavior.Cascade);
 
                     b.HasOne("CaseManagement.Api.Models.Department", "Department")
                         .WithMany("Cases")

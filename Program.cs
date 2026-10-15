@@ -17,6 +17,20 @@ using Microsoft.AspNetCore.ResponseCompression;
 using CaseManagement.Api.Configuration;
 using System.Text.Json.Serialization;
 
+// Load .env before configuration is read — the OmniConnect convention for secrets such as the platform's
+// Jwt__SigningKeyPublic, so none of them is committed to appsettings. Only the working directory (dotnet run
+// from this folder) and the output folder are searched: never parent folders, so a test run is not
+// silently reconfigured by a developer's .env. A variable already set by whoever started the process wins over the
+// file (NoClobber): .env fills in local defaults, it never overrides an explicit setting.
+foreach (var envPath in new[] { Path.Combine(Directory.GetCurrentDirectory(), ".env"), Path.Combine(AppContext.BaseDirectory, ".env") })
+{
+    if (File.Exists(envPath))
+    {
+        DotNetEnv.Env.NoClobber().Load(envPath);
+        break;
+    }
+}
+
 var builder = WebApplication.CreateBuilder(args);
 
 // One JSON object per log line outside Development, so a log aggregator can filter by CorrelationId, route and status.
@@ -220,8 +234,18 @@ if (hostMode == HostIntegrationMode.Standalone)
 else
 {
     var jwt = hostOptions.Jwt;
-    if (string.IsNullOrWhiteSpace(jwt.Authority) && string.IsNullOrWhiteSpace(jwt.MetadataAddress) && string.IsNullOrWhiteSpace(jwt.SymmetricKey))
-        throw new InvalidOperationException("HostIntegration:Mode=Host needs a way to validate Host tokens: set HostIntegration:Jwt:Authority (or MetadataAddress), or SymmetricKey for local testing.");
+    // The OmniConnect platform's own keys (Jwt__SigningKeyPublic / Jwt__Issuer / Jwt__Audience — the same
+    // values every service's .env carries) are used when the HostIntegration ones are not set.
+    var platformJwt = builder.Configuration.GetSection("Jwt");
+    if (string.IsNullOrWhiteSpace(jwt.SigningKeyPublic)) jwt.SigningKeyPublic = platformJwt["SigningKeyPublic"];
+    if (string.IsNullOrWhiteSpace(jwt.Issuer)) jwt.Issuer = platformJwt["Issuer"];
+    if (string.IsNullOrWhiteSpace(jwt.Audience)) jwt.Audience = platformJwt["Audience"];
+
+    if (string.IsNullOrWhiteSpace(jwt.Authority) && string.IsNullOrWhiteSpace(jwt.MetadataAddress)
+        && string.IsNullOrWhiteSpace(jwt.SigningKeyPublic) && string.IsNullOrWhiteSpace(jwt.SymmetricKey))
+        throw new InvalidOperationException("HostIntegration:Mode=Host needs a way to validate Host tokens: set Jwt:SigningKeyPublic (the OmniConnect platform public key), HostIntegration:Jwt:Authority (or MetadataAddress), or SymmetricKey for local testing.");
+    if (string.IsNullOrWhiteSpace(jwt.Issuer) && string.IsNullOrWhiteSpace(jwt.Authority) && string.IsNullOrWhiteSpace(jwt.MetadataAddress))
+        throw new InvalidOperationException("HostIntegration:Jwt:Issuer (or Jwt:Issuer) is required in Host mode, so tokens from another issuer are rejected.");
     if (string.IsNullOrWhiteSpace(jwt.Audience))
         throw new InvalidOperationException("HostIntegration:Jwt:Audience is required in Host mode, so tokens issued for other applications are rejected.");
     if (!string.IsNullOrWhiteSpace(jwt.SymmetricKey) && Encoding.UTF8.GetByteCount(jwt.SymmetricKey) < 32)
@@ -248,10 +272,15 @@ else
                 ClockSkew = TimeSpan.FromSeconds(jwt.ClockSkewSeconds),
                 NameClaimType = hostOptions.Claims.Name,
                 RoleClaimType = hostOptions.Claims.Roles,
-                IssuerSigningKey = string.IsNullOrWhiteSpace(jwt.SymmetricKey)
-                    ? null
-                    : new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwt.SymmetricKey))
+                IssuerSigningKey = !string.IsNullOrWhiteSpace(jwt.SigningKeyPublic)
+                    ? new RsaSecurityKey(RsaPublicKey.Load(jwt.SigningKeyPublic))
+                    : string.IsNullOrWhiteSpace(jwt.SymmetricKey)
+                        ? null
+                        : new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwt.SymmetricKey))
             };
+            // An RS256 platform key accepts RS256 only — never an HMAC token signed with the public key's bytes.
+            if (!string.IsNullOrWhiteSpace(jwt.SigningKeyPublic))
+                o.TokenValidationParameters.ValidAlgorithms = new[] { SecurityAlgorithms.RsaSha256 };
         });
 
     builder.Services.AddScoped<IHostIdentityResolver, JwtIdentityResolver>();
@@ -282,6 +311,22 @@ builder.Services.AddScoped<IConfigurableSettingsRepository, ConfigurableSettings
 
 // Register Services
 builder.Services.AddScoped<ICaseService, CaseService>();
+builder.Services.AddScoped<ICaseAccessScope, CaseAccessScope>();
+
+// The Host's user directory, read with the caller's token, for choosing team members (HostIntegration/HostUsers.cs).
+builder.Services.Configure<AuthServiceOptions>(builder.Configuration.GetSection(AuthServiceOptions.SectionName));
+builder.Services.AddHttpClient<HostUserDirectoryClient>();
+builder.Services.AddScoped<HostUserService>();
+
+// Customer 360: existing customers are read from it with the caller's own token, and a case keeps only their
+// identifiers — encrypted, plus a keyed hash for lookups (Services/Customer360).
+builder.Services.Configure<CaseManagement.Api.Services.Customer360.Customer360Options>(
+    builder.Configuration.GetSection(CaseManagement.Api.Services.Customer360.Customer360Options.SectionName));
+builder.Services.Configure<CaseManagement.Api.Services.Customer360.CustomerIdentifierOptions>(
+    builder.Configuration.GetSection(CaseManagement.Api.Services.Customer360.CustomerIdentifierOptions.SectionName));
+builder.Services.AddSingleton<CaseManagement.Api.Services.Customer360.ICustomerIdentifierProtector, CaseManagement.Api.Services.Customer360.CustomerIdentifierProtector>();
+builder.Services.AddHttpClient<CaseManagement.Api.Services.Customer360.Customer360Client>();
+builder.Services.AddScoped<CaseManagement.Api.Services.Customer360.ICustomer360CustomerService, CaseManagement.Api.Services.Customer360.Customer360CustomerService>();
 builder.Services.AddScoped<ICustomerService, CustomerService>();
 builder.Services.AddScoped<IDepartmentService, DepartmentService>();
 builder.Services.AddScoped<INotificationService, NotificationService>();
@@ -406,6 +451,49 @@ if (args.Contains("--reconcile-data"))
     return 0;
 }
 
+// One-off: team membership back to Host users only (see TeamMembershipResetService). The Host user ids come from the
+// Host's own database, one per line, so no person is judged "not a Host user" by guesswork:
+//     dotnet CaseManagement.Api.dll --reset-team-membership --host-users <file> [--apply --actor <email>]
+if (args.Contains("--reset-team-membership"))
+{
+    string? Arg(string name) { var i = Array.IndexOf(args, name); return i >= 0 && i + 1 < args.Length ? args[i + 1] : null; }
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    var pending = (await db.Database.GetPendingMigrationsAsync()).ToList();
+    if (pending.Count > 0)
+    {
+        Console.Error.WriteLine($"The database is not at the current schema ({pending.Count} pending migration(s)). Run --migrate-only first.");
+        return 2;
+    }
+    if (Arg("--host-users") is not { } hostFile || !File.Exists(hostFile))
+    {
+        Console.Error.WriteLine("--host-users <file> is required: the Host user ids, one per line.");
+        return 2;
+    }
+    var hostIds = (await File.ReadAllLinesAsync(hostFile)).Select(l => l.Trim()).Where(l => Guid.TryParse(l, out _))
+        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    var apply = args.Contains("--apply");
+    Guid? actor = null;
+    if (apply)
+    {
+        var email = Arg("--actor");
+        actor = email == null ? null : await db.Users.Where(u => u.Email == email && u.IsActive && u.ExternalUserId != null)
+            .Select(u => (Guid?)u.Id).FirstOrDefaultAsync();
+        if (actor == null) { Console.Error.WriteLine("--apply needs --actor <email of an active Host user>; the audit events name who made the change."); return 2; }
+    }
+    try
+    {
+        var report = await new TeamMembershipResetService(db).RunAsync(hostIds, apply, actor);
+        Console.WriteLine(TeamMembershipResetService.ToText(report));
+    }
+    catch (InvalidOperationException ex)
+    {
+        Console.Error.WriteLine(ex.Message);
+        return 1;
+    }
+    return 0;
+}
+
 // One-off reconciliation with the business workbook (see WorkbookReconciliationService):
 //     dotnet CaseManagement.Api.dll --reconcile-workbook <folder with the worksheet CSVs> --decisions <file.json> [--apply --actor <email>] [--report <file.json>]
 if (args.Contains("--reconcile-workbook"))
@@ -459,6 +547,17 @@ var forwardedHeadersOptions = new ForwardedHeadersOptions
 forwardedHeadersOptions.KnownIPNetworks.Clear();
 forwardedHeadersOptions.KnownProxies.Clear();
 app.UseForwardedHeaders(forwardedHeadersOptions);
+
+// The OmniConnect edge (nginx in production, the host dev server locally) publishes this service under
+// its own prefix. UsePathBase also accepts the unprefixed path, so the standalone frontend's /api proxy,
+// server-to-server callers and /health keep working unchanged.
+var pathBase = (app.Configuration["Hosting:PathBase"] ?? "/api/casemanagement-service").Trim().TrimEnd('/');
+if (pathBase.Length > 0)
+{
+    if (!pathBase.StartsWith('/') || pathBase.Contains("//") || pathBase.Contains('?'))
+        throw new InvalidOperationException($"Hosting:PathBase '{pathBase}' is not a plain path such as /api/casemanagement-service.");
+    app.UsePathBase(pathBase);
+}
 
 app.UseCors("ReactPolicy");
 if (securityOptions.RateLimit.Enabled) app.UseRateLimiter();

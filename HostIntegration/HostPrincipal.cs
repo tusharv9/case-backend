@@ -9,7 +9,8 @@ public sealed record HostPrincipal(
     string? Name,
     string? Email,
     IReadOnlyList<string> Roles,
-    IReadOnlyList<string> Permissions);
+    IReadOnlyList<string> Permissions,
+    bool IsAdministrator = false);
 
 /// <summary>A user as listed by the Host's directory (or the local stand-in).</summary>
 public sealed record HostUserInfo(

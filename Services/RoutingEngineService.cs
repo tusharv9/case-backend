@@ -254,7 +254,7 @@ public class RoutingEngineService : IRoutingEngineService
     public async Task<RoutingVocabularyDto> GetVocabularyAsync(CancellationToken ct = default)
     {
         var channels = await _context.LookupValues.AsNoTracking()
-            .Where(v => v.LookupType.Code == "SOURCE_CHANNEL" && v.IsActive).OrderBy(v => v.DisplayOrder).Select(v => v.Value).ToListAsync(ct);
+            .Where(v => v.LookupType!.Code == "SOURCE_CHANNEL" && v.IsActive).OrderBy(v => v.DisplayOrder).Select(v => v.Value).ToListAsync(ct);
 
         return new RoutingVocabularyDto
         {

@@ -221,6 +221,25 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<Case>()
             .HasIndex(c => c.Severity);
 
+        // Who a case is for: a local customer, or a Customer 360 customer by identifiers only — never both,
+        // never neither. Deleting a local customer still removes their cases, as before the link became optional.
+        modelBuilder.Entity<Case>(entity =>
+        {
+            entity.HasOne(c => c.Customer).WithMany(cu => cu.Cases).HasForeignKey(c => c.CustomerId).OnDelete(DeleteBehavior.Cascade);
+            entity.Property(c => c.CustomerSource).HasMaxLength(20).HasDefaultValue(CustomerSources.Local);
+            entity.Property(c => c.CustomerType).HasMaxLength(20);
+            entity.Property(c => c.ExternalCustomerId).HasMaxLength(100);
+            entity.Property(c => c.CustomerLookupType).HasMaxLength(60);
+            entity.Property(c => c.CustomerLookupKeyEncrypted).HasMaxLength(512);
+            entity.Property(c => c.CustomerLookupKeyHash).HasMaxLength(64);
+            entity.HasIndex(c => c.CustomerLookupKeyHash).HasDatabaseName("IX_Cases_CustomerLookupKeyHash");
+            entity.HasIndex(c => new { c.CustomerType, c.ExternalCustomerId }).HasDatabaseName("IX_Cases_CustomerType_ExternalCustomerId");
+            entity.ToTable(t => t.HasCheckConstraint("CK_Cases_CustomerReference",
+                "(\"CustomerSource\" = 'Local' AND \"CustomerId\" IS NOT NULL AND \"ExternalCustomerId\" IS NULL AND \"CustomerLookupKeyEncrypted\" IS NULL)" +
+                " OR (\"CustomerSource\" = 'Customer360' AND \"CustomerId\" IS NULL AND \"CustomerType\" IN ('Individual','NonIndividual')" +
+                " AND \"ExternalCustomerId\" IS NOT NULL AND \"CustomerLookupType\" IS NOT NULL AND \"CustomerLookupKeyEncrypted\" IS NOT NULL AND \"CustomerLookupKeyHash\" IS NOT NULL)"));
+        });
+
         // Audit trail pages a global CreatedAt DESC ordering; case detail reads one case's timeline.
         modelBuilder.Entity<CaseEvent>()
             .HasIndex(ce => ce.CreatedAt)

@@ -8,6 +8,8 @@ public interface ICaseService
     Task<Case> CreateCaseAsync(CreateCaseDto dto, Guid createdByUserId);
     Task<CaseDetailDto?> GetCaseDetailsAsync(Guid caseId, CancellationToken ct = default);
     Task<IEnumerable<SearchCaseHitDto>> SearchCasesAsync(string query, int limit, CancellationToken ct = default);
+    /// <summary>Every case of one customer (local or Customer 360), newest first, masked.</summary>
+    Task<PagedResponseDto<CaseSummaryDto>> GetCasesForCustomerAsync(CustomerCasesQueryDto query, CancellationToken ct = default);
     Task<PagedResponseDto<CaseSummaryDto>> GetPaginatedBoardCasesAsync(string? status = null, int page = 1, int pageSize = 30, Guid? departmentId = null, string? caseType = null, string? search = null, string? priority = null, string? channel = null, CancellationToken ct = default);
     Task UpdateCaseStatusAsync(Guid caseId, UpdateCaseStatusDto dto);
     /// <summary>Hands the case to another person after checking the caller may do so and the person is eligible (403 / 422 otherwise).</summary>

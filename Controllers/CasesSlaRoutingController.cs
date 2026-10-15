@@ -125,6 +125,8 @@ public class CasesSlaRoutingController : BaseApiController
     }
 
     [HttpGet("cases/{caseId:guid}/escalation-status")]
+
+    [CaseAccess("caseId")]
     public async Task<IActionResult> GetCaseEscalationStatus(Guid caseId, CancellationToken ct = default)
     {
         var status = await _slaRoutingService.GetCaseEscalationStatusAsync(caseId, ct);

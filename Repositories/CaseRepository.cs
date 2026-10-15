@@ -3,6 +3,8 @@ namespace CaseManagement.Api.Repositories;
 using CaseManagement.Api.Data;
 using CaseManagement.Api.Models;
 using CaseManagement.Api.DTOs;
+using CaseManagement.Api.HostIntegration;
+using CaseManagement.Api.Services.Customer360;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 
@@ -10,10 +12,20 @@ public class CaseRepository : ICaseRepository
 {
     private readonly AppDbContext _context;
 
-    public CaseRepository(AppDbContext context)
+    private readonly ICustomerIdentifierProtector? _identifiers;
+    private readonly ICaseAccessScope? _access;
+
+    /// <param name="identifiers">Lets a search for a whole NRIC / BRN find Customer 360 cases (by the identifier hash).</param>
+    /// <param name="access">Limits every list to the cases the caller may see (none given: unrestricted, e.g. background work).</param>
+    public CaseRepository(AppDbContext context, ICustomerIdentifierProtector? identifiers = null, ICaseAccessScope? access = null)
     {
         _context = context;
+        _identifiers = identifiers;
+        _access = access;
     }
+
+    /// <summary>The cases the caller may see (all of them for background work).</summary>
+    private IQueryable<Case> Visible(IQueryable<Case> cases) => _access?.Apply(cases) ?? cases;
 
     /// <summary>
     /// Loads a case for mutation by <see cref="Services.CaseService"/> — the only caller.
@@ -104,7 +116,7 @@ public class CaseRepository : ICaseRepository
 
         // Resolves a link/unlink target. Callers read only Id and CaseNumber, so no related
         // entities are loaded; the ChildRelations subquery below is a filter, not a fetch.
-        return await _context.Cases
+        return await Visible(_context.Cases)
             .FirstOrDefaultAsync(c =>
                 c.CaseNumber.ToLower() == cleaned ||
                 c.ChildRelations.Any(cr => cr.ChildId.ToLower() == cleaned)
@@ -161,7 +173,7 @@ public class CaseRepository : ICaseRepository
         string? channel = null,
         CancellationToken ct = default)
     {
-        var query = _context.Cases.AsNoTracking();
+        var query = Visible(_context.Cases.AsNoTracking());
 
         if (departmentId.HasValue)
         {
@@ -239,9 +251,12 @@ public class CaseRepository : ICaseRepository
         if (!string.IsNullOrWhiteSpace(search))
         {
             string pattern = SqlSearchPattern.Contains(search.Trim());
+            // A Customer 360 customer's identifier is stored encrypted: a whole NRIC / BRN matches its hash exactly.
+            var identifierHashes = CustomerIdentifierSearch.Hashes(_identifiers, search);
             query = query.Where(c => EF.Functions.ILike(c.CaseNumber, pattern)
                 || EF.Functions.ILike(c.Title, pattern)
                 || (c.Customer != null && EF.Functions.ILike(c.Customer.FullName, pattern))
+                || (c.CustomerLookupKeyHash != null && identifierHashes.Contains(c.CustomerLookupKeyHash))
                 || (c.Owner != null && EF.Functions.ILike(c.Owner.Name, pattern))
                 || c.ChildRelations.Any(cr => EF.Functions.ILike(cr.ChildId, pattern)));
         }
@@ -269,18 +284,19 @@ public class CaseRepository : ICaseRepository
     }
 
     /// <summary>
-    /// Header smart-search over cases. Matches the same fields the old client-side filter did
-    /// (case number, title, and sub-case child ids), but in the database and capped to
-    /// <paramref name="limit"/> narrow rows.
+    /// Header smart-search over cases: case number, title, sub-case child ids, a local customer's name, and a Customer 360
+    /// customer's whole NRIC / BRN (by hash), in the database and capped to <paramref name="limit"/> narrow rows.
     /// </summary>
     public async Task<IEnumerable<SearchCaseHitDto>> SearchCasesAsync(string query, int limit, CancellationToken ct = default)
     {
         var pattern = SqlSearchPattern.Contains(query);
+        var identifierHashes = CustomerIdentifierSearch.Hashes(_identifiers, query);
 
-        return await _context.Cases
-            .AsNoTracking()
+        return await Visible(_context.Cases.AsNoTracking())
             .Where(c => EF.Functions.ILike(c.CaseNumber, pattern)
                      || EF.Functions.ILike(c.Title, pattern)
+                     || (c.CustomerLookupKeyHash != null && identifierHashes.Contains(c.CustomerLookupKeyHash))
+                     || (c.Customer != null && EF.Functions.ILike(c.Customer.FullName, pattern))
                      || c.ChildRelations.Any(cr => EF.Functions.ILike(cr.ChildId, pattern)))
             .OrderByDescending(c => c.CreatedAt)
             .Take(limit)
@@ -291,6 +307,28 @@ public class CaseRepository : ICaseRepository
                 Title = c.Title
             })
             .ToListAsync(ct);
+    }
+
+    /// <summary>
+    /// Every case of one customer, newest first: a local customer by their record, a Customer 360 customer by Customer
+    /// 360's own key and type (the stable identity; the stored search identifier can differ between their cases).
+    /// </summary>
+    public async Task<PagedResponseDto<CaseSummaryDto>> GetCasesForCustomerAsync(
+        Guid? localCustomerId, string? customerType, string? externalCustomerId, int page, int pageSize, CancellationToken ct = default)
+    {
+        IQueryable<Case> query = Visible(_context.Cases.AsNoTracking());
+        if (localCustomerId is { } id && id != Guid.Empty)
+            query = query.Where(c => c.CustomerSource == CustomerSources.Local && c.CustomerId == id);
+        else if (!string.IsNullOrWhiteSpace(customerType) && !string.IsNullOrWhiteSpace(externalCustomerId))
+            query = query.Where(c => c.CustomerSource == CustomerSources.Customer360 && c.CustomerType == customerType && c.ExternalCustomerId == externalCustomerId);
+        else
+            throw new ArgumentException("Name the customer: a local customer id, or a Customer 360 customer type and key.");
+
+        page = Math.Max(page, 1);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+        var total = await query.CountAsync(ct);
+        var items = await query.OrderByDescending(c => c.CreatedAt).Skip((page - 1) * pageSize).Take(pageSize).MapToCaseSummary().ToListAsync(ct);
+        return new PagedResponseDto<CaseSummaryDto> { Items = items, TotalCount = total, Page = page, PageSize = pageSize };
     }
 
     public async Task<CaseDetailDto?> GetCaseDetailAsync(Guid id, CancellationToken ct = default)
@@ -414,6 +452,12 @@ public class CaseRepository : ICaseRepository
         var query = _context.CaseEvents
             .AsNoTracking()
             .AsQueryable();
+        // Someone who sees only some cases sees only those cases' history (not other teams', nor configuration changes).
+        if (_access is { SeesAll: false })
+        {
+            var visible = Visible(_context.Cases.AsNoTracking()).Select(c => c.Id);
+            query = query.Where(ce => ce.CaseId != null && visible.Contains(ce.CaseId.Value));
+        }
 
         if (!string.IsNullOrWhiteSpace(actionType) && !string.Equals(actionType, "all", StringComparison.OrdinalIgnoreCase))
         {

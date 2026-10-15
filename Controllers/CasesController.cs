@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Mvc;
 [ApiController]
 [Route("api/[controller]")]
 [RequirePermission(Permissions.CasesRead, Permissions.CasesWrite)]
+[CaseAccess("id")]   // every /api/cases/{id}/... request is refused (404) for a case the caller may not see
 public class CasesController : BaseApiController
 {
     private readonly ICaseService _caseService;
@@ -57,6 +58,7 @@ public class CasesController : BaseApiController
     }
 
     [HttpPost]
+    [RequirePermission(Permissions.CasesCreate)]
     public async Task<IActionResult> CreateCase([FromBody] CreateCaseDto dto)
     {
         var newCase = await _caseService.CreateCaseAsync(dto, CurrentUserId);
@@ -64,8 +66,13 @@ public class CasesController : BaseApiController
     }
 
     [HttpPut("{id:guid}/status")]
-    public async Task<IActionResult> UpdateStatus(Guid id, [FromBody] UpdateCaseStatusDto dto)
+    public async Task<IActionResult> UpdateStatus(Guid id, [FromBody] UpdateCaseStatusDto dto, [FromServices] ICurrentUserAccessor user)
     {
+        // Ending a case (closing or cancelling it) is the Resolve capability's, whichever endpoint is used.
+        var target = (dto.Status ?? string.Empty).Replace(" ", string.Empty);
+        if ((target.Equals("Closed", StringComparison.OrdinalIgnoreCase) || target.Equals("Cancelled", StringComparison.OrdinalIgnoreCase))
+            && !user.Has(Permissions.CasesResolve))
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = "You do not have permission to close or cancel cases.", requiredPermission = Permissions.CasesResolve });
         dto.UserId = CurrentUserId;
         await _caseService.UpdateCaseStatusAsync(id, dto);
         return Ok(new { message = "Status updated successfully." });
@@ -164,11 +171,18 @@ public class CasesController : BaseApiController
     }
 
     [HttpPut("{id:guid}/transfer")]
+    [RequirePermission(Permissions.CasesTransfer)]
     public async Task<IActionResult> TransferDepartment(Guid id, [FromBody] TransferDepartmentDto dto, [FromServices] ICurrentUserAccessor user)
     {
         await _caseService.TransferDepartmentAsync(id, dto, CurrentUserId, user.Has(Permissions.CasesAssign));
         return Ok(new { message = "Department transferred successfully." });
     }
+
+    /// <summary>One customer's cases (the selected customer on Create Case, or any customer), newest first.</summary>
+    [HttpPost("for-customer")]
+    [RequirePermission(Permissions.CasesRead)]   // a read, even though it is a POST
+    public async Task<IActionResult> GetCasesForCustomer([FromBody] CustomerCasesQueryDto query, CancellationToken ct)
+        => Ok(await _caseService.GetCasesForCustomerAsync(query, ct));
 
     [HttpGet("{id:guid}/related-customer-cases")]
     public async Task<IActionResult> GetRelatedCustomerCases(Guid id)
@@ -194,6 +208,7 @@ public class CasesController : BaseApiController
     }
 
     [HttpPut("{id:guid}/resolve")]
+    [RequirePermission(Permissions.CasesResolve)]
     public async Task<IActionResult> ResolveCase(Guid id, [FromBody] ResolveCaseDto dto)
     {
         dto.UserId = CurrentUserId;
@@ -202,6 +217,7 @@ public class CasesController : BaseApiController
     }
 
     [HttpPut("{id:guid}/reopen")]
+    [RequirePermission(Permissions.CasesResolve)]
     public async Task<IActionResult> ReopenCase(Guid id, [FromBody] ReopenCaseDto dto)
     {
         dto.UserId = CurrentUserId;

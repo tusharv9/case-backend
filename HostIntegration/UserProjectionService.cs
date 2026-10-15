@@ -74,7 +74,7 @@ public sealed class UserProjectionService : IUserProjectionService
             ExternalUserId = principal.ExternalUserId,
             Name = principal.Name ?? info?.Name ?? principal.ExternalUserId,
             Email = email,
-            Role = principal.Roles.FirstOrDefault() ?? info?.Role ?? string.Empty,
+            Role = DisplayRole(principal) ?? info?.Role ?? string.Empty,
             Status = UserStatus.Available,
             IsActive = info?.IsActive ?? true,
             DepartmentId = null,
@@ -99,12 +99,19 @@ public sealed class UserProjectionService : IUserProjectionService
         }
     }
 
+    /// <summary>
+    /// The role to show people, from the token. The OmniConnect Host's role claim is a role ID (a GUID), not a
+    /// name: it still counts for permission mapping, but it is never shown as someone's role.
+    /// </summary>
+    private static string? DisplayRole(HostPrincipal principal) =>
+        principal.Roles.FirstOrDefault(r => !Guid.TryParse(r, out _));
+
     /// <summary>Applies claim values that changed. Returns true when something was modified.</summary>
     private static bool Refresh(User user, HostPrincipal principal)
     {
         var changed = false;
         if (!string.IsNullOrWhiteSpace(principal.Name) && user.Name != principal.Name) { user.Name = principal.Name; changed = true; }
-        var role = principal.Roles.FirstOrDefault();
+        var role = DisplayRole(principal);
         if (!string.IsNullOrWhiteSpace(role) && user.Role != role) { user.Role = role; changed = true; }
         if (changed)
         {

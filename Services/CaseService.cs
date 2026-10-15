@@ -1,6 +1,8 @@
 namespace CaseManagement.Api.Services;
 
 using CaseManagement.Api.DTOs;
+using CaseManagement.Api.HostIntegration;
+using CaseManagement.Api.Services.Customer360;
 using CaseManagement.Api.Models;
 using CaseManagement.Api.Repositories;
 using CaseManagement.Api.Data;
@@ -27,6 +29,12 @@ public class CaseService : ICaseService
     private readonly IMentionService _mentions;
     private readonly ILogger<CaseService> _logger;
     private readonly IConfigCache? _configCache;
+    private readonly ICustomer360CustomerService? _customer360;
+    private readonly ICustomerIdentifierProtector? _customerIdentifiers;
+    private readonly ICaseAccessScope? _caseAccess;
+
+    /// <summary>The cases the caller may see (all of them for background work and unit tests).</summary>
+    private IQueryable<Case> Visible(IQueryable<Case> cases) => _caseAccess?.Apply(cases) ?? cases;
     private readonly IAssignmentEligibilityService _eligibility;
 
     public CaseService(
@@ -46,8 +54,14 @@ public class CaseService : ICaseService
         IMentionService? mentions = null,
         ILogger<CaseService>? logger = null,
         IConfigCache? configCache = null,
-        IAssignmentEligibilityService? eligibility = null)
+        IAssignmentEligibilityService? eligibility = null,
+        ICustomer360CustomerService? customer360 = null,
+        ICustomerIdentifierProtector? customerIdentifiers = null,
+        ICaseAccessScope? caseAccess = null)
     {
+        _caseAccess = caseAccess;
+        _customer360 = customer360;
+        _customerIdentifiers = customerIdentifiers;
         _configCache = configCache;
         _eligibility = eligibility ?? new AssignmentEligibilityService(context, configCache);
         _caseRepository = caseRepository;
@@ -150,7 +164,6 @@ public class CaseService : ICaseService
             CaseType = canonicalCaseType,
             Title = dto.Title.Trim(),
             Description = dto.Description?.Trim() ?? string.Empty,
-            CustomerId = dto.CustomerId,
             DepartmentId = validated.Department.Id,
             OwnerId = createdByUserId,
             Severity = effectivePriority,
@@ -158,8 +171,28 @@ public class CaseService : ICaseService
             SourceChannel = sourceChannel,
             PreferredCommunicationChannel = preferredChannel,
             CommunicationChannel = sourceChannel,
+            PreferredLanguage = string.IsNullOrWhiteSpace(validated.Value("preferredLanguage")) ? null : validated.Value("preferredLanguage"),
             Subcategory = validated.SubCategory.Name,
         };
+
+        // Who the case is for: the local customer, or the Customer 360 customer by identifiers only.
+        if (validated.Customer360 is { } existing)
+        {
+            var identifiers = _customerIdentifiers is { IsConfigured: true } p ? p
+                : throw new Customer360Exception(Customer360Failure.NotConfigured,
+                    "Cases for Customer 360 customers cannot be stored yet: customer identifier protection is not configured.");
+            newCase.CustomerSource = CustomerSources.Customer360;
+            newCase.CustomerType = existing.CustomerType;
+            newCase.ExternalCustomerId = existing.ExternalCustomerId;
+            newCase.CustomerLookupType = existing.LookupType;
+            newCase.CustomerLookupKeyEncrypted = identifiers.Protect(existing.LookupType, existing.LookupKey);
+            newCase.CustomerLookupKeyHash = identifiers.Hash(existing.LookupType, existing.LookupKey);
+        }
+        else
+        {
+            newCase.CustomerSource = CustomerSources.Local;
+            newCase.CustomerId = validated.LocalCustomerId;
+        }
 
         // 3. Start the SLA clock: targets are snapshotted from the rule, due dates are computed in business time.
         (await GetClockAsync()).Start(newCase, slaRule, now);
@@ -180,9 +213,11 @@ public class CaseService : ICaseService
         //    assignments per team for the life of this transaction, so concurrent cases cannot be handed to the same
         //    "least loaded" agent, and the round-robin pointer commits (or rolls back) together with the case.
         RoutingDecisionResult? routingDecision = null;
-        var customer = _routingEngine != null
-            ? await _context.Customers.AsNoTracking().FirstOrDefaultAsync(c => c.Id == dto.CustomerId)
-            : null;
+        // Routing rules and skills may match on the customer's segment. A Customer 360 customer's comes from the profile
+        // just read, held in memory for this decision only — never attached to the context, so nothing about them is saved.
+        var customer = _routingEngine == null ? null
+            : validated.Customer360 is { } c360 ? new Customer { FullName = c360.FullName, CustomerSegment = c360.CustomerSegment }
+            : await _context.Customers.AsNoTracking().FirstOrDefaultAsync(c => c.Id == validated.LocalCustomerId);
 
         await ExecuteInTransactionAsync(async () =>
         {
@@ -303,6 +338,15 @@ public class CaseService : ICaseService
 
         await EnrichSlaAsync(paged.Items, ct);
         if (_piiMasking != null) await _piiMasking.MaskCasesAsync(paged.Items, ct);   // the list repeats the customer's name
+        return paged;
+    }
+
+    public async Task<PagedResponseDto<CaseSummaryDto>> GetCasesForCustomerAsync(CustomerCasesQueryDto query, CancellationToken ct = default)
+    {
+        var paged = await _caseRepository.GetCasesForCustomerAsync(
+            query.CustomerId, query.CustomerType, query.ExternalCustomerId, query.Page, query.PageSize, ct);
+        await EnrichSlaAsync(paged.Items, ct);
+        if (_piiMasking != null) await _piiMasking.MaskCasesAsync(paged.Items, ct);
         return paged;
     }
 
@@ -561,7 +605,7 @@ public class CaseService : ICaseService
     {
         // "Open" = not resolved. "Breached" = open cases the SLA clock reads as breached — the same verdict every other
         // screen, the worker and the notifications use.
-        var cases = _context.Cases.AsNoTracking().Where(c => c.Status != CaseStatus.Resolved && c.Status != CaseStatus.Closed && c.Status != CaseStatus.Cancelled);
+        var cases = Visible(_context.Cases.AsNoTracking()).Where(c => c.Status != CaseStatus.Resolved && c.Status != CaseStatus.Closed && c.Status != CaseStatus.Cancelled);
         if (departmentId.HasValue) cases = cases.Where(c => c.DepartmentId == departmentId.Value);
 
         var health = await EvaluateHealthAsync(cases, ct);
@@ -723,7 +767,14 @@ public class CaseService : ICaseService
                 Status = CaseStatus.Open,
                 Severity = existingCase.Severity,
                 DepartmentId = existingCase.DepartmentId,
+                // The same customer as the parent, whichever kind: the whole reference, never just the local id.
+                CustomerSource = existingCase.CustomerSource,
                 CustomerId = existingCase.CustomerId,
+                CustomerType = existingCase.CustomerType,
+                ExternalCustomerId = existingCase.ExternalCustomerId,
+                CustomerLookupType = existingCase.CustomerLookupType,
+                CustomerLookupKeyEncrypted = existingCase.CustomerLookupKeyEncrypted,
+                CustomerLookupKeyHash = existingCase.CustomerLookupKeyHash,
                 OwnerId = existingCase.OwnerId,
                 ParentCaseId = existingCase.Id,
                 LinkedSourceCaseId = targetCase.Id,
@@ -857,8 +908,11 @@ public class CaseService : ICaseService
 
         if (existingCase == null) return new List<RelatedCustomerCaseDto>();
 
-        var customerCases = await _context.Cases
-            .Where(c => c.CustomerId == existingCase.CustomerId && c.Id != caseId)
+        var customerCases = await Visible(_context.Cases)
+            .Where(c => c.Id != caseId && (existingCase.CustomerSource == CustomerSources.Customer360
+                // A Customer 360 customer is the same customer when Customer 360's own key and type match.
+                ? c.CustomerSource == CustomerSources.Customer360 && c.CustomerType == existingCase.CustomerType && c.ExternalCustomerId == existingCase.ExternalCustomerId
+                : c.CustomerId != null && c.CustomerId == existingCase.CustomerId))
             .OrderByDescending(c => c.CreatedAt)
             .ToListAsync();
 
@@ -950,7 +1004,14 @@ public class CaseService : ICaseService
                 Status = CaseStatus.Open,
                 Severity = existingCase.Severity,
                 DepartmentId = existingCase.DepartmentId,
+                // The same customer as the parent, whichever kind: the whole reference, never just the local id.
+                CustomerSource = existingCase.CustomerSource,
                 CustomerId = existingCase.CustomerId,
+                CustomerType = existingCase.CustomerType,
+                ExternalCustomerId = existingCase.ExternalCustomerId,
+                CustomerLookupType = existingCase.CustomerLookupType,
+                CustomerLookupKeyEncrypted = existingCase.CustomerLookupKeyEncrypted,
+                CustomerLookupKeyHash = existingCase.CustomerLookupKeyHash,
                 OwnerId = existingCase.OwnerId,
                 ParentCaseId = existingCase.Id,
                 SubcaseType = "ReopenedSubcase",
@@ -1320,7 +1381,7 @@ public class CaseService : ICaseService
 
     /// <summary>Validates a create-case request without creating anything.</summary>
     public async Task ValidateCreateCaseMetadataAsync(CreateCaseDto dto, CancellationToken ct = default)
-        => await ValidateCreateCaseAsync(dto, ct);
+        => await ValidateCreateCaseAsync(dto, ct, confirmCustomer360: false);
 
     /// <summary>A create-case request after validation: resolved records and canonical values.</summary>
     private sealed record ValidatedCase(
@@ -1328,7 +1389,9 @@ public class CaseService : ICaseService
         CaseTypeConfig CaseType,
         DepartmentSubCategory SubCategory,
         IReadOnlyDictionary<string, string> Values,
-        IReadOnlyDictionary<string, string> CustomAttributes)
+        IReadOnlyDictionary<string, string> CustomAttributes,
+        Guid? LocalCustomerId,
+        ResolvedCustomer360? Customer360)
     {
         public string Value(string field) => Values.TryGetValue(field, out var v) ? v : string.Empty;
     }
@@ -1336,17 +1399,43 @@ public class CaseService : ICaseService
     /// <summary>Setup data that changes rarely comes from the configuration cache, which is cleared as soon as any setting is saved.</summary>
     private Task<List<T>> CachedAsync<T>(string key, Func<Task<List<T>>> load) => _configCache == null ? load() : _configCache.GetOrCreateAsync(key, load);
 
-    private async Task<ValidatedCase> ValidateCreateCaseAsync(CreateCaseDto dto, CancellationToken ct = default)
+    /// <param name="confirmCustomer360">
+    /// Create: repeat the Customer 360 search with the caller's access and keep only the chosen match. A dry run
+    /// (field validation) checks the selection's shape only, so it never makes an audited lookup of its own.
+    /// </param>
+    private async Task<ValidatedCase> ValidateCreateCaseAsync(CreateCaseDto dto, CancellationToken ct = default, bool confirmCustomer360 = true)
     {
         var engine = _fieldValidation ?? throw new InvalidOperationException("Field validation is not available.");
         var errors = new List<FieldError>();
 
         // 1. Structural checks: the records the case points at must exist and be usable.
         // A case cannot exist without these, whatever the field configuration says (they are system-required).
+        // The customer: a local one (New Customer) or an existing Customer 360 customer — exactly one.
         Guid? customerId = null;
-        if (dto.CustomerId == Guid.Empty)
+        ResolvedCustomer360? customer360 = null;
+        string? selectedCustomer = null;
+        var hasLocal = dto.CustomerId is { } localId && localId != Guid.Empty;
+        if (hasLocal && dto.Customer360 != null)
+            errors.Add(new FieldError("selectCustomer", "Choose either an existing Customer 360 customer or a new customer, not both."));
+        else if (dto.Customer360 != null)
+        {
+            if (string.IsNullOrWhiteSpace(dto.Customer360.ExternalCustomerId) || string.IsNullOrWhiteSpace(dto.Customer360.SearchBy)
+                || string.IsNullOrWhiteSpace(dto.Customer360.Value) || string.IsNullOrWhiteSpace(dto.Customer360.CustomerType))
+                errors.Add(new FieldError("selectCustomer", "Choose the customer from the Customer 360 search results."));
+            else if (!confirmCustomer360)
+                selectedCustomer = dto.Customer360.ExternalCustomerId;
+            else if (_customer360 == null)
+                errors.Add(new FieldError("selectCustomer", "Customer 360 is not connected to Case Management."));
+            else
+            {
+                // Customer 360 being unreachable is not the user's error: Customer360Exception surfaces as 503 / 403.
+                try { customer360 = await _customer360.ResolveForNewCaseAsync(dto.Customer360, ct); selectedCustomer = customer360.ExternalCustomerId; }
+                catch (Customer360SearchException ex) { errors.Add(new FieldError("selectCustomer", ex.Message)); }
+            }
+        }
+        else if (!hasLocal)
             errors.Add(new FieldError("selectCustomer", "A valid customer must be selected."));
-        else if (await _context.Customers.AnyAsync(c => c.Id == dto.CustomerId, ct)) customerId = dto.CustomerId;
+        else if (await _context.Customers.AnyAsync(c => c.Id == dto.CustomerId, ct)) { customerId = dto.CustomerId; selectedCustomer = customerId.ToString(); }
         else errors.Add(new FieldError("selectCustomer", "Selected customer does not exist."));
 
         Department? department = null;
@@ -1402,7 +1491,7 @@ public class CaseService : ICaseService
             ["caseType"] = caseType?.Name,
             ["title"] = dto.Title,
             ["description"] = dto.Description,
-            ["selectCustomer"] = customerId?.ToString(),
+            ["selectCustomer"] = selectedCustomer,
             ["departmentId"] = department?.Id.ToString(),
             ["subCategory"] = subCategory?.Name,
             ["preferredLanguage"] = dto.PreferredLanguage,
@@ -1431,6 +1520,6 @@ public class CaseService : ICaseService
             .Where(kv => (dto.CustomAttributes?.ContainsKey(kv.Key) ?? false) && kv.Value.Length > 0)
             .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase);
 
-        return new ValidatedCase(department!, caseType!, subCategory!, result.Normalized, custom);
+        return new ValidatedCase(department!, caseType!, subCategory!, result.Normalized, custom, customerId, customer360);
     }
 }

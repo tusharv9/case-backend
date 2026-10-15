@@ -59,6 +59,19 @@ public class ConfigurationEndToEndTests
             return e;
         }
 
+        /// <summary>Signs the person in once (so Case Management knows them) and makes them an active member of the test team.</summary>
+        public async Task JoinTeamAsync(string token, string externalUserId)
+        {
+            await Send(HttpMethod.Get, "/api/users/me", token);
+            await using var ctx = Db.NewContext();
+            var userId = await ctx.Users.Where(u => u.ExternalUserId == externalUserId).Select(u => u.Id).SingleAsync();
+            if (!await ctx.TeamMembers.AnyAsync(m => m.UserId == userId && m.DepartmentId == Dept))
+            {
+                ctx.TeamMembers.Add(new TeamMember { Id = Guid.NewGuid(), DepartmentId = Dept, UserId = userId, MemberRole = "Agent", IsActive = true, IsAssignable = true, JoinedAt = DateTime.UtcNow, CreatedAt = DateTime.UtcNow });
+                await ctx.SaveChangesAsync();
+            }
+        }
+
         public HttpRequestMessage Req(HttpMethod method, string url, string token, object? body = null)
         {
             var request = new HttpRequestMessage(method, url);
@@ -410,9 +423,10 @@ public class ConfigurationEndToEndTests
         var (assigned, _) = await env.Send(HttpMethod.Put, $"/api/cases/{id}/assign", env.Admin, new { ownerId = agentId, reason = "Workload rebalancing" });
         Assert.Equal(HttpStatusCode.OK, assigned);
 
-        // An agent outside the case's team, without cases.assign, may not move it.
+        // An agent outside the case's team, without cases.assign, may not move it — they cannot even see it (404, as if it
+        // did not exist; team visibility is checked before anything else about the case).
         var (forbidden, _) = await env.Send(HttpMethod.Put, $"/api/cases/{id}/assign", env.Agent2, new { ownerId = agentId, reason = "Workload rebalancing" });
-        Assert.Equal(HttpStatusCode.Forbidden, forbidden);
+        Assert.Equal(HttpStatusCode.NotFound, forbidden);
         Assert.Equal(startBefore, await env.Db.ScalarAsync<DateTime>($"SELECT \"SlaStartTime\" FROM \"Cases\" WHERE \"Id\" = '{id}'"));
     }
 
@@ -608,6 +622,7 @@ public class ConfigurationEndToEndTests
         Assert.Equal("application/pdf", saved.GetProperty("fileType").GetString());
         var attachmentId = saved.GetProperty("id").GetGuid();
 
+        await env.JoinTeamAsync(env.Agent, "agt-1");   // the case is the agent's team's, so the agent may see it
         var download = env.Req(HttpMethod.Get, $"/api/cases/{caseId}/attachments/{attachmentId}/download", env.Agent);
         var response = await env.Client.SendAsync(download);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -773,7 +788,8 @@ public class ConfigurationEndToEndTests
         var (_, created) = await env.Send(HttpMethod.Post, "/api/cases", env.Admin, env.CaseBody());
         var id = created.GetProperty("id").GetGuid();
 
-        // An agent (no pii.unmask) sees the configured mask on the list and on the case; the admin role sees the raw value.
+        // An agent of the case's team (no pii.unmask) sees the configured mask on the list and on the case; the admin role sees the raw value.
+        await env.JoinTeamAsync(env.Agent, "agt-1");
         var (_, agentList) = await env.Send(HttpMethod.Get, "/api/cases?page=1&pageSize=10", env.Agent);
         Assert.Contains("Ah*******ak", agentList.GetRawText());
         Assert.DoesNotContain("Ahmad Razak", agentList.GetRawText());

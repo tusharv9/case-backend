@@ -482,3 +482,9 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# Local database backups/exports taken during migrations: kept on disk, never committed.
+Data/Reports/*-backup-*/
+
+# Files users attach to cases at runtime: data, not code. Kept on disk, never committed.
+Uploads/

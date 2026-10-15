@@ -8,13 +8,32 @@ public class TeamMonitoringOverviewDto
     public DateTime GeneratedAt { get; set; }
 
     public TeamMonitoringSummaryDto Summary { get; set; } = new();
+    /// <summary>
+    /// Every active team in scope with its live membership, as configured on the Teams page. A person in two teams is
+    /// counted in both rows here, and once in <see cref="TeamMonitoringSummaryDto.TotalAgentsCount"/>.
+    /// </summary>
+    public List<TeamMembershipItemDto> Teams { get; set; } = new();
     public List<AgentStatusItemDto> Agents { get; set; } = new();
     public List<QueueHealthItemDto> Queues { get; set; } = new();
     public List<SlaAtRiskCaseDto> SlaAtRisk { get; set; } = new();
 }
 
+public class TeamMembershipItemDto
+{
+    public Guid TeamId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    /// <summary>Null when the team has no lead.</summary>
+    public string? LeadName { get; set; }
+    public int MemberCount { get; set; }
+    /// <summary>Members whose own status is Available or Busy.</summary>
+    public int OnlineCount { get; set; }
+    public int OpenCaseCount { get; set; }
+}
+
 public class TeamMonitoringSummaryDto
 {
+    /// <summary>Active teams in scope (all active teams, or the one chosen).</summary>
+    public int TeamsCount { get; set; }
     public int OnlineAgentsCount { get; set; }
     public int TotalAgentsCount { get; set; }
     public int AgentsBreakCount { get; set; }
