@@ -24,6 +24,9 @@ public interface ICaseAccessScope
 {
     bool SeesAll { get; }
     IQueryable<Case> Apply(IQueryable<Case> cases);
+
+    /// <summary>The same rule, for a query on another context instance (queries run side by side, each on its own).</summary>
+    IQueryable<Case> Apply(IQueryable<Case> cases, AppDbContext db);
     Task<bool> CanSeeAsync(Guid caseId, CancellationToken ct = default);
 }
 
@@ -31,11 +34,13 @@ public sealed class CaseAccessScope(AppDbContext context, ICurrentUserAccessor? 
 {
     public bool SeesAll => currentUser?.LocalUserId == null || currentUser.Has(Permissions.CasesViewAll);
 
-    public IQueryable<Case> Apply(IQueryable<Case> cases)
+    public IQueryable<Case> Apply(IQueryable<Case> cases) => Apply(cases, context);
+
+    public IQueryable<Case> Apply(IQueryable<Case> cases, AppDbContext db)
     {
         if (SeesAll) return cases;
         var me = currentUser!.LocalUserId!.Value;
-        var members = context.TeamMembers;
+        var members = db.TeamMembers;
         return cases.Where(c =>
             c.OwnerId == me
             || c.Participants.Any(p => p.UserId == me)

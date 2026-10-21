@@ -355,10 +355,20 @@ public class Customer360CaseTests
             return e;
         }
 
-        public async Task<(HttpStatusCode Status, JsonElement Body)> Send(HttpMethod method, string url, object? body = null)
+        public Task<(HttpStatusCode Status, JsonElement Body)> Send(HttpMethod method, string url, object? body = null) => SendAs(Admin, method, url, body);
+
+        /// <summary>A Host user (not an administrator) holding exactly <paramref name="permissions"/>, in the Host's own form.</summary>
+        public static string Person(string subject, params string[] permissions) =>
+            AppUnderTest.Token(subject, subject, extraClaims: new Dictionary<string, object>
+            {
+                ["perms"] = JsonSerializer.Serialize(permissions),
+                ["administrator"] = "false",
+            });
+
+        public async Task<(HttpStatusCode Status, JsonElement Body)> SendAs(string token, HttpMethod method, string url, object? body = null)
         {
             var request = new HttpRequestMessage(method, url);
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Admin);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             if (body != null) request.Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
             var response = await Client.SendAsync(request);
             var text = await response.Content.ReadAsStringAsync();
@@ -432,6 +442,156 @@ public class Customer360CaseTests
         Assert.Equal("Available", customer.GetProperty("status").GetString());
         Assert.Equal("P-1002", customer.GetProperty("customer").GetProperty("externalCustomerId").GetString());
         Assert.Contains(id.ToString(), list.ToString());
+    }
+
+    [PostgresFact]
+    public async Task Lists_never_wait_on_Customer_360_and_names_come_separately_one_lookup_per_stored_identifier()
+    {
+        await using var env = await Env.StartAsync();
+        var ids = new List<Guid>();
+        foreach (var who in new[] { "P-1001", "P-1001", "P-1002" })   // two customers behind one NRIC, one of them twice
+        {
+            var (_, created) = await env.Send(HttpMethod.Post, "/api/cases", env.CaseBody(Env.Aisha(who)));
+            ids.Add(created.GetProperty("id").GetGuid());
+        }
+        env.Customer360.Requests.Clear();
+
+        var (listStatus, _) = await env.Send(HttpMethod.Get, "/api/cases?pageSize=50");
+        var (dashStatus, _) = await env.Send(HttpMethod.Get, "/api/dashboard/summary");
+        var callsForLists = env.Customer360.Requests.Count(r => r.PathAndQuery.Contains("profile"));
+
+        var (status, names) = await env.Send(HttpMethod.Post, "/api/cases/customer-names", new { caseIds = ids });
+        var profileCalls = env.Customer360.Requests.Count(r => r.PathAndQuery.Contains("profile"));
+        var contactCalls = env.Customer360.Requests.Count(r => r.PathAndQuery.Contains("contactinfo"));
+        var (_, again) = await env.Send(HttpMethod.Post, "/api/cases/customer-names", new { caseIds = ids });
+        var profileCallsAfterRefresh = env.Customer360.Requests.Count(r => r.PathAndQuery.Contains("profile"));
+
+        Assert.Equal(HttpStatusCode.OK, listStatus);
+        Assert.Equal(HttpStatusCode.OK, dashStatus);
+        Assert.Equal(0, callsForLists);             // the board and the dashboard answer without Customer 360
+        Assert.Equal(HttpStatusCode.OK, status);
+        Assert.Equal(1, profileCalls);              // one NRIC: one call names all three cases
+        Assert.Equal(0, contactCalls);              // a name, not contact details
+        Assert.Equal(1, profileCallsAfterRefresh);  // asked again moments later: answered from memory
+        foreach (var id in ids)
+        {
+            // The same name, masked the same way, as the case's own customer section shows.
+            var (_, live) = await env.Send(HttpMethod.Get, $"/api/cases/{id}/customer360");
+            Assert.Equal(live.GetProperty("customer").GetProperty("fullName").GetString(), names.GetProperty(id.ToString()).GetString());
+        }
+        Assert.Equal(names.ToString(), again.ToString());
+
+        // Nothing about the customer was written anywhere while naming them.
+        var rowText = await env.Db.ScalarAsync<string>("SELECT coalesce(string_agg(row_to_json(c)::text, ''), '') FROM \"Cases\" c");
+        Assert.DoesNotContain("Aisha", rowText);
+    }
+
+    [PostgresFact]
+    public async Task When_Customer_360_cannot_name_customers_nothing_fails_and_it_is_not_retried_on_every_refresh()
+    {
+        await using var env = await Env.StartAsync();
+        var (_, created) = await env.Send(HttpMethod.Post, "/api/cases", env.CaseBody(Env.Aisha()));
+        var id = created.GetProperty("id").GetGuid();
+        env.Customer360.Override = r => r.RequestUri!.AbsolutePath.Contains("profile") ? new HttpResponseMessage(HttpStatusCode.BadGateway) : null;
+        env.Customer360.Requests.Clear();
+
+        var (status, names) = await env.Send(HttpMethod.Post, "/api/cases/customer-names", new { caseIds = new[] { id } });
+        var callsAfterFirst = env.Customer360.Requests.Count(r => r.PathAndQuery.Contains("profile"));
+        var (status2, _) = await env.Send(HttpMethod.Post, "/api/cases/customer-names", new { caseIds = new[] { id } });
+        var callsAfterSecond = env.Customer360.Requests.Count(r => r.PathAndQuery.Contains("profile"));
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        Assert.Equal(HttpStatusCode.OK, status2);
+        Assert.Empty(names.EnumerateObject());                     // the screen keeps "Customer 360 · Individual"
+        Assert.True(callsAfterFirst >= 1);
+        Assert.Equal(callsAfterFirst, callsAfterSecond);            // the failure is remembered briefly
+    }
+
+    [PostgresFact]
+    public async Task Names_are_given_only_for_cases_the_caller_may_see()
+    {
+        await using var env = await Env.StartAsync();
+        var (_, created) = await env.Send(HttpMethod.Post, "/api/cases", env.CaseBody(Env.Aisha()));
+        var id = created.GetProperty("id").GetGuid();
+        var outsider = Env.Person("outsider-1", "remote.casemanagement.cases:View");   // no team, no ViewAll
+
+        var (status, names) = await env.SendAs(outsider, HttpMethod.Post, "/api/cases/customer-names", new { caseIds = new[] { id } });
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        Assert.Empty(names.EnumerateObject());
+    }
+
+    private static readonly string[] CaseReader =
+        ["remote.casemanagement.cases:View", "remote.casemanagement.cases:ViewAll", "remote.casemanagement.customers:View"];
+    private const string Customer360Profiles = "remote.customer360.profile:View";
+
+    [PostgresFact]
+    public async Task Open_Customer_360_hands_the_cases_customer_over_once_and_only_to_the_person_who_asked()
+    {
+        await using var env = await Env.StartAsync();
+        var (_, created) = await env.Send(HttpMethod.Post, "/api/cases", env.CaseBody(Env.Aisha("P-1002")));
+        var caseId = created.GetProperty("id").GetGuid();
+        var agent = Env.Person("agent-1", [.. CaseReader, Customer360Profiles]);
+        var colleague = Env.Person("agent-2", [.. CaseReader, Customer360Profiles]);
+        env.Customer360.Requests.Clear();
+
+        var (issued, first) = await env.SendAs(agent, HttpMethod.Post, $"/api/cases/{caseId}/customer360/handoff");
+        var code = first.GetProperty("code").GetString()!;
+        var (redeemed, target) = await env.SendAs(agent, HttpMethod.Post, "/api/customer360/handoff/redeem", new { code });
+        var (again, _) = await env.SendAs(agent, HttpMethod.Post, "/api/customer360/handoff/redeem", new { code });
+
+        Assert.Equal(HttpStatusCode.OK, issued);
+        Assert.Empty(env.Customer360.Requests);                       // issuing a code asks Customer 360 nothing
+        Assert.DoesNotContain("900101", first.ToString());            // the code says nothing about the customer
+        Assert.Equal(HttpStatusCode.OK, redeemed);
+        Assert.Equal("Individual", target.GetProperty("customerType").GetString());
+        Assert.Equal("NRIC", target.GetProperty("idType").GetString());
+        Assert.Equal("900101015555", target.GetProperty("value").GetString());
+        Assert.Equal("P-1002", target.GetProperty("externalCustomerId").GetString());
+        Assert.Equal(HttpStatusCode.NotFound, again);                 // once only
+
+        var (_, second) = await env.SendAs(agent, HttpMethod.Post, $"/api/cases/{caseId}/customer360/handoff");
+        var code2 = second.GetProperty("code").GetString()!;
+        var (byColleague, _) = await env.SendAs(colleague, HttpMethod.Post, "/api/customer360/handoff/redeem", new { code = code2 });
+        var (afterColleague, _) = await env.SendAs(agent, HttpMethod.Post, "/api/customer360/handoff/redeem", new { code = code2 });
+        Assert.Equal(HttpStatusCode.NotFound, byColleague);           // someone else's code is worthless to them …
+        Assert.Equal(HttpStatusCode.NotFound, afterColleague);        // … and spent by the attempt, not left to guess at
+    }
+
+    [PostgresFact]
+    public async Task Without_Customer_360_profile_access_no_code_is_issued_or_redeemed()
+    {
+        await using var env = await Env.StartAsync();
+        var (_, created) = await env.Send(HttpMethod.Post, "/api/cases", env.CaseBody(Env.Aisha()));
+        var caseId = created.GetProperty("id").GetGuid();
+        var caseOnly = Env.Person("agent-3", CaseReader);
+        var withProfiles = Env.Person("agent-3", [.. CaseReader, Customer360Profiles]);
+
+        var (issueStatus, _) = await env.SendAs(caseOnly, HttpMethod.Post, $"/api/cases/{caseId}/customer360/handoff");
+        var (_, issued) = await env.SendAs(withProfiles, HttpMethod.Post, $"/api/cases/{caseId}/customer360/handoff");
+        var (redeemStatus, _) = await env.SendAs(caseOnly, HttpMethod.Post, "/api/customer360/handoff/redeem",
+            new { code = issued.GetProperty("code").GetString() });
+
+        Assert.Equal(HttpStatusCode.Forbidden, issueStatus);
+        Assert.Equal(HttpStatusCode.Forbidden, redeemStatus);
+    }
+
+    [PostgresFact]
+    public async Task A_customer_just_chosen_on_Create_Case_can_be_opened_in_Customer_360_in_its_own_search_terms()
+    {
+        await using var env = await Env.StartAsync();
+        var agent = Env.Person("agent-4", [.. CaseReader, Customer360Profiles]);
+
+        var (_, issued) = await env.SendAs(agent, HttpMethod.Post, "/api/customer360/handoff", new
+        {
+            customerType = "Individual", searchBy = "SecondaryID:PASSPORT", value = " a1234567 ", externalCustomerId = "P-1001",
+        });
+        var (_, target) = await env.SendAs(agent, HttpMethod.Post, "/api/customer360/handoff/redeem", new { code = issued.GetProperty("code").GetString() });
+
+        Assert.Equal("SECONDARYID", target.GetProperty("idType").GetString());
+        Assert.Equal("PASSPORT", target.GetProperty("idSubtype").GetString());
+        Assert.Equal("A1234567", target.GetProperty("value").GetString());
+        Assert.Equal("P-1001", target.GetProperty("externalCustomerId").GetString());
     }
 
     [PostgresFact]

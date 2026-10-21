@@ -286,16 +286,3 @@ public class CaseSlaDto
         IsBreached = t.IsBreached,
     };
 }
-
-/// <summary>One thing that happened to one of a customer's cases — the customer-wide timeline on Customer 360.</summary>
-public class CustomerTimelineItemDto
-{
-    public Guid Id { get; set; }
-    public Guid CaseId { get; set; }
-    public string CaseNumber { get; set; } = string.Empty;
-    public string CaseTitle { get; set; } = string.Empty;
-    public string Type { get; set; } = string.Empty;
-    public string Message { get; set; } = string.Empty;
-    public string ActorName { get; set; } = string.Empty;
-    public DateTime CreatedAt { get; set; }
-}

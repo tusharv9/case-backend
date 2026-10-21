@@ -25,6 +25,19 @@ public interface ICustomer360CustomerService
     Task<Customer360SearchResultDto> SearchAsync(string? customerType, string? searchBy, string? value, CancellationToken ct);
     Task<ResolvedCustomer360> ResolveForNewCaseAsync(Customer360SelectionDto selection, CancellationToken ct);
     Task<CaseCustomer360Dto> GetForCaseAsync(Case caseItem, CancellationToken ct);
+
+    /// <summary>
+    /// Every customer Customer 360 has now for one stored identifier — for naming customers in a case list. One
+    /// profile lookup (no contact details) and NOT masked: the caller masks, so several of these may run at once.
+    /// Throws <see cref="Customer360Exception"/> when Customer 360 cannot answer.
+    /// </summary>
+    Task<IReadOnlyList<Customer360CustomerDto>> FindForListAsync(string customerType, string lookupType, string lookupKey, CancellationToken ct);
+
+    /// <summary>What "Open Customer 360" needs for a case's customer: the stored identifier, decrypted. No Customer 360 call.</summary>
+    Customer360HandoffTarget HandoffForCase(Case caseItem);
+
+    /// <summary>The same for a customer just chosen on Create Case (the search the person ran). No Customer 360 call.</summary>
+    Task<Customer360HandoffTarget> HandoffForSelectionAsync(Customer360SelectionDto selection, CancellationToken ct);
 }
 
 /// <summary>A search value that cannot be used — refused before Customer 360 is called.</summary>
@@ -165,6 +178,35 @@ public sealed class Customer360CustomerService(
         }
     }
 
+    public async Task<IReadOnlyList<Customer360CustomerDto>> FindForListAsync(string customerType, string lookupType, string lookupKey, CancellationToken ct)
+    {
+        var label = (await GetSearchOptionsAsync(ct)).FirstOrDefault(o => o.Key == lookupType)?.Label ?? lookupType;
+        var matches = await FindAsync(customerType, lookupType, lookupKey, label, ct, withContact: false);
+        return matches.Select(m => m.Match).ToList();
+    }
+
+    public Customer360HandoffTarget HandoffForCase(Case caseItem)
+    {
+        if (caseItem.CustomerSource != CustomerSources.Customer360 || caseItem.CustomerType == null
+            || caseItem.CustomerLookupType == null || caseItem.CustomerLookupKeyEncrypted == null || caseItem.ExternalCustomerId == null)
+            throw new Customer360SearchException("This case is not linked to a Customer 360 customer.");
+        return Handoff(caseItem.CustomerType, caseItem.CustomerLookupType, protector.Unprotect(caseItem.CustomerLookupKeyEncrypted), caseItem.ExternalCustomerId);
+    }
+
+    public async Task<Customer360HandoffTarget> HandoffForSelectionAsync(Customer360SelectionDto selection, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(selection.ExternalCustomerId))
+            throw new Customer360SearchException("Choose the customer from the Customer 360 search results.");
+        var (option, normalized) = await NormalizeAsync(selection.CustomerType, selection.SearchBy, selection.Value, ct);
+        return Handoff(option.CustomerType, option.Key, normalized, selection.ExternalCustomerId.Trim());
+    }
+
+    /// <summary>Case Management's lookup type in Customer 360's own search vocabulary ("SecondaryID:PASSPORT" → SECONDARYID + PASSPORT).</summary>
+    private static Customer360HandoffTarget Handoff(string customerType, string lookupType, string value, string externalCustomerId) =>
+        lookupType.StartsWith(SecondaryPrefix, StringComparison.Ordinal)
+            ? new(customerType, "SECONDARYID", lookupType[SecondaryPrefix.Length..], value, externalCustomerId)
+            : new(customerType, lookupType.ToUpperInvariant(), null, value, externalCustomerId);
+
     // ------------------------------------------------------------------------------------------------ searching
 
     private sealed record Found(Customer360CustomerDto Match, string? NationalId, string? Brn);
@@ -196,7 +238,7 @@ public sealed class Customer360CustomerService(
         return (option, normalized);
     }
 
-    private async Task<List<Found>> FindAsync(string customerType, string searchKey, string value, string label, CancellationToken ct)
+    private async Task<List<Found>> FindAsync(string customerType, string searchKey, string value, string label, CancellationToken ct, bool withContact = true)
     {
         var escaped = Uri.EscapeDataString(value);
         string path = customerType == CustomerTypes.Individual
@@ -221,8 +263,9 @@ public sealed class Customer360CustomerService(
         }
 
         // Contact details are a second, optional call per customer (Customer 360 gates them separately).
-        foreach (var item in found.Take(MaxContactReads))
-            await AddContactAsync(item, customerType, ct);
+        if (withContact)
+            foreach (var item in found.Take(MaxContactReads))
+                await AddContactAsync(item, customerType, ct);
         return found;
     }
 

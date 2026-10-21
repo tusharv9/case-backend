@@ -3,7 +3,9 @@ namespace CaseManagement.Api.Controllers;
 using CaseManagement.Api.HostIntegration;
 using CaseManagement.Api.DTOs;
 using CaseManagement.Api.Services;
+using CaseManagement.Api.Services.Customer360;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 
 [ApiController]
 [Route("api/[controller]")]
@@ -176,6 +178,39 @@ public class CasesController : BaseApiController
     {
         await _caseService.TransferDepartmentAsync(id, dto, CurrentUserId, user.Has(Permissions.CasesAssign));
         return Ok(new { message = "Department transferred successfully." });
+    }
+
+    public sealed class CustomerNamesRequest
+    {
+        public List<Guid> CaseIds { get; set; } = new();
+    }
+
+    /// <summary>
+    /// The Customer 360 customer's name on each of these cases, read live (a case stores only identifiers): { caseId: name }.
+    /// Asked for separately, after a list has drawn, so a list never waits on Customer 360; a case it cannot name is left
+    /// out and keeps its "Customer 360 · Individual" label. Only cases the caller may see are answered, at most 100.
+    /// </summary>
+    [HttpPost("customer-names")]
+    [RequirePermission(Permissions.CasesRead)]   // a read, even though it is a POST
+    public async Task<IActionResult> GetCustomerNames([FromBody] CustomerNamesRequest request,
+        [FromServices] ICaseCustomerNames customerNames, [FromServices] ICaseAccessScope access,
+        [FromServices] CaseManagement.Api.Data.AppDbContext db, CancellationToken ct)
+    {
+        var ids = (request.CaseIds ?? new()).Distinct().Take(100).ToList();
+        if (ids.Count == 0) return Ok(new Dictionary<Guid, string>());
+
+        var visible = await access.Apply(db.Cases.AsNoTracking())
+            .Where(c => ids.Contains(c.Id) && c.CustomerSource == CaseManagement.Api.Models.CustomerSources.Customer360)
+            .Select(c => c.Id).ToListAsync(ct);
+        var rows = visible.Select(id => new NameRow { Id = id }).ToList();
+        await customerNames.FillAsync(rows, r => r.Id, _ => CaseManagement.Api.Models.CustomerSources.Customer360, r => r.Name, (r, n) => r.Name = n, ct);
+        return Ok(rows.Where(r => !string.IsNullOrEmpty(r.Name)).ToDictionary(r => r.Id, r => r.Name!));
+    }
+
+    private sealed class NameRow
+    {
+        public Guid Id { get; init; }
+        public string? Name { get; set; }
     }
 
     /// <summary>One customer's cases (the selected customer on Create Case, or any customer), newest first.</summary>

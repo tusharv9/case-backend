@@ -28,7 +28,13 @@ Rules worth knowing:
 
 - **No capability, no access.** An endpoint that names no permission still needs the caller to hold *some* Case
   Management permission. Only `GET /permissions` and `GET /api/users/me` are open (pinned by
-  `PermissionEnforcementTests`), so someone without access is told so instead of seeing errors.
+  `PermissionEnforcementTests`), so someone without access is told so instead of seeing errors — plus
+  `POST /api/customer360/handoff/redeem`, which Customer 360 calls for "Open Customer 360" and which requires the
+  Host's `remote.customer360.profile:View` (or `remote.customer360:View`) instead, for the same person who asked, once.
+- **Open Customer 360** (`POST /api/cases/{id}/customer360/handoff`, `POST /api/customer360/handoff`) is offered and
+  allowed only to people holding that same Customer 360 permission.
+- **Case Listing in Customer 360** reads `POST /api/cases/for-customer` with the person's own token: `cases:View`
+  plus their team access decide which cases appear.
 - **Host administrators** (`administrator: "true"`) get everything except `pii.unmask`, which must be granted by name.
 - **Team membership grants no permission.** It only decides which cases a permitted person can see
   (`HostIntegration/CaseAccess.cs`).

@@ -30,7 +30,7 @@ public class CustomerService : ICustomerService
         (await _slaClock.GetAsync(ct)).Enrich(cases);
     }
 
-    public async Task<CustomerDetailDto?> GetCustomer360Async(Guid id, CancellationToken ct = default)
+    public async Task<CustomerDetailDto?> GetCustomerDetailAsync(Guid id, CancellationToken ct = default)
     {
         var detail = await _customerRepository.GetCustomerDetailAsync(id, ct);
         if (detail != null) await EnrichSlaAsync(detail.Cases, ct);
@@ -204,31 +204,4 @@ public class CustomerService : ICustomerService
         return hits;
     }
 
-    public async Task<PagedResponseDto<CustomerSummaryDto>> GetPaginatedCustomersAsync(
-        string? search,
-        string? preferredLanguage,
-        string? branch,
-        int page,
-        int pageSize,
-        string? sortBy = null,
-        bool descending = false,
-        CancellationToken ct = default)
-    {
-        var result = await _customerRepository.GetPaginatedAsync(search, preferredLanguage, branch, page, pageSize, sortBy, descending, ct);
-        foreach (var item in result.Items)
-        {
-            await _piiMasking.MaskCustomerSummaryAsync(item, ct);
-        }
-        return result;
-    }
-
-    public async Task<PagedResponseDto<CaseSummaryDto>> GetCustomerCasesAsync(Guid customerId, int page, int pageSize, CancellationToken ct = default)
-    {
-        var paged = await _customerRepository.GetCustomerCasesAsync(customerId, page, pageSize, ct);
-        await EnrichSlaAsync(paged.Items, ct);
-        return paged;
-    }
-
-    public Task<PagedResponseDto<CustomerTimelineItemDto>> GetCustomerTimelineAsync(Guid customerId, int page, int pageSize, CancellationToken ct = default) =>
-        _customerRepository.GetCustomerTimelineAsync(customerId, Math.Max(1, page), Math.Clamp(pageSize, 1, 100), ct);
 }

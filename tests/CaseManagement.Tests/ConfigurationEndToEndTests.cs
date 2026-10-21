@@ -355,7 +355,7 @@ public class ConfigurationEndToEndTests
                 "WHERE \"ModuleKey\" = 'Customer360' AND \"ApiField\" IN ('idValue', 'phoneNumber')");
         });
 
-        var url = $"/api/customers/{env.Customer}/360";
+        var url = $"/api/customers/{env.Customer}";
 
         var (_, asAgent) = await env.Send(HttpMethod.Get, url, env.Agent);
         Assert.EndsWith("5432", asAgent.GetProperty("passport").GetString());
@@ -366,11 +366,6 @@ public class ConfigurationEndToEndTests
 
         var (_, asAdmin) = await env.Send(HttpMethod.Get, url, env.Admin);                      // Admin holds pii.unmask
         Assert.Equal("A98765432", asAdmin.GetProperty("passport").GetString());
-
-        // The paged list never hands out raw values either, and there is no "return everything" back door.
-        var (_, page) = await env.Send(HttpMethod.Get, "/api/customers?pageSize=5000", env.Agent);
-        Assert.True(page.TryGetProperty("items", out var items));
-        Assert.DoesNotContain("A98765432", items.GetRawText());
 
         // Creating a customer answers with the same masked view.
         var (_, created) = await env.Send(HttpMethod.Post, "/api/customers", env.Agent, CustomerBody(b => { b["idValue"] = "900303-14-1234"; b["dateOfBirth"] = "1990-03-03T00:00:00Z"; b["phoneNumber"] = "+60 198-765 4321"; b["email"] = "c@example.test"; }));
@@ -678,29 +673,24 @@ public class ConfigurationEndToEndTests
     }
 
     [PostgresFact]
-    public async Task CustomerTimeline_ShowsCaseMilestonesAndCustomerVisibleMessages_NotInternalWork()
+    public async Task TheOldLocalCustomerDirectory_AndItsCaseAndTimelinePages_AreGone()
     {
+        // Existing customers come from Customer 360; Case Management keeps only customers created through New
+        // Customer, read one at a time. The directory, the per-customer case list and the timeline were the old
+        // stand-in for Customer 360 and must not come back as a way to browse local customer records.
         await using var env = await Env.StartAsync();
-        var (_, created) = await env.Send(HttpMethod.Post, "/api/cases", env.Admin, env.CaseBody());
-        var caseId = created.GetProperty("id").GetGuid();
 
-        // An internal working note and an internal escalation reminder must not appear; resolving the case does.
-        await env.Send(HttpMethod.Post, $"/api/cases/{caseId}/notes", env.Admin, new { message = "internal: customer sounded stressed" });
-        await env.Send(HttpMethod.Put, $"/api/cases/{caseId}/resolve", env.Admin, new { disposition = "Resolved on First Contact", resolutionNote = "done" });
+        var (list, _) = await env.Send(HttpMethod.Get, "/api/customers?pageSize=5000", env.Admin);
+        var (cases, _) = await env.Send(HttpMethod.Get, $"/api/customers/{env.Customer}/cases", env.Admin);
+        var (timeline, _) = await env.Send(HttpMethod.Get, $"/api/customers/{env.Customer}/timeline", env.Admin);
+        var (old360, _) = await env.Send(HttpMethod.Get, $"/api/customers/{env.Customer}/360", env.Admin);
+        var (one, _) = await env.Send(HttpMethod.Get, $"/api/customers/{env.Customer}", env.Admin);
 
-        var (status, page) = await env.Send(HttpMethod.Get, $"/api/customers/{env.Customer}/timeline?page=1&pageSize=20", env.Admin);
-        Assert.Equal(HttpStatusCode.OK, status);
-
-        var types = page.GetProperty("items").EnumerateArray().Select(i => i.GetProperty("type").GetString()).ToList();
-        Assert.Contains("Create", types);
-        Assert.Contains("Resolve", types);
-        Assert.DoesNotContain(page.GetProperty("items").EnumerateArray(), i => i.GetProperty("message").GetString()!.Contains("stressed"));
-        Assert.All(page.GetProperty("items").EnumerateArray(), i => Assert.Equal(caseId, i.GetProperty("caseId").GetGuid()));
-
-        // A customer with no cases has an empty (not failing) timeline.
-        var (emptyStatus, empty) = await env.Send(HttpMethod.Get, $"/api/customers/{Guid.NewGuid()}/timeline", env.Admin);
-        Assert.Equal(HttpStatusCode.OK, emptyStatus);
-        Assert.Equal(0, empty.GetProperty("totalCount").GetInt32());
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, list);
+        Assert.Equal(HttpStatusCode.NotFound, cases);
+        Assert.Equal(HttpStatusCode.NotFound, timeline);
+        Assert.Equal(HttpStatusCode.NotFound, old360);
+        Assert.Equal(HttpStatusCode.OK, one);
     }
 
     // ------------------------------------------------------------------------------------------- scale & refactor guards

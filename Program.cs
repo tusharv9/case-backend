@@ -195,10 +195,25 @@ if (string.IsNullOrWhiteSpace(connectionString))
         "Ensure 'ConnectionStrings__DefaultConnection' is configured in your environment variables or appsettings.json.");
 }
 
+// Keep a few connections open and alive (the same rule the platform services use, AuthService WithWarmPool): every new
+// connection to the database costs a TLS handshake of several round trips, which the dashboard's side-by-side reads would
+// otherwise pay on the first load after a quiet spell. Database:MinimumPoolSize overrides the default of 10.
+{
+    var npgsql = new Npgsql.NpgsqlConnectionStringBuilder(connectionString);
+    var minimum = builder.Configuration.GetValue<int?>("Database:MinimumPoolSize") ?? 10;
+    if (npgsql.MinPoolSize == 0 && minimum > 0) npgsql.MinPoolSize = Math.Min(minimum, npgsql.MaxPoolSize);
+    if (npgsql.KeepAlive == 0) npgsql.KeepAlive = 30;
+    connectionString = npgsql.ConnectionString;
+}
+
 builder.Services.AddSingleton<IConfigCache, ConfigCache>();
 builder.Services.AddSingleton<ConfigChangeInterceptor>();
 
-builder.Services.AddDbContextPool<AppDbContext>((serviceProvider, options) =>
+// Pooled contexts, handed out two ways: one per request (the usual AppDbContext), and on demand through
+// IDbContextFactory for work that runs independent queries side by side (the dashboard), each on its own
+// connection — every round trip to the database costs the same however small the query, so waiting for ten of
+// them one after another is what made the dashboard slow.
+builder.Services.AddPooledDbContextFactory<AppDbContext>((serviceProvider, options) =>
     options
         .UseNpgsql(connectionString, npgsqlOptions =>
         {
@@ -207,6 +222,7 @@ builder.Services.AddDbContextPool<AppDbContext>((serviceProvider, options) =>
         })
         // Any save of configuration data clears the configuration cache (see ConfigChangeInterceptor).
         .AddInterceptors(serviceProvider.GetRequiredService<ConfigChangeInterceptor>()));
+builder.Services.AddScoped(sp => sp.GetRequiredService<IDbContextFactory<AppDbContext>>().CreateDbContext());
 
 // ---- Host App integration -------------------------------------------------------------------
 // The Host App owns login, tokens and users. Everything identity-related sits behind the ports in
@@ -327,6 +343,8 @@ builder.Services.Configure<CaseManagement.Api.Services.Customer360.CustomerIdent
 builder.Services.AddSingleton<CaseManagement.Api.Services.Customer360.ICustomerIdentifierProtector, CaseManagement.Api.Services.Customer360.CustomerIdentifierProtector>();
 builder.Services.AddHttpClient<CaseManagement.Api.Services.Customer360.Customer360Client>();
 builder.Services.AddScoped<CaseManagement.Api.Services.Customer360.ICustomer360CustomerService, CaseManagement.Api.Services.Customer360.Customer360CustomerService>();
+builder.Services.AddScoped<CaseManagement.Api.Services.Customer360.ICaseCustomerNames, CaseManagement.Api.Services.Customer360.CaseCustomerNames>();
+builder.Services.AddSingleton<CaseManagement.Api.Services.Customer360.ICustomer360Handoff, CaseManagement.Api.Services.Customer360.Customer360Handoff>();
 builder.Services.AddScoped<ICustomerService, CustomerService>();
 builder.Services.AddScoped<IDepartmentService, DepartmentService>();
 builder.Services.AddScoped<INotificationService, NotificationService>();

@@ -19,33 +19,15 @@ public class CustomersController : BaseApiController
         _piiMasking = piiMasking;
     }
 
-    [HttpGet]
-    public async Task<IActionResult> GetAllCustomers(
-        [FromQuery] string? search,
-        [FromQuery] string? preferredLanguage,
-        [FromQuery] string? branch,
-        [FromQuery] int page = 1,
-        [FromQuery] int pageSize = 20,
-        [FromQuery] string? sortBy = null,
-        [FromQuery] string sortDir = "asc",
-        CancellationToken ct = default)
+    /// <summary>
+    /// One customer created through New Customer, masked. Case Management keeps no customer directory and no
+    /// customer profile page: existing customers are looked up in Customer 360, and only the customers deliberately
+    /// created here (kept locally for now) are read from this table.
+    /// </summary>
+    [HttpGet("{id:guid}")]
+    public async Task<IActionResult> GetCustomer(Guid id, CancellationToken ct)
     {
-        // Sorting is limited to a fixed list of columns: anything else is an error rather than a silent fallback.
-        if (!string.IsNullOrWhiteSpace(sortBy) && !Repositories.CustomerRepository.SortableColumns.Contains(sortBy, StringComparer.OrdinalIgnoreCase))
-            return BadRequest(new { error = $"Cannot sort by '{sortBy}'. Sortable columns: {string.Join(", ", Repositories.CustomerRepository.SortableColumns)}." });
-
-        // Always paginated (and masked per row by the service). The former "return every customer"
-        // branch handed out raw entities for large page sizes, so it is gone; page size is capped.
-        page = Math.Max(1, page);
-        pageSize = Math.Clamp(pageSize, 1, 100);
-        var paged = await _customerService.GetPaginatedCustomersAsync(search, preferredLanguage, branch, page, pageSize, sortBy, string.Equals(sortDir, "desc", StringComparison.OrdinalIgnoreCase), ct);
-        return Ok(paged);
-    }
-
-    [HttpGet("{id:guid}/360")]
-    public async Task<IActionResult> GetCustomer360(Guid id, CancellationToken ct)
-    {
-        var customer = await _customerService.GetCustomer360Async(id, ct);
+        var customer = await _customerService.GetCustomerDetailAsync(id, ct);
         if (customer == null) return NotFound();
 
         // Apply PII masking based on FieldConfiguration metadata
@@ -53,22 +35,6 @@ public class CustomersController : BaseApiController
 
         return Ok(customer);
     }
-
-    [HttpGet("{id:guid}/cases")]
-    public async Task<IActionResult> GetCustomerCases(
-        Guid id,
-        [FromQuery] int page = 1,
-        [FromQuery] int pageSize = 10,
-        CancellationToken ct = default)
-    {
-        var result = await _customerService.GetCustomerCasesAsync(id, Math.Max(1, page), Math.Clamp(pageSize, 1, 100), ct);
-        return Ok(result);
-    }
-
-    /// <summary>Everything that happened across the customer's cases (milestones and customer-visible messages), newest first.</summary>
-    [HttpGet("{id:guid}/timeline")]
-    public async Task<IActionResult> GetCustomerTimeline(Guid id, [FromQuery] int page = 1, [FromQuery] int pageSize = 20, CancellationToken ct = default)
-        => Ok(await _customerService.GetCustomerTimelineAsync(id, page, pageSize, ct));
 
     [HttpPost]
     public async Task<IActionResult> CreateCustomer([FromBody] CreateCustomerDto dto)
@@ -78,9 +44,9 @@ public class CustomersController : BaseApiController
             var newCustomer = await _customerService.CreateCustomerAsync(dto, CurrentUserId);
 
             // Respond with the same masked view everyone gets, never the stored entity.
-            var detail = await _customerService.GetCustomer360Async(newCustomer.Id);
+            var detail = await _customerService.GetCustomerDetailAsync(newCustomer.Id);
             if (detail != null) await _piiMasking.MaskCustomerDetailAsync(detail);
-            return CreatedAtAction(nameof(GetCustomer360), new { id = newCustomer.Id }, detail);
+            return CreatedAtAction(nameof(GetCustomer), new { id = newCustomer.Id }, detail);
         }
         catch (InvalidOperationException ex)
         {
