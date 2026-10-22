@@ -257,15 +257,7 @@ else
     if (string.IsNullOrWhiteSpace(jwt.Issuer)) jwt.Issuer = platformJwt["Issuer"];
     if (string.IsNullOrWhiteSpace(jwt.Audience)) jwt.Audience = platformJwt["Audience"];
 
-    if (string.IsNullOrWhiteSpace(jwt.Authority) && string.IsNullOrWhiteSpace(jwt.MetadataAddress)
-        && string.IsNullOrWhiteSpace(jwt.SigningKeyPublic) && string.IsNullOrWhiteSpace(jwt.SymmetricKey))
-        throw new InvalidOperationException("HostIntegration:Mode=Host needs a way to validate Host tokens: set Jwt:SigningKeyPublic (the OmniConnect platform public key), HostIntegration:Jwt:Authority (or MetadataAddress), or SymmetricKey for local testing.");
-    if (string.IsNullOrWhiteSpace(jwt.Issuer) && string.IsNullOrWhiteSpace(jwt.Authority) && string.IsNullOrWhiteSpace(jwt.MetadataAddress))
-        throw new InvalidOperationException("HostIntegration:Jwt:Issuer (or Jwt:Issuer) is required in Host mode, so tokens from another issuer are rejected.");
-    if (string.IsNullOrWhiteSpace(jwt.Audience))
-        throw new InvalidOperationException("HostIntegration:Jwt:Audience is required in Host mode, so tokens issued for other applications are rejected.");
-    if (!string.IsNullOrWhiteSpace(jwt.SymmetricKey) && Encoding.UTF8.GetByteCount(jwt.SymmetricKey) < 32)
-        throw new InvalidOperationException("HostIntegration:Jwt:SymmetricKey must be at least 32 bytes.");
+    HostJwtValidation.EnsureConfigured(jwt, builder.Environment.IsDevelopment());
 
     builder.Services
         .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -276,27 +268,7 @@ else
             if (!string.IsNullOrWhiteSpace(jwt.Authority)) o.Authority = jwt.Authority;
             if (!string.IsNullOrWhiteSpace(jwt.MetadataAddress)) o.MetadataAddress = jwt.MetadataAddress;
 
-            o.TokenValidationParameters = new TokenValidationParameters
-            {
-                ValidateIssuer = !string.IsNullOrWhiteSpace(jwt.Issuer) || !string.IsNullOrWhiteSpace(jwt.Authority),
-                ValidIssuer = jwt.Issuer,
-                ValidateAudience = true,
-                ValidAudience = jwt.Audience,
-                ValidateLifetime = true,
-                RequireExpirationTime = true,
-                ValidateIssuerSigningKey = true,
-                ClockSkew = TimeSpan.FromSeconds(jwt.ClockSkewSeconds),
-                NameClaimType = hostOptions.Claims.Name,
-                RoleClaimType = hostOptions.Claims.Roles,
-                IssuerSigningKey = !string.IsNullOrWhiteSpace(jwt.SigningKeyPublic)
-                    ? new RsaSecurityKey(RsaPublicKey.Load(jwt.SigningKeyPublic))
-                    : string.IsNullOrWhiteSpace(jwt.SymmetricKey)
-                        ? null
-                        : new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwt.SymmetricKey))
-            };
-            // An RS256 platform key accepts RS256 only — never an HMAC token signed with the public key's bytes.
-            if (!string.IsNullOrWhiteSpace(jwt.SigningKeyPublic))
-                o.TokenValidationParameters.ValidAlgorithms = new[] { SecurityAlgorithms.RsaSha256 };
+            o.TokenValidationParameters = HostJwtValidation.Parameters(jwt, hostOptions.Claims);
         });
 
     builder.Services.AddScoped<IHostIdentityResolver, JwtIdentityResolver>();
