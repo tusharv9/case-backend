@@ -85,11 +85,11 @@ builder.Services.AddControllers(options =>
         options.JsonSerializerOptions.ReferenceHandler = ReferenceHandler.IgnoreCycles;
     });
 
-// Dynamic port support for Render / container platforms
-var port = Environment.GetEnvironmentVariable("PORT");
-if (!string.IsNullOrEmpty(port))
+// An explicit port for Case only (CASE_PORT). An inherited PORT meant for another app is ignored.
+var caseListenUrl = PortBinding.ListenUrl(builder.Configuration);
+if (caseListenUrl != null)
 {
-    builder.WebHost.UseUrls($"http://*:{port}");
+    builder.WebHost.UseUrls(caseListenUrl);
 }
 
 // CORS allow-list is driven purely by configuration ("AllowedOrigins", comma separated) so each
