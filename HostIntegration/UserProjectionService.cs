@@ -215,30 +215,52 @@ public sealed class HostUserSyncWorker : BackgroundService
         _logger = logger;
     }
 
+    /// <summary>The first retry after a failure waits this long; each further failure doubles it, up to the sync interval.</summary>
+    public static readonly TimeSpan FirstRetryDelay = TimeSpan.FromSeconds(30);
+
+    /// <summary>How the worker waits between runs. Replaceable so tests need not sleep.</summary>
+    public Func<TimeSpan, CancellationToken, Task> Delay { get; set; } = Task.Delay;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         try
         {
             await _dbState.WhenReady.WaitAsync(stoppingToken);
             var interval = TimeSpan.FromMinutes(Math.Max(1, _options.Value.Directory.SyncIntervalMinutes));
+            var failures = 0;
 
             while (!stoppingToken.IsCancellationRequested)
             {
+                TimeSpan wait;
                 try
                 {
                     using var scope = _scopes.CreateScope();
                     var (created, updated, deactivated) = await scope.ServiceProvider
                         .GetRequiredService<IHostUserSynchronizer>().SyncAllAsync(stoppingToken);
                     _logger.LogInformation("Host user sync: {Created} created, {Updated} updated, {Deactivated} deactivated.", created, updated, deactivated);
+                    failures = 0;
+                    wait = interval;
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException)
+                // Only shutdown ends the loop. An HttpClient timeout is a TaskCanceledException too, and it
+                // used to escape here and stop the worker for good, silently.
+                catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
                 {
-                    _logger.LogError(ex, "Host user sync failed; will retry in {Interval}.", interval);
+                    failures++;
+                    wait = RetryDelay(failures, interval);
+                    _logger.LogError(ex, "Host user sync failed ({Failures} in a row); will retry in {Wait}.", failures, wait);
                 }
 
-                await Task.Delay(interval, stoppingToken);
+                await Delay(wait, stoppingToken);
             }
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
+    }
+
+    /// <summary>30 s, 60 s, 120 s ... capped at the sync interval.</summary>
+    public static TimeSpan RetryDelay(int consecutiveFailures, TimeSpan interval)
+    {
+        var doublings = Math.Min(Math.Max(0, consecutiveFailures - 1), 20);
+        var delay = TimeSpan.FromTicks(FirstRetryDelay.Ticks * (1L << doublings));
+        return delay < interval ? delay : interval;
     }
 }
