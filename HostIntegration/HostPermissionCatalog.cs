@@ -40,7 +40,7 @@ public static class HostPermissionCatalog
     [
         new("cases", "Cases", 10,
         [
-            new("View", "View cases", "See cases, their history and the dashboard.", Permissions.CasesRead),
+            new("View", "View cases", "See cases, their history and reports.", Permissions.CasesRead),
             new("Create", "Create cases", "Open new cases.", Permissions.CasesCreate),
             new("Edit", "Work cases", "Update status, add notes, escalate, add co-workers, link cases and attach files; assign within the person's own teams.", Permissions.CasesWrite),
             new("Transfer", "Transfer cases", "Move a case to another team.", Permissions.CasesTransfer),
@@ -49,8 +49,9 @@ public static class HostPermissionCatalog
             new("ViewAll", "See every team's cases", "See all cases, not only those of the person's own teams and assignments.", Permissions.CasesViewAll),
         ],
         [
-            new("dashboard", "Case Dashboard", "PieChart", 10, "View"),
-            new("case-management", "Cases", "Briefcase", 20, "View"),
+            // Reports sits below the operational Cases row. Its key stays "dashboard" so existing links and pages.js keep working.
+            new("case-management", "Cases", "Briefcase", 10, "View"),
+            new("dashboard", "Reports", "PieChart", 20, "View"),
         ]),
         new("customers", "Case Customers", 20,
         [

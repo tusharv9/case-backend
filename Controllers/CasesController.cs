@@ -34,22 +34,30 @@ public class CasesController : BaseApiController
         [FromQuery] string? search,
         [FromQuery] string? priority,
         [FromQuery] string? channel,
+        [FromServices] ICaseAccessScope access,
         CancellationToken ct)
     {
         // Always paged. (A call without a page used to return every case in the database — hundreds of MB at scale.)
         var paged = await _caseService.GetPaginatedBoardCasesAsync(
             status, Math.Max(1, page ?? 1), Math.Clamp(pageSize ?? 30, 1, 100),
-            departmentId, caseType, search, priority, channel, ct);
+            CrossTeamFilter(access, departmentId), caseType, search, priority, channel, ct);
         return Ok(paged);
     }
 
     /// <summary>Open / SLA-breached counts for the Case Management header.</summary>
     [HttpGet("stats")]
-    public async Task<IActionResult> GetCaseStats([FromQuery] Guid? departmentId, CancellationToken ct)
+    public async Task<IActionResult> GetCaseStats([FromQuery] Guid? departmentId, [FromServices] ICaseAccessScope access, CancellationToken ct)
     {
-        var stats = await _caseService.GetCaseStatsAsync(departmentId, ct);
+        var stats = await _caseService.GetCaseStatsAsync(CrossTeamFilter(access, departmentId), ct);
         return Ok(stats);
     }
+
+    /// <summary>
+    /// Filtering by team is for people who see every team's cases (cases:ViewAll, administrators). Everyone else already sees
+    /// only their own teams' and assignments' cases, and a team filter is ignored for them — it could only narrow that set in
+    /// ways the screen does not offer them.
+    /// </summary>
+    internal static Guid? CrossTeamFilter(ICaseAccessScope access, Guid? departmentId) => access.SeesAll ? departmentId : null;
 
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> GetCaseDetails(Guid id, CancellationToken ct)
@@ -64,7 +72,10 @@ public class CasesController : BaseApiController
     public async Task<IActionResult> CreateCase([FromBody] CreateCaseDto dto)
     {
         var newCase = await _caseService.CreateCaseAsync(dto, CurrentUserId);
-        return CreatedAtAction(nameof(GetCaseDetails), new { id = newCase.Id }, newCase);
+        // The same shape every screen reads a case in (owner, team and creator named, SLA verdict, masking applied), so the
+        // list can show the new case straight away. A Customer 360 customer's name is not stored; the form that chose them has it.
+        var created = await _caseService.GetCaseDetailsAsync(newCase.Id);
+        return CreatedAtAction(nameof(GetCaseDetails), new { id = newCase.Id }, (object?)created ?? new { id = newCase.Id, caseNumber = newCase.CaseNumber });
     }
 
     [HttpPut("{id:guid}/status")]
@@ -126,7 +137,16 @@ public class CasesController : BaseApiController
     [HttpPost("{id:guid}/attachments")]
     [Microsoft.AspNetCore.RateLimiting.EnableRateLimiting("uploads")]
     public async Task<IActionResult> UploadAttachment(Guid id, [FromForm] Microsoft.AspNetCore.Http.IFormFile file, [FromForm] string? note, CancellationToken ct)
-        => Ok(await _attachments.UploadAttachmentAsync(id, file, note, CurrentUserId, ct));
+    {
+        var attachment = await _attachments.UploadAttachmentAsync(id, file, note, CurrentUserId, ct);
+        await _caseService.MarkWorkStartedAsync(id, CurrentUserId, "a file was attached");
+        return Ok(attachment);
+    }
+
+    /// <summary>Who an @mention on this case can name: its owner, co-workers, watchers and team lead (not the caller).</summary>
+    [HttpGet("{id:guid}/mentionable-users")]
+    public async Task<IActionResult> GetMentionableUsers(Guid id, [FromServices] IMentionService mentions, CancellationToken ct)
+        => Ok(await mentions.GetMentionableAsync(id, CurrentUserId, ct));
 
     /// <summary>
     /// Always a DOWNLOAD, never rendered by the browser: the type comes from the verified extension, the browser is told not to
@@ -169,6 +189,7 @@ public class CasesController : BaseApiController
     public async Task<IActionResult> AddCollaborationNote(Guid id, [FromBody] AddCollaborationNoteDto dto)
     {
         var activity = await _collaboration.AddCollaborationNoteAsync(id, dto?.Content ?? string.Empty, CurrentUserId);
+        await _caseService.MarkWorkStartedAsync(id, CurrentUserId, "a collaboration note was added");
         return Ok(activity);
     }
 

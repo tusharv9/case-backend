@@ -9,7 +9,7 @@ Setup → Applications.
 
 | Feature | Host capability | Internal permission | Backend enforcement | Frontend |
 |---|---|---|---|---|
-| View cases, dashboard, search | `cases:View` | `cases.read` | `CasesController`, `DashboardController`, `SearchController` | sidebar rows (Host nav) |
+| View cases, reports (incl. CSV export), search | `cases:View` | `cases.read` | `CasesController`, `DashboardController`, `SearchController` | sidebar rows (Host nav) |
 | See every team's cases | `cases:ViewAll` | `cases.viewall` | `ICaseAccessScope` on every list; `[CaseAccess]` 404 on single cases | — |
 | Create cases | `cases:Create` | `cases.create` | `POST /api/cases` | New Case button, Quick Actions |
 | Work cases (status, notes, escalate, co-workers, links, attachments, assign within own teams) | `cases:Edit` | `cases.write` | `CasesController` writes | Assign, Escalate, Link, status menu |

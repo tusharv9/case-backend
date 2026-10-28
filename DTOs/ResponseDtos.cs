@@ -77,6 +77,9 @@ public class CaseSummaryDto
 
 public class CaseDetailDto : CaseSummaryDto
 {
+    /// <summary>Who opened the case (the user on its Create event) — never inferred from the owner, who may be someone else.</summary>
+    public Guid? CreatedByUserId { get; set; }
+    public string? CreatedByName { get; set; }
     public List<CustomerCustomAttributeDto> CustomAttributes { get; set; } = new();
     public string Description { get; set; } = string.Empty;
     public string? Disposition { get; set; }

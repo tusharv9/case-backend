@@ -50,7 +50,8 @@ public class CustomersController : BaseApiController
         }
         catch (InvalidOperationException ex)
         {
-            return Conflict(new { message = ex.Message });
+            // "error" is what every screen reads (services/api.js); "message" is kept for older callers.
+            return Conflict(new { error = ex.Message, message = ex.Message });
         }
     }
 

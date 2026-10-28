@@ -321,3 +321,29 @@ public sealed class AssignmentNotAllowedException : Exception
 
     public AssignmentNotAllowedException(string reasonCode, string message) : base(message) => ReasonCode = reasonCode;
 }
+
+/// <summary>
+/// A new case was routed to a team with nobody able to take it, and the creator has not chosen what to do. Nothing was
+/// created: the caller is told which team, why, and whether its supervisor (the team lead) could hold the case instead,
+/// so the person can cancel or explicitly ask for supervisor assignment (<see cref="DTOs.UnstaffedTeamActions"/>).
+/// </summary>
+public sealed class TeamUnavailableException : Exception
+{
+    public const string Code = "TeamUnavailable";
+
+    public Guid TeamId { get; }
+    public string TeamName { get; }
+    public string Reason { get; }
+    public Guid? SupervisorId { get; }
+    public string? SupervisorName { get; }
+
+    public TeamUnavailableException(Guid teamId, string teamName, string reason, Guid? supervisorId, string? supervisorName, string message)
+        : base(message)
+    {
+        TeamId = teamId;
+        TeamName = teamName;
+        Reason = reason;
+        SupervisorId = supervisorId;
+        SupervisorName = supervisorName;
+    }
+}

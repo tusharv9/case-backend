@@ -43,6 +43,22 @@ public class CreateCaseDto
 
     /// <summary>Values of administrator-defined custom fields on the Create Case form, keyed by field key.</summary>
     public Dictionary<string, string>? CustomAttributes { get; set; }
+
+    /// <summary>
+    /// What to do when the case's team has nobody able to take it (<see cref="UnstaffedTeamActions"/>). Left empty, such a
+    /// case is not created and the caller is asked (409 TeamUnavailable). Only applies when routing finds no agent.
+    /// </summary>
+    public string? UnstaffedTeamAction { get; set; }
+}
+
+/// <summary>The creator's explicit choice when a new case's team has no available member.</summary>
+public static class UnstaffedTeamActions
+{
+    /// <summary>The team's supervisor (its team lead) holds the case until an agent can take it.</summary>
+    public const string AssignToSupervisor = "AssignToSupervisor";
+
+    public static bool IsAssignToSupervisor(string? value) =>
+        string.Equals(value?.Trim(), AssignToSupervisor, StringComparison.OrdinalIgnoreCase);
 }
 
 public class UpdateCaseStatusDto

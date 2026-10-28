@@ -15,6 +15,8 @@ public interface ICaseService
     /// <summary>Hands the case to another person after checking the caller may do so and the person is eligible (403 / 422 otherwise).</summary>
     Task AssignCaseAsync(Guid caseId, AssignCaseDto dto, bool callerMayAssignAnyCase = false);
     Task AddNoteAsync(Guid caseId, AddNoteDto dto);
+    /// <summary>Open → In Progress on the first real work done on the case (see CaseService.StartWorkIfOpenAsync). True when it moved.</summary>
+    Task<bool> MarkWorkStartedAsync(Guid caseId, Guid userId, string action);
     Task TransferDepartmentAsync(Guid caseId, TransferDepartmentDto dto, Guid transferredByUserId, bool callerMayAssignAnyCase = false);
 
     /// <summary>Everyone who could hold the case under the manual-assignment policy, with live status, workload and why not.</summary>

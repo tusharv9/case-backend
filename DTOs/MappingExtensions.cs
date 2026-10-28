@@ -100,6 +100,8 @@ ExternalCustomerId = c.ExternalCustomerId,
             ParentCaseNumber = c.ParentCase != null ? c.ParentCase.CaseNumber : null,
             SubcaseType = c.SubcaseType ?? "Original",
             EscalationLevel = c.EscalationLevel,
+            CreatedByUserId = c.Events.Where(e => e.EventType == EventType.Create).OrderBy(e => e.CreatedAt).Select(e => (Guid?)e.UserId).FirstOrDefault(),
+            CreatedByName = c.Events.Where(e => e.EventType == EventType.Create).OrderBy(e => e.CreatedAt).Select(e => e.User != null ? e.User.Name : null).FirstOrDefault(),
             Description = c.Description,
             CustomAttributes = c.CustomAttributes
                 .OrderBy(a => a.FieldKey)

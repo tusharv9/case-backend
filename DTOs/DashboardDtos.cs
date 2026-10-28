@@ -112,6 +112,13 @@ public class SeverityCaseCount
 /// <summary>Everything the dashboard's filter bar offers, in one response (it used to take seven requests).</summary>
 public class DashboardFiltersDto
 {
+    /// <summary>
+    /// Whether the caller may filter by team: only someone who sees every team's cases (cases:ViewAll, administrators).
+    /// Everyone else's reports already cover just their own teams and assignments, and <see cref="Departments"/> is empty.
+    /// </summary>
+    public bool CanFilterByDepartment { get; set; }
+    /// <summary>The caller's reports cover every team (true) or only their own teams and assignments (false).</summary>
+    public bool SeesAllTeams { get; set; }
     public List<NamedOptionDto> Departments { get; set; } = new();
     public List<FilterOptionDto> CaseTypes { get; set; } = new();
     public List<FilterOptionDto> Statuses { get; set; } = new();

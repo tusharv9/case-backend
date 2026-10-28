@@ -51,7 +51,14 @@ public class ExceptionMiddleware
             context.Response.ContentType = "application/json";
 
             var correlationId = context.Items[CorrelationIdMiddleware.Header]?.ToString() ?? string.Empty;
-            object body = ex is AssignmentNotAllowedException notAllowed
+            object body = ex is TeamUnavailableException unavailable
+                ? new
+                {
+                    error = message, correlationId, code = TeamUnavailableException.Code,
+                    teamId = unavailable.TeamId, teamName = unavailable.TeamName, reason = unavailable.Reason,
+                    supervisor = unavailable.SupervisorId.HasValue ? new { id = unavailable.SupervisorId, name = unavailable.SupervisorName } : null,
+                }
+                : ex is AssignmentNotAllowedException notAllowed
                 ? new { error = message, correlationId, code = notAllowed.ReasonCode }
                 : errors == null
                     ? new { error = message, correlationId }
@@ -76,6 +83,8 @@ public class ExceptionMiddleware
         Customer360SearchException => (400, ex.Message, null),
         CaseManagement.Api.HostIntegration.HostUsersException hu => (hu.Status, ex.Message, null),
         AssignmentNotAllowedException => (422, ex.Message, null),
+        // Nothing was created; the creator decides (cancel, or assign to the team's supervisor).
+        TeamUnavailableException => (409, ex.Message, null),
         FileNotFoundException => (404, ex.Message, null),
 
         // Nobody is signed in (the permission filters answer 403 themselves for "signed in but not allowed").

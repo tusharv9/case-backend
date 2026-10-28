@@ -222,7 +222,11 @@ public class CaseService : ICaseService
         await ExecuteInTransactionAsync(async () =>
         {
             if (_routingEngine != null)
+            {
                 routingDecision = await _routingEngine.RouteAndAssignCaseAsync(newCase, customer);
+                // Decided under the team lock, so an agent freed up since the creator was asked is still preferred.
+                if (routingDecision.HeldReason != null) ApplyUnstaffedTeamChoice(routingDecision, dto.UnstaffedTeamAction);
+            }
 
             await _caseRepository.AddAsync(newCase);
             await _caseRepository.AddEventAsync(new CaseEvent
@@ -246,7 +250,7 @@ public class CaseService : ICaseService
             }
         });
 
-        // No agent could take it: the team lead holds it, and says so — a case must never sit unnoticed.
+        // No agent could take it and the creator chose the team's supervisor: tell them why it is theirs.
         if (routingDecision?.HeldReason != null && routingDecision.HeldByUserId.HasValue)
         {
             try
@@ -255,7 +259,7 @@ public class CaseService : ICaseService
                     routingDecision.HeldByUserId.Value,
                     "CASE_UNASSIGNED",
                     "Case needs an agent",
-                    $"Case {newCase.CaseNumber} ({newCase.Title}) could not be assigned automatically. {routingDecision.HeldReason}",
+                    $"Case {newCase.CaseNumber} ({newCase.Title}) was assigned to you as the team's supervisor because no agent could take it. {routingDecision.HeldReason}",
                     newCase.Id,
                     newCase.CaseNumber,
                     "High",
@@ -285,6 +289,32 @@ public class CaseService : ICaseService
         }
 
         return newCase;
+    }
+
+    /// <summary>
+    /// Routing found nobody in the case's team who can take it. The case is never quietly handed to its creator or held by
+    /// the lead: unless the creator explicitly asked for the team's supervisor (and there is an active one), creation stops
+    /// here — inside the transaction, so nothing is stored — and the caller is told what the choice is.
+    /// </summary>
+    private static void ApplyUnstaffedTeamChoice(RoutingDecisionResult decision, string? action)
+    {
+        var team = string.IsNullOrWhiteSpace(decision.TargetDepartmentName) ? "The team" : decision.TargetDepartmentName;
+        var supervisorId = decision.HeldByUserId;
+        var supervisorName = supervisorId.HasValue ? decision.AssignedUserName : null;
+
+        if (!UnstaffedTeamActions.IsAssignToSupervisor(action))
+        {
+            throw new TeamUnavailableException(decision.TargetDepartmentId, team, decision.HeldReason!, supervisorId, supervisorName,
+                supervisorId.HasValue
+                    ? $"'{team}' has no available member to take this case. The case was not created: cancel, or assign it to the team's supervisor, {supervisorName}."
+                    : $"'{team}' has no available member to take this case and no active supervisor to hold it. The case was not created.");
+        }
+        if (!supervisorId.HasValue)
+        {
+            throw new TeamUnavailableException(decision.TargetDepartmentId, team, decision.HeldReason!, null, null,
+                $"'{team}' has no active supervisor, so the case cannot be assigned to one. The case was not created.");
+        }
+        decision.RoutingLogMessage += " Assigned to the supervisor at the creator's explicit choice.";
     }
 
     public async Task<CaseDetailDto?> GetCaseDetailsAsync(Guid caseId, CancellationToken ct = default)
@@ -572,6 +602,45 @@ public class CaseService : ICaseService
         };
     }
 
+    /// <summary>
+    /// The first piece of real work on an Open case — a note, a customer reply, a collaboration note, an attachment —
+    /// moves it to In Progress, exactly as choosing In Progress by hand would (it counts as the first response). Viewing a
+    /// case, or routing work such as assigning, transferring or escalating it, is not work on it. Only an Open case moves:
+    /// every other status (Waiting on Customer, Escalated, Resolved, Closed, Cancelled) is left alone, so a repeated action
+    /// never transitions twice. Returns the status event to store with the action, or null when nothing changed.
+    /// </summary>
+    private async Task<CaseEvent?> StartWorkIfOpenAsync(Case c, Guid userId, string action)
+    {
+        if (c.Status != CaseStatus.Open) return null;
+
+        var at = DateTime.UtcNow;
+        c.Status = CaseStatus.InProgress;
+        (await GetClockAsync()).RecordFirstResponse(c, at);
+        return new CaseEvent
+        {
+            CaseId = c.Id,
+            EventType = EventType.Note,
+            Message = $"Status changed to In Progress (first action: {action}).",
+            CreatedAt = at.AddMilliseconds(1),   // after the action it follows on the timeline
+            UserId = userId
+        };
+    }
+
+    public async Task<bool> MarkWorkStartedAsync(Guid caseId, Guid userId, string action)
+    {
+        var existingCase = await _caseRepository.GetByIdAsync(caseId);
+        if (existingCase == null) throw new KeyNotFoundException("Case not found");
+
+        var started = await StartWorkIfOpenAsync(existingCase, userId, action);
+        if (started == null) return false;
+        await ExecuteInTransactionAsync(async () =>
+        {
+            await _caseRepository.UpdateAsync(existingCase);
+            await _caseRepository.AddEventAsync(started);
+        });
+        return true;
+    }
+
     public async Task AddNoteAsync(Guid caseId, AddNoteDto dto)
     {
         var existingCase = await _caseRepository.GetByIdAsync(caseId);
@@ -585,7 +654,16 @@ public class CaseService : ICaseService
             CreatedAt = DateTime.UtcNow,
             UserId = dto.UserId
         };
-        await _caseRepository.AddEventAsync(caseEvent);
+        var started = await StartWorkIfOpenAsync(existingCase, dto.UserId, "a note was added");
+        await ExecuteInTransactionAsync(async () =>
+        {
+            await _caseRepository.AddEventAsync(caseEvent);
+            if (started != null)
+            {
+                await _caseRepository.UpdateAsync(existingCase);
+                await _caseRepository.AddEventAsync(started);
+            }
+        });
 
         try
         {
@@ -1105,13 +1183,18 @@ public class CaseService : ICaseService
             CreatedAt = DateTime.UtcNow,
             UserId = userId
         };
-        await _caseRepository.AddEventAsync(caseEvent);
 
-        if (!dto.IsInternal && !existingCase.FirstResponseActualAt.HasValue)
-        {
+        var started = await StartWorkIfOpenAsync(existingCase, userId, dto.IsInternal ? "an internal note was added" : "the customer was replied to");
+        var recordsFirstResponse = !dto.IsInternal && !existingCase.FirstResponseActualAt.HasValue;
+        if (recordsFirstResponse)
             (await GetClockAsync()).RecordFirstResponse(existingCase, DateTime.UtcNow);
-            await _caseRepository.UpdateAsync(existingCase);
-        }
+
+        await ExecuteInTransactionAsync(async () =>
+        {
+            await _caseRepository.AddEventAsync(caseEvent);
+            if (started != null || recordsFirstResponse) await _caseRepository.UpdateAsync(existingCase);
+            if (started != null) await _caseRepository.AddEventAsync(started);
+        });
 
         // Internal notes notify the colleagues they @mention (one shared implementation).
         if (dto.IsInternal)

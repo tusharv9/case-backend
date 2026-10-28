@@ -13,7 +13,17 @@ public interface IDashboardService
 {
     Task<DashboardSummaryDto> GetSummaryAsync(DashboardQuery query, CancellationToken ct = default);
     Task<DashboardFiltersDto> GetFiltersAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Every case the report's filters select (not one page of them), as CSV — within what the caller may see, with the
+    /// customer's name masked by the same rules as on screen. <paramref name="slaStatus"/> and <paramref name="search"/>
+    /// are the Reports page's SLA and search filters.
+    /// </summary>
+    Task<ReportExport> ExportAsync(DashboardQuery query, string? slaStatus, string? search, CancellationToken ct = default);
 }
+
+/// <param name="GeneratedOn">Today in the business time zone, for the file name.</param>
+public sealed record ReportExport(string Csv, int RowCount, bool Truncated, DateTime GeneratedOn);
 
 /// <summary>
 /// The dashboard. All counts are database aggregates; SLA health is the SLA clock's verdict (the same one the board, the worker and
@@ -33,16 +43,24 @@ public class DashboardService : IDashboardService
 
     private readonly HostIntegration.ICaseAccessScope? _caseAccess;
     private readonly IDbContextFactory<AppDbContext>? _contexts;
+    private readonly Customer360.ICaseCustomerNames? _customerNames;
+
+    /// <summary>The most rows one export holds; past it the file says it was cut short (narrow the filters instead).</summary>
+    public const int MaxExportRows = 50_000;
 
     /// <param name="caseAccess">Every figure and list covers only the cases the caller may see.</param>
-    public DashboardService(AppDbContext context, ISlaClockProvider slaClock, IPiiMaskingService? piiMasking = null, HostIntegration.ICaseAccessScope? caseAccess = null, IDbContextFactory<AppDbContext>? contexts = null)
+    public DashboardService(AppDbContext context, ISlaClockProvider slaClock, IPiiMaskingService? piiMasking = null, HostIntegration.ICaseAccessScope? caseAccess = null, IDbContextFactory<AppDbContext>? contexts = null, Customer360.ICaseCustomerNames? customerNames = null)
     {
         _caseAccess = caseAccess;
         _contexts = contexts;
+        _customerNames = customerNames;
         _context = context;
         _slaClock = slaClock;
         _piiMasking = piiMasking;
     }
+
+    /// <summary>The caller sees every team's cases (no scope = background work or a unit test, which is unrestricted).</summary>
+    private bool SeesAllTeams => _caseAccess?.SeesAll ?? true;
 
     // ------------------------------------------------------------------------------------------------ filters
 
@@ -56,10 +74,13 @@ public class DashboardService : IDashboardService
                 .ToListAsync(ct);
 
         var ranges = (await Lookup("DASHBOARD_DATE_RANGE")).Where(r => SupportedDateRanges.Contains(r.Value, StringComparer.OrdinalIgnoreCase)).ToList();
+        var seesAll = SeesAllTeams;
 
         return new DashboardFiltersDto
         {
-            Departments = await _context.Departments.AsNoTracking().Where(d => d.IsActive).OrderBy(d => d.Name)
+            CanFilterByDepartment = seesAll,
+            SeesAllTeams = seesAll,
+            Departments = !seesAll ? new List<NamedOptionDto>() : await _context.Departments.AsNoTracking().Where(d => d.IsActive).OrderBy(d => d.Name)
                 .Select(d => new NamedOptionDto { Id = d.Id, Name = d.Name }).ToListAsync(ct),
             CaseTypes = await _context.CaseTypeConfigs.AsNoTracking().Where(t => t.IsActive).OrderBy(t => t.DisplayOrder)
                 .Select(t => new FilterOptionDto { Value = t.Name, Label = t.Name }).ToListAsync(ct),
@@ -79,34 +100,43 @@ public class DashboardService : IDashboardService
     /// context — and the page waits for the slowest one rather than the sum of all of them. Without a context factory
     /// (a test that builds the service by hand) the same reads simply run one after another on the request's context.
     /// </summary>
+    private static CaseStatus? ParseStatus(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        if (!Enum.TryParse<CaseStatus>(value.Replace(" ", "").Replace("_", ""), true, out var status))
+            throw new ArgumentException($"'{value}' is not a case status.");
+        return status;
+    }
+
+    /// <summary>
+    /// The cases one set of report filters selects, always within what the caller may see. Filtering by team is reserved
+    /// for people who see every team (see <see cref="DashboardFiltersDto.CanFilterByDepartment"/>); anyone else's team
+    /// filter is ignored rather than allowed to suggest a cross-team view they do not have.
+    /// </summary>
+    private IQueryable<Case> ApplyFilters(AppDbContext db, DashboardQuery q, CaseStatus? statusFilter, DateTime? start, DateTime? end)
+    {
+        IQueryable<Case> query = _caseAccess?.Apply(db.Cases.AsNoTracking(), db) ?? db.Cases.AsNoTracking();
+        if (q.DepartmentId.HasValue && SeesAllTeams) query = query.Where(c => c.DepartmentId == q.DepartmentId.Value);
+        if (!string.IsNullOrWhiteSpace(q.CaseType)) query = query.Where(c => c.CaseType == q.CaseType);
+        if (!string.IsNullOrWhiteSpace(q.Severity)) query = query.Where(c => c.Severity == q.Severity);
+        if (q.OwnerId.HasValue) query = query.Where(c => c.OwnerId == q.OwnerId.Value);
+        if (statusFilter.HasValue) query = query.Where(c => c.Status == statusFilter.Value);
+        if (start.HasValue) query = query.Where(c => c.CreatedAt >= start.Value);
+        if (end.HasValue) query = query.Where(c => c.CreatedAt < end.Value);
+        return query;
+    }
+
     public async Task<DashboardSummaryDto> GetSummaryAsync(DashboardQuery q, CancellationToken ct = default)
     {
         var now = DateTime.UtcNow;
         var clock = await _slaClock.GetAsync(ct);
         var zone = clock.Calendar.TimeZone;
 
-        CaseStatus? statusFilter = null;
-        if (!string.IsNullOrWhiteSpace(q.Status))
-        {
-            if (!Enum.TryParse<CaseStatus>(q.Status.Replace(" ", "").Replace("_", ""), true, out var status))
-                throw new ArgumentException($"'{q.Status}' is not a case status.");
-            statusFilter = status;
-        }
+        var statusFilter = ParseStatus(q.Status);
         var (start, end) = DateRange(q.DateRange, q.CustomStartDate, q.CustomEndDate, now, zone);
 
         // The filtered cases, built on whichever context runs the read (a query cannot mix context instances).
-        IQueryable<Case> Filtered(AppDbContext db)
-        {
-            IQueryable<Case> query = _caseAccess?.Apply(db.Cases.AsNoTracking(), db) ?? db.Cases.AsNoTracking();
-            if (q.DepartmentId.HasValue) query = query.Where(c => c.DepartmentId == q.DepartmentId.Value);
-            if (!string.IsNullOrWhiteSpace(q.CaseType)) query = query.Where(c => c.CaseType == q.CaseType);
-            if (!string.IsNullOrWhiteSpace(q.Severity)) query = query.Where(c => c.Severity == q.Severity);
-            if (q.OwnerId.HasValue) query = query.Where(c => c.OwnerId == q.OwnerId.Value);
-            if (statusFilter.HasValue) query = query.Where(c => c.Status == statusFilter.Value);
-            if (start.HasValue) query = query.Where(c => c.CreatedAt >= start.Value);
-            if (end.HasValue) query = query.Where(c => c.CreatedAt < end.Value);
-            return query;
-        }
+        IQueryable<Case> Filtered(AppDbContext db) => ApplyFilters(db, q, statusFilter, start, end);
 
         var emptyGuid = Guid.Empty;
         var finished = new[] { CaseStatus.Resolved, CaseStatus.Closed, CaseStatus.Cancelled };
@@ -334,6 +364,135 @@ public class DashboardService : IDashboardService
         CustomerSource = c.CustomerSource, CustomerType = c.CustomerType, CreatedAt = c.CreatedAt,
         Sla = c.Sla, IsHolidayToday = c.IsHolidayToday, HolidayName = c.HolidayName
     };
+
+    // ------------------------------------------------------------------------------------------------ export
+
+    /// <summary>One exported case. Public and with a settable <see cref="CustomerName"/> so the masking service treats it as a case.</summary>
+    public sealed class ReportRow
+    {
+        public Guid Id { get; init; }
+        public string CaseNumber { get; init; } = string.Empty;
+        public string Title { get; init; } = string.Empty;
+        public string CaseType { get; init; } = string.Empty;
+        public string? Subcategory { get; init; }
+        public CaseStatus Status { get; init; }
+        public string Severity { get; init; } = string.Empty;
+        public string DepartmentName { get; init; } = string.Empty;
+        public string OwnerName { get; init; } = string.Empty;
+        public string CustomerName { get; set; } = string.Empty;
+        public string CustomerSource { get; init; } = CustomerSources.Local;
+        public string? CustomerType { get; init; }
+        public string? Channel { get; init; }
+        public int EscalationLevel { get; init; }
+        public DateTime CreatedAt { get; init; }
+        public DateTime? ResolvedAt { get; init; }
+        public string? SlaOutcome { get; init; }
+        public SlaInputs Inputs { get; init; } = null!;
+    }
+
+    private static readonly string[] ExportHeader =
+    {
+        "Case Number", "Title", "Case Type", "Sub-category", "Status", "Priority", "Team", "Owner",
+        "Customer", "Customer Source", "Channel", "SLA Status", "Escalation Level", "Created", "Resolved",
+    };
+
+    public async Task<ReportExport> ExportAsync(DashboardQuery q, string? slaStatus, string? search, CancellationToken ct = default)
+    {
+        var now = DateTime.UtcNow;
+        var clock = await _slaClock.GetAsync(ct);
+        var zone = clock.Calendar.TimeZone;
+        var (start, end) = DateRange(q.DateRange, q.CustomStartDate, q.CustomEndDate, now, zone);
+
+        var query = ApplyFilters(_context, q, ParseStatus(q.Status), start, end);
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            // The same fields the Reports page's search box looks at.
+            var pattern = Repositories.SqlSearchPattern.Contains(search.Trim());
+            query = query.Where(c => EF.Functions.ILike(c.CaseNumber, pattern) || EF.Functions.ILike(c.Title, pattern)
+                || (c.Customer != null && EF.Functions.ILike(c.Customer.FullName, pattern))
+                || (c.Owner != null && EF.Functions.ILike(c.Owner.Name, pattern)));
+        }
+
+        var rows = await query
+            .OrderByDescending(c => c.CreatedAt)
+            .Take(MaxExportRows + 1)
+            .Select(c => new ReportRow
+            {
+                Id = c.Id, CaseNumber = c.CaseNumber, Title = c.Title, CaseType = c.CaseType, Subcategory = c.Subcategory,
+                Status = c.Status, Severity = c.Severity,
+                DepartmentName = c.Department != null ? c.Department.Name : string.Empty,
+                OwnerName = c.Owner != null ? c.Owner.Name : string.Empty,
+                CustomerName = c.Customer != null ? c.Customer.FullName : string.Empty,
+                CustomerSource = c.CustomerSource, CustomerType = c.CustomerType,
+                Channel = c.SourceChannel ?? c.CommunicationChannel,
+                EscalationLevel = c.EscalationLevel, CreatedAt = c.CreatedAt, ResolvedAt = c.ResolvedAt, SlaOutcome = c.SlaOutcome,
+                Inputs = new SlaInputs
+                {
+                    Status = c.Status, StartUtc = c.SlaStartTime, ResolvedAt = c.ResolvedAt, PausedAt = c.SlaPausedAt, PausedMinutes = c.SlaTotalPausedMinutes,
+                    FirstResponseTargetMinutes = c.FirstResponseTargetMinutes, InternalTargetMinutes = c.InternalResolutionTargetMinutes,
+                    ExternalTargetMinutes = c.ExternalResolutionTargetMinutes, FirstResponseActualAt = c.FirstResponseActualAt, FirstResponseStatus = c.FirstResponseStatus,
+                },
+            })
+            .ToListAsync(ct);
+
+        var truncated = rows.Count > MaxExportRows;
+        if (truncated) rows.RemoveAt(rows.Count - 1);
+
+        // A finished case keeps the outcome it was resolved with; an open one is judged now by the one SLA clock.
+        var finished = new[] { CaseStatus.Resolved, CaseStatus.Closed, CaseStatus.Cancelled };
+        SlaHealth Health(ReportRow r) => finished.Contains(r.Status)
+            ? (r.SlaOutcome == "Breached" ? SlaHealth.Breached : SlaHealth.Met)
+            : clock.Evaluate(r.Inputs, now).Health;
+        var health = rows.ToDictionary(r => r.Id, Health);
+
+        if (!string.IsNullOrWhiteSpace(slaStatus) && !slaStatus.Equals("all", StringComparison.OrdinalIgnoreCase))
+        {
+            // As the page reads its SLA filter: "healthy" is anything not approaching or breached.
+            var wanted = slaStatus.Trim().ToLowerInvariant();
+            rows = rows.Where(r => health[r.Id] switch
+            {
+                SlaHealth.Breached => wanted == "breached",
+                SlaHealth.Approaching => wanted == "approaching",
+                _ => wanted == "healthy",
+            }).ToList();
+        }
+
+        // Masked like every other list; then Customer 360 customers are named live (that service masks what it fills).
+        if (_piiMasking != null) await _piiMasking.MaskCasesAsync(rows, ct);
+        if (_customerNames != null)
+            await _customerNames.FillAsync(rows, r => r.Id, r => r.CustomerSource, r => r.CustomerName, (r, n) => r.CustomerName = n, ct);
+
+        string Local(DateTime? utc) => utc.HasValue
+            ? TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(utc.Value, DateTimeKind.Utc), zone).ToString("yyyy-MM-dd HH:mm")
+            : string.Empty;
+        static string StatusLabel(CaseStatus s) => s switch
+        {
+            CaseStatus.InProgress => "In Progress",
+            CaseStatus.WaitingOnCustomer => "Waiting on Customer",
+            _ => s.ToString(),
+        };
+        static string SlaLabel(SlaHealth h) => h switch
+        {
+            SlaHealth.Healthy => "Within SLA",
+            SlaHealth.Approaching => "Approaching SLA",
+            SlaHealth.Breached => "SLA Breached",
+            SlaHealth.Paused => "Paused",
+            _ => "Met",
+        };
+        string CustomerLabel(ReportRow r) =>
+            !string.IsNullOrWhiteSpace(r.CustomerName) ? r.CustomerName
+            : r.CustomerSource == CustomerSources.Customer360 ? $"Customer 360 · {(r.CustomerType == CustomerTypes.NonIndividual ? "Non-Individual" : "Individual")}"
+            : string.Empty;
+
+        var csv = ReportCsv.Build(ExportHeader, rows.Select(r => (IReadOnlyList<string?>)new[]
+        {
+            r.CaseNumber, r.Title, r.CaseType, r.Subcategory, StatusLabel(r.Status), r.Severity, r.DepartmentName, r.OwnerName,
+            CustomerLabel(r), r.CustomerSource == CustomerSources.Customer360 ? "Customer 360" : "Case Management", r.Channel,
+            SlaLabel(health[r.Id]), r.EscalationLevel.ToString(), Local(r.CreatedAt), Local(r.ResolvedAt),
+        }));
+
+        return new ReportExport(csv, rows.Count, truncated, TimeZoneInfo.ConvertTimeFromUtc(now, zone).Date);
+    }
 
     // ------------------------------------------------------------------------------------------------ date ranges
 

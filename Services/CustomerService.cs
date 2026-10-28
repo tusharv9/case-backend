@@ -113,7 +113,7 @@ public class CustomerService : ICustomerService
         if (!string.IsNullOrWhiteSpace(nricVal))
         {
             if (await _customerRepository.ExistsByNricAsync(nricVal))
-                throw new InvalidOperationException("A customer already exists with this NRIC number.");
+                throw new FieldValidationException(new[] { new FieldError("idValue", "A customer already exists with this NRIC number. Choose them with Existing Customer instead.") });
         }
 
         // The phone number is checked against ITS country's rules (Countries table) and stored as "+<dial> <digits>".
@@ -131,7 +131,7 @@ public class CustomerService : ICustomerService
 
             // Duplicate Phone Number check (on the stored, normalised form — what the unique index compares)
             if (await _customerRepository.ExistsByPhoneAsync(normalizedPhone))
-                throw new InvalidOperationException("A customer already exists with this phone number.");
+                throw new FieldValidationException(new[] { new FieldError("phoneNumber", "A customer already exists with this phone number. Choose them with Existing Customer instead.") });
         }
 
         var newCustomer = new Customer
@@ -181,10 +181,11 @@ public class CustomerService : ICustomerService
         catch (Microsoft.EntityFrameworkCore.DbUpdateException ex)
         {
             var msg = ex.InnerException?.Message ?? ex.Message;
+            // The same request sent twice at once: the unique index catches the second, which is reported on its field.
             if (msg.Contains("IX_Customers_NRIC", StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("A customer already exists with this NRIC number.");
+                throw new FieldValidationException(new[] { new FieldError("idValue", "A customer already exists with this NRIC number. Choose them with Existing Customer instead.") });
             if (msg.Contains("IX_Customers_PhoneNumber", StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("A customer already exists with this phone number.");
+                throw new FieldValidationException(new[] { new FieldError("phoneNumber", "A customer already exists with this phone number. Choose them with Existing Customer instead.") });
             throw;
         }
     }
