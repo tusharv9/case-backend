@@ -4,6 +4,7 @@ using CaseManagement.Api.Data;
 using CaseManagement.Api.Models;
 using CaseManagement.Api.DTOs;
 using CaseManagement.Api.HostIntegration;
+using CaseManagement.Api.Services;
 using CaseManagement.Api.Services.Customer360;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
@@ -14,12 +15,15 @@ public class CaseRepository : ICaseRepository
 
     private readonly ICustomerIdentifierProtector? _identifiers;
     private readonly ICaseAccessScope? _access;
+    private readonly IDbContextFactory<AppDbContext>? _contexts;
 
     /// <param name="identifiers">Lets a search for a whole NRIC / BRN find Customer 360 cases (by the identifier hash).</param>
     /// <param name="access">Limits every list to the cases the caller may see (none given: unrestricted, e.g. background work).</param>
-    public CaseRepository(AppDbContext context, ICustomerIdentifierProtector? identifiers = null, ICaseAccessScope? access = null)
+    /// <param name="contexts">Lets a list page count its rows and read them side by side (two round trips at once, not in turn).</param>
+    public CaseRepository(AppDbContext context, ICustomerIdentifierProtector? identifiers = null, ICaseAccessScope? access = null, IDbContextFactory<AppDbContext>? contexts = null)
     {
         _context = context;
+        _contexts = contexts;
         _identifiers = identifiers;
         _access = access;
     }
@@ -173,106 +177,113 @@ public class CaseRepository : ICaseRepository
         string? channel = null,
         CancellationToken ct = default)
     {
-        var query = Visible(_context.Cases.AsNoTracking());
-
-        if (departmentId.HasValue)
-        {
-            query = query.Where(c => c.DepartmentId == departmentId.Value);
-        }
-
-        if (!string.IsNullOrWhiteSpace(caseType) && !caseType.Equals("all", StringComparison.OrdinalIgnoreCase))
-        {
-            string norm = caseType.Trim();
-            if (norm.Equals("Enquiry", StringComparison.OrdinalIgnoreCase)) norm = "Inquiry";
-
-            bool isInquiry = norm.Equals("Inquiry", StringComparison.OrdinalIgnoreCase);
-            bool isService = norm.Equals("Service", StringComparison.OrdinalIgnoreCase);
-            bool isComplaint = norm.Equals("Complaint", StringComparison.OrdinalIgnoreCase);
-
-            query = query.Where(c => 
-                c.CaseType == norm || 
-                (isInquiry && (c.CaseNumber.StartsWith("I-") || c.CaseNumber.StartsWith("E-"))) ||
-                (isService && c.CaseNumber.StartsWith("S-")) ||
-                (isComplaint && c.CaseNumber.StartsWith("C-"))
-            );
-        }
-
-        if (!string.IsNullOrWhiteSpace(status) && !status.Equals("all", StringComparison.OrdinalIgnoreCase))
-        {
-            string normStatus = status.Trim().Replace(" ", "").Replace("_", "");
-            if (Enum.TryParse<CaseStatus>(normStatus, true, out var parsedStatus))
-            {
-                query = query.Where(c => c.Status == parsedStatus);
-            }
-        }
-
-        if (!string.IsNullOrWhiteSpace(priority) && !priority.Equals("all", StringComparison.OrdinalIgnoreCase))
-        {
-            string normPriority = priority.Trim().ToLower();
-            if (normPriority == "critical")
-            {
-                query = query.Where(c => c.Severity == "Critical" || c.Severity == "Bad");
-            }
-            else if (normPriority == "high")
-            {
-                query = query.Where(c => c.Severity == "High" || c.Severity == "Warn");
-            }
-            else if (normPriority == "medium")
-            {
-                query = query.Where(c => c.Severity == "Medium" || c.Severity == "Info");
-            }
-            else if (normPriority == "low")
-            {
-                query = query.Where(c => c.Severity == "Low" || c.Severity == "Ok");
-            }
-            else
-            {
-                query = query.Where(c => c.Severity.ToLower() == normPriority);
-            }
-        }
-
-        if (!string.IsNullOrWhiteSpace(channel) && !channel.Equals("all", StringComparison.OrdinalIgnoreCase))
-        {
-            string normChannel = channel.Trim().ToLower();
-            if (normChannel == "voice" || normChannel == "phone")
-            {
-                query = query.Where(c => 
-                    (c.SourceChannel != null && (c.SourceChannel.ToLower() == "voice" || c.SourceChannel.ToLower() == "phone")) ||
-                    (c.SourceChannel == null && (c.CommunicationChannel.ToLower() == "voice" || c.CommunicationChannel.ToLower() == "phone")));
-            }
-            else
-            {
-                query = query.Where(c => 
-                    (c.SourceChannel != null && c.SourceChannel.ToLower() == normChannel) ||
-                    (c.SourceChannel == null && c.CommunicationChannel.ToLower() == normChannel));
-            }
-        }
-
-        if (!string.IsNullOrWhiteSpace(search))
-        {
-            string pattern = SqlSearchPattern.Contains(search.Trim());
-            // A Customer 360 customer's identifier is stored encrypted: a whole NRIC / BRN matches its hash exactly.
-            var identifierHashes = CustomerIdentifierSearch.Hashes(_identifiers, search);
-            query = query.Where(c => EF.Functions.ILike(c.CaseNumber, pattern)
-                || EF.Functions.ILike(c.Title, pattern)
-                || (c.Customer != null && EF.Functions.ILike(c.Customer.FullName, pattern))
-                || (c.CustomerLookupKeyHash != null && identifierHashes.Contains(c.CustomerLookupKeyHash))
-                || (c.Owner != null && EF.Functions.ILike(c.Owner.Name, pattern))
-                || c.ChildRelations.Any(cr => EF.Functions.ILike(cr.ChildId, pattern)));
-        }
-
-        int totalCount = await query.CountAsync(ct);
-
         if (page < 1) page = 1;
         if (pageSize < 1) pageSize = 30;
         if (pageSize > 100) pageSize = 100;
 
-        var items = await query
-            .OrderByDescending(c => c.CreatedAt)
-            .Skip((page - 1) * pageSize)
-            .Take(pageSize)
-            .MapToCaseSummary()
-            .ToListAsync(ct);
+        // The filtered cases, built for whichever context runs the query: the count and the page are independent reads.
+        IQueryable<Case> Build(AppDbContext db)
+        {
+            var query = _access?.Apply(db.Cases.AsNoTracking(), db) ?? db.Cases.AsNoTracking();
+
+            if (departmentId.HasValue)
+            {
+                query = query.Where(c => c.DepartmentId == departmentId.Value);
+            }
+
+            if (!string.IsNullOrWhiteSpace(caseType) && !caseType.Equals("all", StringComparison.OrdinalIgnoreCase))
+            {
+                string norm = caseType.Trim();
+                if (norm.Equals("Enquiry", StringComparison.OrdinalIgnoreCase)) norm = "Inquiry";
+
+                bool isInquiry = norm.Equals("Inquiry", StringComparison.OrdinalIgnoreCase);
+                bool isService = norm.Equals("Service", StringComparison.OrdinalIgnoreCase);
+                bool isComplaint = norm.Equals("Complaint", StringComparison.OrdinalIgnoreCase);
+
+                query = query.Where(c => 
+                    c.CaseType == norm || 
+                    (isInquiry && (c.CaseNumber.StartsWith("I-") || c.CaseNumber.StartsWith("E-"))) ||
+                    (isService && c.CaseNumber.StartsWith("S-")) ||
+                    (isComplaint && c.CaseNumber.StartsWith("C-"))
+                );
+            }
+
+            if (!string.IsNullOrWhiteSpace(status) && !status.Equals("all", StringComparison.OrdinalIgnoreCase))
+            {
+                string normStatus = status.Trim().Replace(" ", "").Replace("_", "");
+                if (Enum.TryParse<CaseStatus>(normStatus, true, out var parsedStatus))
+                {
+                    query = query.Where(c => c.Status == parsedStatus);
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(priority) && !priority.Equals("all", StringComparison.OrdinalIgnoreCase))
+            {
+                string normPriority = priority.Trim().ToLower();
+                if (normPriority == "critical")
+                {
+                    query = query.Where(c => c.Severity == "Critical" || c.Severity == "Bad");
+                }
+                else if (normPriority == "high")
+                {
+                    query = query.Where(c => c.Severity == "High" || c.Severity == "Warn");
+                }
+                else if (normPriority == "medium")
+                {
+                    query = query.Where(c => c.Severity == "Medium" || c.Severity == "Info");
+                }
+                else if (normPriority == "low")
+                {
+                    query = query.Where(c => c.Severity == "Low" || c.Severity == "Ok");
+                }
+                else
+                {
+                    query = query.Where(c => c.Severity.ToLower() == normPriority);
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(channel) && !channel.Equals("all", StringComparison.OrdinalIgnoreCase))
+            {
+                string normChannel = channel.Trim().ToLower();
+                if (normChannel == "voice" || normChannel == "phone")
+                {
+                    query = query.Where(c => 
+                        (c.SourceChannel != null && (c.SourceChannel.ToLower() == "voice" || c.SourceChannel.ToLower() == "phone")) ||
+                        (c.SourceChannel == null && (c.CommunicationChannel.ToLower() == "voice" || c.CommunicationChannel.ToLower() == "phone")));
+                }
+                else
+                {
+                    query = query.Where(c => 
+                        (c.SourceChannel != null && c.SourceChannel.ToLower() == normChannel) ||
+                        (c.SourceChannel == null && c.CommunicationChannel.ToLower() == normChannel));
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                string pattern = SqlSearchPattern.Contains(search.Trim());
+                // A Customer 360 customer's identifier is stored encrypted: a whole NRIC / BRN matches its hash exactly.
+                var identifierHashes = CustomerIdentifierSearch.Hashes(_identifiers, search);
+                query = query.Where(c => EF.Functions.ILike(c.CaseNumber, pattern)
+                    || EF.Functions.ILike(c.Title, pattern)
+                    || (c.Customer != null && EF.Functions.ILike(c.Customer.FullName, pattern))
+                    || (c.CustomerLookupKeyHash != null && identifierHashes.Contains(c.CustomerLookupKeyHash))
+                    || (c.Owner != null && EF.Functions.ILike(c.Owner.Name, pattern))
+                    || c.ChildRelations.Any(cr => EF.Functions.ILike(cr.ChildId, pattern)));
+            }
+            return query;
+        }
+
+        int totalCount = 0;
+        List<CaseSummaryDto> items = new();
+        await ParallelReads.RunAsync(_contexts, _context, ct,
+            async db => totalCount = await Build(db).CountAsync(ct),
+            async db => items = await Build(db)
+                .OrderByDescending(c => c.CreatedAt)
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
+                .MapToCaseSummary()
+                .ToListAsync(ct));
 
         return new PagedResponseDto<CaseSummaryDto>
         {
@@ -443,22 +454,21 @@ public class CaseRepository : ICaseRepository
             .FirstOrDefaultAsync(cr => cr.ChildId == childId, ct);
     }
 
-    public async Task<PagedResponseDto<CaseAuditEventDto>> GetCaseAuditEventsAsync(int page = 1, int pageSize = 10, string? actionType = null, string? search = null, CancellationToken ct = default)
+    /// <summary>
+    /// The audit trail filtered by <paramref name="filter"/>. Someone who sees only some cases sees only those cases' history —
+    /// not other teams', nor configuration changes — whatever the filter asks for.
+    /// </summary>
+    private IQueryable<CaseEvent> AuditQuery(AuditFilter filter, AppDbContext? on = null)
     {
-        if (page < 1) page = 1;
-        if (pageSize < 1) pageSize = 10;
-        if (pageSize > 100) pageSize = 100;
-
-        var query = _context.CaseEvents
-            .AsNoTracking()
-            .AsQueryable();
-        // Someone who sees only some cases sees only those cases' history (not other teams', nor configuration changes).
+        var db = on ?? _context;
+        var query = db.CaseEvents.AsNoTracking().AsQueryable();
         if (_access is { SeesAll: false })
         {
-            var visible = Visible(_context.Cases.AsNoTracking()).Select(c => c.Id);
+            var visible = _access.Apply(db.Cases.AsNoTracking(), db).Select(c => c.Id);
             query = query.Where(ce => ce.CaseId != null && visible.Contains(ce.CaseId.Value));
         }
 
+        var actionType = filter.ActionType;
         if (!string.IsNullOrWhiteSpace(actionType) && !string.Equals(actionType, "all", StringComparison.OrdinalIgnoreCase))
         {
             var cleanAction = actionType.Trim().ToLower();
@@ -468,21 +478,55 @@ public class CaseRepository : ICaseRepository
                 query = query.Where(ce => ce.EventType == EventType.Assign);
             else if (cleanAction.Contains("note"))
                 query = query.Where(ce => ce.EventType == EventType.Note);
+            else if (cleanAction.Contains("comment") || cleanAction.Contains("reply"))
+                query = query.Where(ce => ce.EventType == EventType.Comment);
             else if (cleanAction.Contains("escalat"))
                 query = query.Where(ce => ce.EventType == EventType.Escalate);
             else if (cleanAction.Contains("resolv"))
                 query = query.Where(ce => ce.EventType == EventType.Resolve);
+            else if (cleanAction.Contains("close"))
+                query = query.Where(ce => ce.EventType == EventType.Close);
             else if (cleanAction.Contains("transfer"))
                 query = query.Where(ce => ce.EventType == EventType.Transfer);
             else if (cleanAction.Contains("cowork"))
                 query = query.Where(ce => ce.EventType == EventType.Cowork);
+            else if (cleanAction.Contains("status"))
+                // A status change is recorded as a note whose text says so (or, when the agent wrote one, the agent's note).
+                query = query.Where(ce => ce.CaseId != null && ce.ActionType == null && ce.Message.ToLower().StartsWith("status changed"));
+            else if (cleanAction == "view" || cleanAction.Contains("viewed"))
+                query = query.Where(ce => ce.EventType == EventType.View);
+            else if (cleanAction.Contains("nudge"))
+                query = query.Where(ce => ce.ActionType == "NUDGE");
+            else if (cleanAction.Contains("team"))
+                query = query.Where(ce => ce.Module == "Teams" || ce.Module == "Departments");
             else if (cleanAction.Contains("config"))
-                query = query.Where(ce => ce.Module == "Configurable Settings" || ce.ActionType != null);
+                query = query.Where(ce => ce.Module == "Configurable Settings" || (ce.ActionType != null && ce.ActionType != "NUDGE" && ce.Module != "Teams" && ce.Module != "Departments"));
         }
 
-        if (!string.IsNullOrWhiteSpace(search))
+        // "Done by this person" never includes what a background worker recorded under their name.
+        if (filter.ActorId.HasValue) query = query.Where(ce => ce.UserId == filter.ActorId.Value).Where(AutomaticEvents.IsPersonal);
+        if (filter.ActorIds != null)
         {
-            var s = search.Trim().ToLower();
+            var actors = filter.ActorIds.ToList();
+            query = query.Where(ce => actors.Contains(ce.UserId)).Where(AutomaticEvents.IsPersonal);
+        }
+        if (filter.TeamId.HasValue) query = query.Where(ce => ce.Case != null && ce.Case.DepartmentId == filter.TeamId.Value);
+        if (filter.DepartmentId.HasValue)
+        {
+            var teams = db.TeamDepartments.Where(l => l.OrgDepartmentId == filter.DepartmentId.Value).Select(l => l.TeamId);
+            query = query.Where(ce => ce.Case != null && teams.Contains(ce.Case.DepartmentId));
+        }
+        if (filter.From.HasValue) query = query.Where(ce => ce.CreatedAt >= filter.From.Value);
+        if (filter.To.HasValue) query = query.Where(ce => ce.CreatedAt < filter.To.Value);
+        if (!string.IsNullOrWhiteSpace(filter.CaseNumber))
+        {
+            var number = filter.CaseNumber.Trim().ToLower();
+            query = query.Where(ce => ce.Case != null && ce.Case.CaseNumber.ToLower().Contains(number));
+        }
+
+        if (!string.IsNullOrWhiteSpace(filter.Search))
+        {
+            var s = filter.Search.Trim().ToLower();
             query = query.Where(ce =>
                 (ce.Case != null && ce.Case.CaseNumber != null && ce.Case.CaseNumber.ToLower().Contains(s)) ||
                 (ce.Case != null && ce.Case.Title != null && ce.Case.Title.ToLower().Contains(s)) ||
@@ -493,13 +537,39 @@ public class CaseRepository : ICaseRepository
                 (ce.EntityName != null && ce.EntityName.ToLower().Contains(s))
             );
         }
+        return query;
+    }
 
-        var totalCount = await query.CountAsync(ct);
+    public async Task<PagedResponseDto<CaseAuditEventDto>> GetCaseAuditEventsAsync(AuditFilter filter, int page = 1, int pageSize = 10, CancellationToken ct = default)
+    {
+        if (page < 1) page = 1;
+        if (pageSize < 1) pageSize = 10;
+        if (pageSize > 100) pageSize = 100;
 
+        // The count and the page are independent reads: side by side, each on its own context.
+        var totalCount = 0;
+        var items = new List<CaseAuditEventDto>();
+        await ParallelReads.RunAsync(_contexts, _context, ct,
+            async db => totalCount = await AuditQuery(filter, db).CountAsync(ct),
+            async db => items = await ProjectAsync(AuditQuery(filter, db).OrderByDescending(ce => ce.CreatedAt).ThenByDescending(ce => ce.Id).Skip((page - 1) * pageSize).Take(pageSize), ct));
+
+        return new PagedResponseDto<CaseAuditEventDto>
+        {
+            Items = items,
+            TotalCount = totalCount,
+            Page = page,
+            PageSize = pageSize
+        };
+    }
+
+    public Task<int> CountCaseAuditEventsAsync(AuditFilter filter, CancellationToken ct = default) => AuditQuery(filter).CountAsync(ct);
+
+    public Task<List<CaseAuditEventDto>> GetCaseAuditEventsForExportAsync(AuditFilter filter, int limit, CancellationToken ct = default) =>
+        ProjectAsync(AuditQuery(filter).OrderByDescending(ce => ce.CreatedAt).ThenByDescending(ce => ce.Id).Take(Math.Max(1, limit)), ct);
+
+    private static async Task<List<CaseAuditEventDto>> ProjectAsync(IQueryable<CaseEvent> query, CancellationToken ct)
+    {
         var rows = await query
-            .OrderByDescending(ce => ce.CreatedAt)
-            .Skip((page - 1) * pageSize)
-            .Take(pageSize)
             .Select(ce => new AuditEventRow
             {
                 Id = ce.Id,
@@ -525,25 +595,16 @@ public class CaseRepository : ICaseRepository
             })
             .ToListAsync(ct);
 
-        var items = rows.Select(e => new CaseAuditEventDto
+        return rows.Select(e => AutomaticEvents.IsAutomatic(e.Message) ? e with { ActorName = AutomaticEvents.ActorName, ActorRole = "Background job" } : e)
+            .Select(e => new CaseAuditEventDto
         {
             Id = e.Id,
             Timestamp = e.CreatedAt,
             ActionType = !string.IsNullOrEmpty(e.ActionType) ? e.ActionType : e.EventType.ToString(),
-            ActionLabel = !string.IsNullOrEmpty(e.ActionType) ? $"Config {e.ActionType}" : e.EventType switch
-            {
-                EventType.Create => "Case Created",
-                EventType.Assign => "Case Assigned",
-                EventType.Note => "Note Added",
-                EventType.Cowork => "Coworker Added",
-                EventType.Transfer => "Department Transferred",
-                EventType.Escalate => "Case Escalated",
-                EventType.Resolve => "Case Resolved",
-                _ => "Case Event"
-            },
+            ActionLabel = AuditLabels.For(e.EventType, e.ActionType, e.Module),
             ActorId = e.UserId,
-            ActorName = e.ActorName ?? "System Admin",
-            ActorRole = e.ActorRole ?? "Administrator",
+            ActorName = e.ActorName ?? "System",
+            ActorRole = e.ActorRole ?? string.Empty,
             CaseId = e.CaseId,
             CaseNumber = e.CaseNumber ?? "Configurable Settings",
             CaseTitle = e.CaseTitle ?? "System Settings",
@@ -560,17 +621,9 @@ public class CaseRepository : ICaseRepository
             PreviousStatus = e.OldValue,
             NewStatus = e.NewValue
         }).ToList();
-
-        return new PagedResponseDto<CaseAuditEventDto>
-        {
-            Items = items,
-            TotalCount = totalCount,
-            Page = page,
-            PageSize = pageSize
-        };
     }
 
-    private sealed class AuditEventRow
+    private sealed record AuditEventRow
     {
         public Guid Id { get; init; }
         public DateTime CreatedAt { get; init; }

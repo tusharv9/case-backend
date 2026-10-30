@@ -62,8 +62,14 @@ public class Case : AuditableEntity
     public string? ResolutionNote { get; set; }
     
     // Relationships
+    /// <summary>The TEAM that owns the case (a <see cref="Department"/> row is a team), chosen by routing.</summary>
     public Guid DepartmentId { get; set; }
     public Department Department { get; set; } = null!;
+
+    /// <summary>The business department the case belongs to (what it is about), chosen on Create Case. Routing rules match on
+    /// it to pick the team. Null only for cases opened before departments existed and not yet backfilled.</summary>
+    public Guid? OrgDepartmentId { get; set; }
+    public OrgDepartment? OrgDepartment { get; set; }
     
     // Who the case is for. Exactly one of two shapes (CK_Cases_CustomerReference):
     //  - Local: a customer created in Case Management (New Customer) — CustomerId points at the local record.

@@ -235,6 +235,9 @@ namespace CaseManagement.Api.Migrations
                     b.Property<Guid?>("LinkedSourceCaseId")
                         .HasColumnType("uuid");
 
+                    b.Property<Guid?>("OrgDepartmentId")
+                        .HasColumnType("uuid");
+
                     b.Property<Guid>("OwnerId")
                         .HasColumnType("uuid");
 
@@ -318,6 +321,8 @@ namespace CaseManagement.Api.Migrations
                         .HasDatabaseName("IX_Cases_CustomerLookupKeyHash");
 
                     b.HasIndex("LinkedSourceCaseId");
+
+                    b.HasIndex("OrgDepartmentId");
 
                     b.HasIndex("ParentCaseId");
 
@@ -572,9 +577,10 @@ namespace CaseManagement.Api.Migrations
                     b.HasIndex("CreatedAt")
                         .IsDescending();
 
-                    b.HasIndex("UserId");
-
                     b.HasIndex("CaseId", "CreatedAt")
+                        .IsDescending(false, true);
+
+                    b.HasIndex("UserId", "CreatedAt")
                         .IsDescending(false, true);
 
                     b.ToTable("CaseEvents");
@@ -857,7 +863,7 @@ namespace CaseManagement.Api.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<Guid>("DepartmentId")
+                    b.Property<Guid?>("DepartmentId")
                         .HasColumnType("uuid");
 
                     b.Property<string>("Description")
@@ -873,6 +879,9 @@ namespace CaseManagement.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<Guid?>("OrgDepartmentId")
+                        .HasColumnType("uuid");
+
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -883,6 +892,8 @@ namespace CaseManagement.Api.Migrations
                         .HasFilter("\"Code\" <> ''");
 
                     b.HasIndex("DepartmentId");
+
+                    b.HasIndex("OrgDepartmentId");
 
                     b.ToTable("DepartmentSubCategories");
                 });
@@ -1261,6 +1272,49 @@ namespace CaseManagement.Api.Migrations
                     b.ToTable("Notifications");
                 });
 
+            modelBuilder.Entity("CaseManagement.Api.Models.OrgDepartment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<int>("DisplayOrder")
+                        .HasColumnType("integer");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Code")
+                        .IsUnique();
+
+                    b.HasIndex("Name")
+                        .IsUnique();
+
+                    b.ToTable("OrgDepartments");
+                });
+
             modelBuilder.Entity("CaseManagement.Api.Models.PriorityCategoryMapping", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1496,6 +1550,60 @@ namespace CaseManagement.Api.Migrations
                     b.ToTable("TeamAssignmentPointers");
                 });
 
+            modelBuilder.Entity("CaseManagement.Api.Models.TeamCustomAttribute", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("FieldKey")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("FieldValue")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("TeamId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TeamId", "FieldKey")
+                        .IsUnique();
+
+                    b.ToTable("TeamCustomAttributes");
+                });
+
+            modelBuilder.Entity("CaseManagement.Api.Models.TeamDepartment", b =>
+                {
+                    b.Property<Guid>("TeamId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("OrgDepartmentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<bool>("IsDefault")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime>("LinkedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("TeamId", "OrgDepartmentId");
+
+                    b.HasIndex("OrgDepartmentId");
+
+                    b.HasIndex(new[] { "OrgDepartmentId" }, "IX_TeamDepartments_OneDefaultPerDepartment")
+                        .IsUnique()
+                        .HasFilter("\"IsDefault\"");
+
+                    b.ToTable("TeamDepartments");
+                });
+
             modelBuilder.Entity("CaseManagement.Api.Models.TeamMember", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1540,6 +1648,48 @@ namespace CaseManagement.Api.Migrations
                     b.ToTable("TeamMembers");
                 });
 
+            modelBuilder.Entity("CaseManagement.Api.Models.TeamSettings", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<bool>("AllowDeactivateWithOpenCases")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("AllowLeadInOtherTeams")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("AllowMultipleDepartments")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("AllowMultipleTeamLeads")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("AllowMultipleTeamMembership")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("AllowTeamsWithoutMembers")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("FormFields")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<bool>("RequireTeamLead")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("TeamSettings");
+                });
+
             modelBuilder.Entity("CaseManagement.Api.Models.User", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1579,6 +1729,9 @@ namespace CaseManagement.Api.Migrations
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasColumnType("text");
+
+                    b.Property<DateTime?>("StatusUpdatedAt")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("Team")
                         .HasColumnType("text");
@@ -1672,6 +1825,11 @@ namespace CaseManagement.Api.Migrations
                         .HasForeignKey("LinkedSourceCaseId")
                         .OnDelete(DeleteBehavior.Restrict);
 
+                    b.HasOne("CaseManagement.Api.Models.OrgDepartment", "OrgDepartment")
+                        .WithMany()
+                        .HasForeignKey("OrgDepartmentId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("CaseManagement.Api.Models.User", "Owner")
                         .WithMany()
                         .HasForeignKey("OwnerId")
@@ -1688,6 +1846,8 @@ namespace CaseManagement.Api.Migrations
                     b.Navigation("Department");
 
                     b.Navigation("LinkedSourceCase");
+
+                    b.Navigation("OrgDepartment");
 
                     b.Navigation("Owner");
 
@@ -1839,10 +1999,16 @@ namespace CaseManagement.Api.Migrations
                     b.HasOne("CaseManagement.Api.Models.Department", "Department")
                         .WithMany()
                         .HasForeignKey("DepartmentId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("CaseManagement.Api.Models.OrgDepartment", "OrgDepartment")
+                        .WithMany()
+                        .HasForeignKey("OrgDepartmentId")
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("Department");
+
+                    b.Navigation("OrgDepartment");
                 });
 
             modelBuilder.Entity("CaseManagement.Api.Models.EscalationLevelConfig", b =>
@@ -1964,6 +2130,36 @@ namespace CaseManagement.Api.Migrations
                     b.Navigation("LastAssignedUser");
                 });
 
+            modelBuilder.Entity("CaseManagement.Api.Models.TeamCustomAttribute", b =>
+                {
+                    b.HasOne("CaseManagement.Api.Models.Department", "Team")
+                        .WithMany("CustomAttributes")
+                        .HasForeignKey("TeamId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Team");
+                });
+
+            modelBuilder.Entity("CaseManagement.Api.Models.TeamDepartment", b =>
+                {
+                    b.HasOne("CaseManagement.Api.Models.OrgDepartment", "OrgDepartment")
+                        .WithMany("Teams")
+                        .HasForeignKey("OrgDepartmentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("CaseManagement.Api.Models.Department", "Team")
+                        .WithMany("OrgDepartments")
+                        .HasForeignKey("TeamId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("OrgDepartment");
+
+                    b.Navigation("Team");
+                });
+
             modelBuilder.Entity("CaseManagement.Api.Models.TeamMember", b =>
                 {
                     b.HasOne("CaseManagement.Api.Models.Department", "Department")
@@ -2033,7 +2229,11 @@ namespace CaseManagement.Api.Migrations
                 {
                     b.Navigation("Cases");
 
+                    b.Navigation("CustomAttributes");
+
                     b.Navigation("Members");
+
+                    b.Navigation("OrgDepartments");
 
                     b.Navigation("Users");
                 });
@@ -2046,6 +2246,11 @@ namespace CaseManagement.Api.Migrations
             modelBuilder.Entity("CaseManagement.Api.Models.ManualAssignmentSettings", b =>
                 {
                     b.Navigation("CrossTeams");
+                });
+
+            modelBuilder.Entity("CaseManagement.Api.Models.OrgDepartment", b =>
+                {
+                    b.Navigation("Teams");
                 });
 
             modelBuilder.Entity("CaseManagement.Api.Models.PrioritySlaRule", b =>

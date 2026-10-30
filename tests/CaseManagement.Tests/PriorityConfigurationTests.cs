@@ -49,6 +49,7 @@ public class PriorityConfigurationTests
                 new DepartmentSubCategory { Id = w.FraudB, DepartmentId = w.DeptB, Name = "Fraud", Code = "FB", IsActive = true, CreatedAt = DateTime.UtcNow },
                 new DepartmentSubCategory { Id = w.PaymentA, DepartmentId = w.DeptA, Name = "Payment Issue", Code = "P", IsActive = true, CreatedAt = DateTime.UtcNow });
             await w.Ctx.SaveChangesAsync();
+            await TestDepartments.LinkTeamsAsync(w.Ctx);
 
             // Configuration changes are audited against a real user (the audit trail has a foreign key).
             w.Actor = Guid.NewGuid();

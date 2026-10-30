@@ -66,30 +66,31 @@ public class DashboardService : IDashboardService
 
     public async Task<DashboardFiltersDto> GetFiltersAsync(CancellationToken ct = default)
     {
-        async Task<List<FilterOptionDto>> Lookup(string code) =>
-            await _context.LookupValues.AsNoTracking()
+        static Task<List<FilterOptionDto>> Lookup(AppDbContext db, string code, CancellationToken ct) =>
+            db.LookupValues.AsNoTracking()
                 .Where(v => v.LookupType!.Code == code && v.IsActive)
                 .OrderBy(v => v.DisplayOrder).ThenBy(v => v.Value)
                 .Select(v => new FilterOptionDto { Value = v.Value, Label = string.IsNullOrEmpty(v.Label) ? v.Value : v.Label })
                 .ToListAsync(ct);
 
-        var ranges = (await Lookup("DASHBOARD_DATE_RANGE")).Where(r => SupportedDateRanges.Contains(r.Value, StringComparer.OrdinalIgnoreCase)).ToList();
         var seesAll = SeesAllTeams;
+        var result = new DashboardFiltersDto { CanFilterByDepartment = seesAll, SeesAllTeams = seesAll };
+        List<FilterOptionDto> ranges = new();
 
-        return new DashboardFiltersDto
-        {
-            CanFilterByDepartment = seesAll,
-            SeesAllTeams = seesAll,
-            Departments = !seesAll ? new List<NamedOptionDto>() : await _context.Departments.AsNoTracking().Where(d => d.IsActive).OrderBy(d => d.Name)
+        // Seven small, independent reads: side by side, not one after another (each is a round trip to the database).
+        await ReadAllAsync(ct,
+            async db => result.Departments = !seesAll ? new List<NamedOptionDto>() : await db.Departments.AsNoTracking().Where(d => d.IsActive).OrderBy(d => d.Name)
                 .Select(d => new NamedOptionDto { Id = d.Id, Name = d.Name }).ToListAsync(ct),
-            CaseTypes = await _context.CaseTypeConfigs.AsNoTracking().Where(t => t.IsActive).OrderBy(t => t.DisplayOrder)
+            async db => result.CaseTypes = await db.CaseTypeConfigs.AsNoTracking().Where(t => t.IsActive).OrderBy(t => t.DisplayOrder)
                 .Select(t => new FilterOptionDto { Value = t.Name, Label = t.Name }).ToListAsync(ct),
-            Statuses = await Lookup("CASE_STATUS"),
-            Priorities = await _context.PrioritySlaRules.AsNoTracking().Where(r => r.IsActive).OrderBy(r => r.DisplayOrder).Select(r => r.Priority).ToListAsync(ct),
-            SlaStatuses = await Lookup("SLA_STATUS"),
-            DateRanges = ranges,
-            QuickActions = await Lookup("DASHBOARD_QUICK_ACTION"),
-        };
+            async db => result.Statuses = await Lookup(db, "CASE_STATUS", ct),
+            async db => result.Priorities = await db.PrioritySlaRules.AsNoTracking().Where(r => r.IsActive).OrderBy(r => r.DisplayOrder).Select(r => r.Priority).ToListAsync(ct),
+            async db => result.SlaStatuses = await Lookup(db, "SLA_STATUS", ct),
+            async db => ranges = await Lookup(db, "DASHBOARD_DATE_RANGE", ct),
+            async db => result.QuickActions = await Lookup(db, "DASHBOARD_QUICK_ACTION", ct));
+
+        result.DateRanges = ranges.Where(r => SupportedDateRanges.Contains(r.Value, StringComparer.OrdinalIgnoreCase)).ToList();
+        return result;
     }
 
     // ------------------------------------------------------------------------------------------------ summary
@@ -337,24 +338,8 @@ public class DashboardService : IDashboardService
         return result;
     }
 
-    /// <summary>
-    /// Runs independent reads side by side, each on its own pooled context; one after another on the request's context when
-    /// no factory is available. A read must not touch the request's context in parallel mode — it gets its own.
-    /// </summary>
-    private async Task ReadAllAsync(CancellationToken ct, params Func<AppDbContext, Task>[] reads)
-    {
-        if (_contexts == null)
-        {
-            foreach (var read in reads) await read(_context);
-            return;
-        }
-
-        await Task.WhenAll(reads.Select(async read =>
-        {
-            await using var db = await _contexts.CreateDbContextAsync(ct);
-            await read(db);
-        }));
-    }
+    /// <summary>Independent reads side by side, each on its own pooled context (see <see cref="ParallelReads"/>).</summary>
+    private Task ReadAllAsync(CancellationToken ct, params Func<AppDbContext, Task>[] reads) => ParallelReads.RunAsync(_contexts, _context, ct, reads);
 
     private static AttentionCaseSummary Clone(AttentionCaseSummary c) => new()
     {

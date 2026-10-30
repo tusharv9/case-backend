@@ -371,6 +371,9 @@ public class WorkbookReconciliationService
         var priorities = await _context.PrioritySlaRules.ToListAsync(ct);
         var errors = new List<string>();
         var keep = new HashSet<Guid>();
+        // A sub-category now belongs to a business department: a new one goes to the department its team serves (default first).
+        var departmentOf = (await _context.TeamDepartments.AsNoTracking().ToListAsync(ct))
+            .GroupBy(l => l.TeamId).ToDictionary(g => g.Key, g => g.OrderByDescending(l => l.IsDefault).First().OrgDepartmentId);
 
         foreach (var group in wb.Rows.GroupBy(r => r.CategoryId, StringComparer.OrdinalIgnoreCase))
         {
@@ -401,7 +404,8 @@ public class WorkbookReconciliationService
                 {
                     sub = new DepartmentSubCategory
                     {
-                        Id = Guid.NewGuid(), DepartmentId = team.Id, Name = row.SubCategory, Code = row.SubCategoryId,
+                        Id = Guid.NewGuid(), DepartmentId = team.Id, OrgDepartmentId = departmentOf.TryGetValue(team.Id, out var dept) ? dept : null,
+                        Name = row.SubCategory, Code = row.SubCategoryId,
                         Description = NullIfEmpty(row.Description), DisplayOrder = order, IsActive = true, CreatedAt = now,
                     };
                     _context.DepartmentSubCategories.Add(sub);
@@ -453,17 +457,18 @@ public class WorkbookReconciliationService
 
         // Everything else is retired: deactivated (never deleted), so cases keep their value and history stays readable.
         var teamNames = await _context.Departments.AsNoTracking().ToDictionaryAsync(d => d.Id, d => d.Name, ct);
+        string TeamName(Guid? id) => id is Guid t && teamNames.TryGetValue(t, out var n) ? n : "(no team)";
         var usage = await _context.Cases.AsNoTracking().Where(c => c.Subcategory != null)
             .GroupBy(c => new { c.DepartmentId, Name = c.Subcategory!.ToLower() })
             .Select(g => new { g.Key.DepartmentId, g.Key.Name, All = g.Count(), Open = g.Count(c => c.Status != CaseStatus.Resolved && c.Status != CaseStatus.Closed && c.Status != CaseStatus.Cancelled) })
             .ToListAsync(ct);
-        foreach (var old in all.Where(s => s.IsActive && !keep.Contains(s.Id)).OrderBy(s => teamNames[s.DepartmentId]).ThenBy(s => s.DisplayOrder))
+        foreach (var old in all.Where(s => s.IsActive && !keep.Contains(s.Id)).OrderBy(s => TeamName(s.DepartmentId)).ThenBy(s => s.DisplayOrder))
         {
             old.IsActive = false; old.UpdatedAt = now;
             var used = usage.FirstOrDefault(u => u.DepartmentId == old.DepartmentId && u.Name == old.Name.ToLower());
-            report.RetiredSubCategories.Add(new RetiredSubCategory(teamNames[old.DepartmentId], old.Name, old.Code, used?.All ?? 0, used?.Open ?? 0));
-            audit.Add(Audit("Configurable Settings", $"{teamNames[old.DepartmentId]} / {old.Name}", "UPDATE",
-                $"Deactivated sub-category '{old.Name}' ({old.Code}) in '{teamNames[old.DepartmentId]}': not in the workbook; {used?.All ?? 0} case(s) keep it", "Active: True", "Active: False", now));
+            report.RetiredSubCategories.Add(new RetiredSubCategory(TeamName(old.DepartmentId), old.Name, old.Code, used?.All ?? 0, used?.Open ?? 0));
+            audit.Add(Audit("Configurable Settings", $"{TeamName(old.DepartmentId)} / {old.Name}", "UPDATE",
+                $"Deactivated sub-category '{old.Name}' ({old.Code}) in '{TeamName(old.DepartmentId)}': not in the workbook; {used?.All ?? 0} case(s) keep it", "Active: True", "Active: False", now));
         }
         await _context.SaveChangesAsync(ct);
     }

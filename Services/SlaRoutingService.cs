@@ -92,14 +92,15 @@ public class SlaRoutingService : ISlaRoutingService
         var categories = await _context.DepartmentSubCategories
             .AsNoTracking()
             .Where(s => s.IsActive || mappedIds.Contains(s.Id))
-            .OrderBy(s => s.Department.Name)
+            .OrderBy(s => s.OrgDepartment!.Name)
             .ThenBy(s => s.Name)
             .Select(s => new CategoryOptionDto
             {
                 Id = s.Id,
                 Name = s.Name,
-                DepartmentId = s.DepartmentId,
-                DepartmentName = s.Department.Name,
+                // Grouped by the business department the sub-category belongs to.
+                DepartmentId = s.OrgDepartmentId ?? Guid.Empty,
+                DepartmentName = s.OrgDepartment != null ? s.OrgDepartment.Name : "No department",
                 IsActive = s.IsActive
             })
             .ToListAsync(ct);
@@ -256,7 +257,7 @@ public class SlaRoutingService : ISlaRoutingService
                 {
                     var names = await _context.DepartmentSubCategories
                         .Where(s => duplicated.Contains(s.Id))
-                        .Select(s => s.Department.Name + " / " + s.Name)
+                        .Select(s => (s.OrgDepartment != null ? s.OrgDepartment.Name : "No department") + " / " + s.Name)
                         .ToListAsync(ct);
                     throw new InvalidOperationException($"A sub-category can have only one priority. Assigned more than once: {string.Join(", ", names)}.");
                 }
@@ -704,6 +705,8 @@ public class SlaRoutingService : ISlaRoutingService
     /// <summary>
     /// Finds the active sub-category (and the priority configured for it) a new case would belong to.
     /// Both the match and the mapping are by ID — names only locate the sub-category within its department.
+    /// <paramref name="departmentId"/> is the case's BUSINESS department (OrgDepartment), which owns its sub-categories; a team id
+    /// from an older caller is still understood (the sub-categories first created under that team).
     /// </summary>
     private async Task<(Guid SubCategoryId, PrioritySlaRule? Rule)?> FindMappedRuleAsync(Guid? departmentId, string? subCategoryName, CancellationToken ct)
     {
@@ -712,7 +715,8 @@ public class SlaRoutingService : ISlaRoutingService
         var lowered = subCategoryName.Trim().ToLower();
         var subCategoryId = await _context.DepartmentSubCategories
             .AsNoTracking()
-            .Where(s => s.DepartmentId == departmentId.Value && s.IsActive && s.Name.ToLower() == lowered)
+            .Where(s => (s.OrgDepartmentId == departmentId.Value || s.DepartmentId == departmentId.Value) && s.IsActive && s.Name.ToLower() == lowered)
+            .OrderByDescending(s => s.OrgDepartmentId == departmentId.Value)
             .Select(s => (Guid?)s.Id)
             .FirstOrDefaultAsync(ct);
         if (subCategoryId == null) return null;

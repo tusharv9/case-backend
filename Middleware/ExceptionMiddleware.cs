@@ -58,6 +58,8 @@ public class ExceptionMiddleware
                     teamId = unavailable.TeamId, teamName = unavailable.TeamName, reason = unavailable.Reason,
                     supervisor = unavailable.SupervisorId.HasValue ? new { id = unavailable.SupervisorId, name = unavailable.SupervisorName } : null,
                 }
+                : ex is NudgeCooldownException cooldown
+                ? new { error = message, correlationId, code = "NudgeCooldown", retryAfterSeconds = cooldown.RetryAfterSeconds }
                 : ex is AssignmentNotAllowedException notAllowed
                 ? new { error = message, correlationId, code = notAllowed.ReasonCode }
                 : errors == null
@@ -85,6 +87,8 @@ public class ExceptionMiddleware
         AssignmentNotAllowedException => (422, ex.Message, null),
         // Nothing was created; the creator decides (cancel, or assign to the team's supervisor).
         TeamUnavailableException => (409, ex.Message, null),
+        // The agent was nudged moments ago; the body says when they can be nudged again.
+        NudgeCooldownException => (429, ex.Message, null),
         FileNotFoundException => (404, ex.Message, null),
 
         // Nobody is signed in (the permission filters answer 403 themselves for "signed in but not allowed").

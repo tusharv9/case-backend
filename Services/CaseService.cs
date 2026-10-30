@@ -3,6 +3,7 @@ namespace CaseManagement.Api.Services;
 using CaseManagement.Api.DTOs;
 using CaseManagement.Api.HostIntegration;
 using CaseManagement.Api.Services.Customer360;
+using CaseManagement.Api.Services.Teams;
 using CaseManagement.Api.Models;
 using CaseManagement.Api.Repositories;
 using CaseManagement.Api.Data;
@@ -164,7 +165,10 @@ public class CaseService : ICaseService
             CaseType = canonicalCaseType,
             Title = dto.Title.Trim(),
             Description = dto.Description?.Trim() ?? string.Empty,
-            DepartmentId = validated.Department.Id,
+            // The team comes from routing. Before routing it is the team an older caller named, or the department's fallback
+            // team (empty when there is none: routing then needs a rule to match, or the case is refused).
+            DepartmentId = validated.StartingTeamId ?? Guid.Empty,
+            OrgDepartmentId = validated.Department.Id,
             OwnerId = createdByUserId,
             Severity = effectivePriority,
             Status = CaseStatus.Open,
@@ -227,6 +231,9 @@ public class CaseService : ICaseService
                 // Decided under the team lock, so an agent freed up since the creator was asked is still preferred.
                 if (routingDecision.HeldReason != null) ApplyUnstaffedTeamChoice(routingDecision, dto.UnstaffedTeamAction);
             }
+
+            if (newCase.DepartmentId == Guid.Empty)
+                throw new FieldValidationException(new[] { new FieldError("departmentId", NoTeamMessage(validated.Department.Name)) });
 
             await _caseRepository.AddAsync(newCase);
             await _caseRepository.AddEventAsync(new CaseEvent
@@ -737,6 +744,12 @@ public class CaseService : ICaseService
                          ?? throw new KeyNotFoundException("Target department not found.");
         if (!targetDept.IsActive)
             throw new AssignmentNotAllowedException(nameof(IneligibilityReason.TeamInactive), $"'{targetDept.Name}' is inactive and cannot receive cases.");
+        // A case stays in its department; only a team that serves that department can take it.
+        if (!await DepartmentTeams.ServesAsync(_context, targetDept.Id, existingCase.OrgDepartmentId))
+        {
+            var departmentName = await _context.OrgDepartments.Where(d => d.Id == existingCase.OrgDepartmentId).Select(d => d.Name).FirstOrDefaultAsync();
+            throw new FieldValidationException(new[] { new FieldError("departmentId", $"'{targetDept.Name}' does not serve {departmentName}, the department of this case. Choose a team that serves it.") });
+        }
         const bool changesTeam = true;
 
         var reason = await CaseReasons.ResolveAsync(_context, CaseReasons.Transfer, dto.Reason, dto.ReasonDetail);
@@ -1155,9 +1168,9 @@ public class CaseService : ICaseService
         };
     }
 
-    public async Task<PagedResponseDto<CaseAuditEventDto>> GetCaseAuditEventsAsync(int page = 1, int pageSize = 10, string? actionType = null, string? search = null, CancellationToken ct = default)
+    public async Task<PagedResponseDto<CaseAuditEventDto>> GetCaseAuditEventsAsync(AuditFilter filter, int page = 1, int pageSize = 10, CancellationToken ct = default)
     {
-        var events = await _caseRepository.GetCaseAuditEventsAsync(page, pageSize, actionType, search, ct);
+        var events = await _caseRepository.GetCaseAuditEventsAsync(filter, page, pageSize, ct);
         if (_piiMasking != null) await _piiMasking.MaskCasesAsync(events.Items, ct);   // audit rows show the customer's name
         return events;
     }
@@ -1467,8 +1480,12 @@ public class CaseService : ICaseService
         => await ValidateCreateCaseAsync(dto, ct, confirmCustomer360: false);
 
     /// <summary>A create-case request after validation: resolved records and canonical values.</summary>
+    internal static string NoTeamMessage(string department) =>
+        $"No routing rule sends this case to a team, and '{department}' has no default team. Ask an administrator to set one under Case Settings → Teams → Team Rules → Departments, or add a routing rule.";
+
     private sealed record ValidatedCase(
-        Department Department,
+        OrgDepartment Department,
+        Guid? StartingTeamId,
         CaseTypeConfig CaseType,
         DepartmentSubCategory SubCategory,
         IReadOnlyDictionary<string, string> Values,
@@ -1521,19 +1538,41 @@ public class CaseService : ICaseService
         else if (await _context.Customers.AnyAsync(c => c.Id == dto.CustomerId, ct)) { customerId = dto.CustomerId; selectedCustomer = customerId.ToString(); }
         else errors.Add(new FieldError("selectCustomer", "Selected customer does not exist."));
 
-        Department? department = null;
+        // The department: a business department, or (older callers) a team, whose department is then the one it serves.
+        OrgDepartment? department = null;
+        Guid? startingTeamId = null;
         if (dto.DepartmentId == Guid.Empty)
         {
             errors.Add(new FieldError("departmentId", "Department is required."));
         }
         else
         {
-            department = (await CachedAsync("validation:departments", () => _context.Departments.AsNoTracking().ToListAsync(ct)))
-                .FirstOrDefault(d => d.Id == dto.DepartmentId);
+            var departments = await CachedAsync("validation:org-departments", () => _context.OrgDepartments.AsNoTracking().ToListAsync(ct));
+            department = departments.FirstOrDefault(d => d.Id == dto.DepartmentId);
+            if (department == null)
+            {
+                var team = (await CachedAsync("validation:departments", () => _context.Departments.AsNoTracking().ToListAsync(ct)))
+                    .FirstOrDefault(d => d.Id == dto.DepartmentId);
+                if (team is { IsActive: true })
+                {
+                    var served = await _context.TeamDepartments.AsNoTracking().Where(l => l.TeamId == team.Id)
+                        .OrderByDescending(l => l.IsDefault).Select(l => l.OrgDepartmentId).ToListAsync(ct);
+                    if (served.Count > 0)
+                    {
+                        department = departments.FirstOrDefault(d => d.Id == served[0]);
+                        startingTeamId = team.Id;
+                    }
+                }
+            }
             if (department == null || !department.IsActive)
             {
                 errors.Add(new FieldError("departmentId", "Selected department is invalid or inactive."));
                 department = null;
+                startingTeamId = null;
+            }
+            else if (startingTeamId == null)
+            {
+                startingTeamId = (await DepartmentTeams.ResolveFallbackAsync(_context, department.Id, ct)).TeamId;
             }
         }
 
@@ -1562,7 +1601,7 @@ public class CaseService : ICaseService
         {
             var lowered = subCategoryInput.ToLowerInvariant();
             subCategory = (await CachedAsync("validation:sub-categories", () => _context.DepartmentSubCategories.AsNoTracking().ToListAsync(ct)))
-                .FirstOrDefault(s => s.DepartmentId == department.Id && s.IsActive && s.Name.ToLowerInvariant() == lowered);
+                .FirstOrDefault(s => s.OrgDepartmentId == department.Id && s.IsActive && s.Name.ToLowerInvariant() == lowered);
             if (subCategory == null)
                 errors.Add(new FieldError("subCategory", $"Sub-category '{subCategoryInput}' is invalid for department '{department.Name}'."));
         }
@@ -1603,6 +1642,6 @@ public class CaseService : ICaseService
             .Where(kv => (dto.CustomAttributes?.ContainsKey(kv.Key) ?? false) && kv.Value.Length > 0)
             .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase);
 
-        return new ValidatedCase(department!, caseType!, subCategory!, result.Normalized, custom, customerId, customer360);
+        return new ValidatedCase(department!, startingTeamId, caseType!, subCategory!, result.Normalized, custom, customerId, customer360);
     }
 }

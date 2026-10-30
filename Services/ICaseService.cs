@@ -30,7 +30,7 @@ public interface ICaseService
     
     Task<EscalationMatrixResponseDto> GetEscalationMatrixConfigAsync(Guid? caseId = null, CancellationToken ct = default);
     Task<ReopenCaseResultDto> ReopenCaseAsync(Guid caseId, ReopenCaseDto dto);
-    Task<PagedResponseDto<CaseAuditEventDto>> GetCaseAuditEventsAsync(int page = 1, int pageSize = 10, string? actionType = null, string? search = null, CancellationToken ct = default);
+    Task<PagedResponseDto<CaseAuditEventDto>> GetCaseAuditEventsAsync(AuditFilter filter, int page = 1, int pageSize = 10, CancellationToken ct = default);
     Task AddTimelineInteractionAsync(Guid caseId, AddTimelineInteractionDto dto, Guid userId);
 
 

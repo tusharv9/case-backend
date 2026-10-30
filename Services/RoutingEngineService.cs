@@ -6,6 +6,7 @@ using CaseManagement.Api.Data;
 using CaseManagement.Api.DTOs;
 using CaseManagement.Api.Models;
 using CaseManagement.Api.Services.Strategies;
+using CaseManagement.Api.Services.Teams;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 
@@ -258,7 +259,8 @@ public class RoutingEngineService : IRoutingEngineService
 
         return new RoutingVocabularyDto
         {
-            Departments = await _context.Departments.AsNoTracking().Where(d => d.IsActive).OrderBy(d => d.Name)
+            // Business departments, for the "Department" condition (the destination is a team, chosen from the team list).
+            Departments = await _context.OrgDepartments.AsNoTracking().Where(d => d.IsActive).OrderBy(d => d.DisplayOrder).ThenBy(d => d.Name)
                 .Select(d => new NamedOptionDto { Id = d.Id, Name = d.Name }).ToListAsync(ct),
             SubCategories = await _context.DepartmentSubCategories.AsNoTracking().Where(s => s.IsActive).Select(s => s.Name).Distinct().OrderBy(n => n).ToListAsync(ct),
             CaseTypes = await _context.CaseTypeConfigs.AsNoTracking().Where(t => t.IsActive).OrderBy(t => t.Name).Select(t => t.Name).ToListAsync(ct),
@@ -291,7 +293,22 @@ public class RoutingEngineService : IRoutingEngineService
             if (!valid.Contains(value.Trim(), StringComparer.OrdinalIgnoreCase))
                 throw new InvalidOperationException($"'{value}' is not a valid {label}. Choose one of: {string.Join(", ", valid)}.");
         }
-        Check("team", conds.Department, vocab.Departments.Select(d => d.Name));
+        Check("department", conds.Department, vocab.Departments.Select(d => d.Name));
+
+        // A rule that routes ONE department's cases (the department condition must hold: ALL, or the only condition) may only
+        // send them to a team that serves that department; otherwise it could never apply.
+        var onlyCondition = new[] { conds.Category, conds.CaseType, conds.Priority, conds.Channel, conds.CustomerSegment }.All(string.IsNullOrWhiteSpace);
+        var departmentMustHold = !string.IsNullOrWhiteSpace(conds.Department)
+                                 && (onlyCondition || !string.Equals(conds.MatchType, "ANY", StringComparison.OrdinalIgnoreCase));
+        if (departmentMustHold && targetDepartmentId.HasValue)
+        {
+            var dept = vocab.Departments.First(d => string.Equals(d.Name, conds.Department!.Trim(), StringComparison.OrdinalIgnoreCase));
+            if (!await DepartmentTeams.ServesAsync(_context, targetDepartmentId.Value, dept.Id, ct))
+            {
+                var teamName = await _context.Departments.AsNoTracking().Where(t => t.Id == targetDepartmentId.Value).Select(t => t.Name).FirstAsync(ct);
+                throw new InvalidOperationException($"'{teamName}' does not serve {dept.Name}, so this rule could never send a case there. Choose a team that serves {dept.Name}, or link the team to it under Teams.");
+            }
+        }
         Check("sub-category", conds.Category, vocab.SubCategories);
         Check("case type", conds.CaseType, vocab.CaseTypes);
         Check("priority", conds.Priority, vocab.Priorities);
@@ -304,14 +321,23 @@ public class RoutingEngineService : IRoutingEngineService
     {
         var result = new RoutingDecisionResult();
 
-        // STAGE 1 — the first active rule (in order) that matches decides the team.
+        // STAGE 1 — the first active rule (in order) that matches decides the team. Rules match on the case's business
+        // department; a department only says which teams MAY serve it, so the rule (not the link) picks the team.
         var departments = await Cached("routing:departments", () => _context.Departments.AsNoTracking().ToDictionaryAsync(d => d.Id, ct));
+        var orgDepartments = await Cached("routing:org-departments", () => _context.OrgDepartments.AsNoTracking().ToDictionaryAsync(d => d.Id, ct));
+        var links = await Cached("routing:team-departments", () => _context.TeamDepartments.AsNoTracking().Select(l => new TeamDepartment { TeamId = l.TeamId, OrgDepartmentId = l.OrgDepartmentId, IsDefault = l.IsDefault }).ToListAsync(ct));
         var activeRules = await Cached("routing:active-rules", () => _context.RoutingRules.AsNoTracking().Where(r => r.IsActive).OrderBy(r => r.EvaluationOrder).ToListAsync(ct));
 
-        RoutingRule? matchedRule = activeRules.FirstOrDefault(r => EvaluateRuleMatches(r, newCase, customer, departments));
+        OrgDepartment? caseDepartment = newCase.OrgDepartmentId is Guid od && orgDepartments.TryGetValue(od, out var d) ? d : null;
+        bool Serves(Guid teamId) => caseDepartment == null || links.Any(l => l.TeamId == teamId && l.OrgDepartmentId == caseDepartment.Id);
+        // A rule that names a department sends that department's cases only to a team serving it. A rule with no department
+        // condition (a cross-department lane, e.g. "Premier + Critical") may send any case to any active team.
+        bool MayReceive(RoutingRule rule, Guid teamId) => !NamesDepartment(rule) || Serves(teamId);
+
+        RoutingRule? matchedRule = activeRules.FirstOrDefault(r => EvaluateRuleMatches(r, newCase, customer, departments, caseDepartment));
 
         Department target;
-        if (matchedRule != null && departments.TryGetValue(matchedRule.TargetDepartmentId, out var ruleTarget) && ruleTarget.IsActive)
+        if (matchedRule != null && departments.TryGetValue(matchedRule.TargetDepartmentId, out var ruleTarget) && ruleTarget.IsActive && MayReceive(matchedRule, ruleTarget.Id))
         {
             target = ruleTarget;
             result.MatchedRuleId = matchedRule.Id;
@@ -319,11 +345,19 @@ public class RoutingEngineService : IRoutingEngineService
         }
         else
         {
-            // No (usable) rule: the case stays with the team it was opened for. There is no hidden "default team".
+            // No (usable) rule: the case goes to the team it started with — the one an older caller named, or its department's
+            // default (or only) team. There is no hidden "default team" beyond that.
+            var why = matchedRule == null ? null
+                : !departments.TryGetValue(matchedRule.TargetDepartmentId, out var t) || !t.IsActive ? "destination team inactive"
+                : $"'{t.Name}' does not serve {caseDepartment?.Name}";
+            if (newCase.DepartmentId == Guid.Empty && caseDepartment != null)
+                newCase.DepartmentId = (await DepartmentTeams.ResolveFallbackAsync(_context, caseDepartment.Id, ct)).TeamId ?? Guid.Empty;
+            if (newCase.DepartmentId == Guid.Empty && caseDepartment != null)
+                throw new FieldValidationException(new[] { new FieldError("departmentId", CaseService.NoTeamMessage(caseDepartment.Name)) });
             target = departments.TryGetValue(newCase.DepartmentId, out var own) && own.IsActive
                 ? own
                 : throw new InvalidOperationException("The team this case was opened for is missing or inactive, and no routing rule applies. Activate the team or add a routing rule.");
-            result.MatchedRuleName = matchedRule != null ? $"{matchedRule.Name} (destination team inactive — kept with the original team)" : "No rule matched — kept with the original team";
+            result.MatchedRuleName = matchedRule != null ? $"{matchedRule.Name} ({why} — kept with the department's team)" : "No rule matched — kept with the department's team";
         }
 
         result.TargetDepartmentId = target.Id;
@@ -399,7 +433,20 @@ public class RoutingEngineService : IRoutingEngineService
     private static bool Same(string? a, string? b) =>
         !string.IsNullOrWhiteSpace(a) && !string.IsNullOrWhiteSpace(b) && string.Equals(a.Trim(), b.Trim(), StringComparison.OrdinalIgnoreCase);
 
-    private bool EvaluateRuleMatches(RoutingRule rule, Case c, Customer? cust, IReadOnlyDictionary<Guid, Department> departments)
+    private static bool NamesDepartment(RoutingRule rule)
+    {
+        try
+        {
+            var conds = JsonSerializer.Deserialize<RuleConditionsDto>(rule.ConditionsJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            return !string.IsNullOrWhiteSpace(conds?.Department);
+        }
+        catch (JsonException)
+        {
+            return true;   // unreadable: hold it to the stricter check (it never matches anyway)
+        }
+    }
+
+    private bool EvaluateRuleMatches(RoutingRule rule, Case c, Customer? cust, IReadOnlyDictionary<Guid, Department> departments, OrgDepartment? caseDepartment)
     {
         RuleConditionsDto conds;
         try
@@ -416,8 +463,14 @@ public class RoutingEngineService : IRoutingEngineService
 
         if (!string.IsNullOrWhiteSpace(conds.Department))
         {
-            departments.TryGetValue(c.DepartmentId, out var dept);
-            matches.Add(dept != null && (Same(dept.Name, conds.Department) || Same(dept.Code, conds.Department)));
+            // The case's business department. A case opened before departments existed is matched by its team, as before.
+            if (caseDepartment != null)
+                matches.Add(Same(caseDepartment.Name, conds.Department) || Same(caseDepartment.Code, conds.Department));
+            else
+            {
+                departments.TryGetValue(c.DepartmentId, out var team);
+                matches.Add(team != null && (Same(team.Name, conds.Department) || Same(team.Code, conds.Department)));
+            }
         }
         if (!string.IsNullOrWhiteSpace(conds.Category)) matches.Add(Same(c.Subcategory, conds.Category));
         if (!string.IsNullOrWhiteSpace(conds.CaseType)) matches.Add(Same(c.CaseType, conds.CaseType));

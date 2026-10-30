@@ -43,6 +43,10 @@ public class AppDbContext : DbContext
     public DbSet<AssignmentConfiguration> AssignmentConfigurations { get; set; } = null!;
     public DbSet<ManualAssignmentSettings> ManualAssignmentSettings { get; set; } = null!;
     public DbSet<ManualAssignmentCrossTeam> ManualAssignmentCrossTeams { get; set; } = null!;
+    public DbSet<OrgDepartment> OrgDepartments { get; set; } = null!;
+    public DbSet<TeamDepartment> TeamDepartments { get; set; } = null!;
+    public DbSet<TeamSettings> TeamSettings { get; set; } = null!;
+    public DbSet<TeamCustomAttribute> TeamCustomAttributes { get; set; } = null!;
     public DbSet<AgentSkill> AgentSkills { get; set; } = null!;
     public DbSet<SkillRule> SkillRules { get; set; } = null!;
     public DbSet<TeamAssignmentPointer> TeamAssignmentPointers { get; set; } = null!;
@@ -249,6 +253,11 @@ public class AppDbContext : DbContext
             .HasIndex(ce => new { ce.CaseId, ce.CreatedAt })
             .IsDescending(false, true);
 
+        // One person's activity, newest first (Team Monitoring → agent → Activity, and the audit trail's person filter).
+        modelBuilder.Entity<CaseEvent>()
+            .HasIndex(ce => new { ce.UserId, ce.CreatedAt })
+            .IsDescending(false, true);
+
         // Notification list is always scoped to one recipient, newest first.
         modelBuilder.Entity<NotificationItem>()
             .HasIndex(n => new { n.RecipientUserId, n.CreatedAt })
@@ -439,6 +448,59 @@ public class AppDbContext : DbContext
             .WithMany()
             .HasForeignKey(c => c.DepartmentId)
             .OnDelete(DeleteBehavior.Cascade);
+
+        // Business departments and the teams that serve them (many-to-many; a Department row is a team)
+        modelBuilder.Entity<OrgDepartment>(e =>
+        {
+            e.Property(d => d.Name).HasMaxLength(120);
+            e.Property(d => d.Code).HasMaxLength(20);
+            e.Property(d => d.Description).HasMaxLength(500);
+        });
+        modelBuilder.Entity<TeamDepartment>(e =>
+        {
+            e.HasKey(l => new { l.TeamId, l.OrgDepartmentId });
+            e.HasIndex(l => l.OrgDepartmentId);
+            // Deleting a team drops its links; a department that teams still serve cannot be deleted (deactivate it instead).
+            e.HasOne(l => l.Team).WithMany(t => t.OrgDepartments).HasForeignKey(l => l.TeamId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(l => l.OrgDepartment).WithMany(d => d.Teams).HasForeignKey(l => l.OrgDepartmentId).OnDelete(DeleteBehavior.Restrict);
+            // At most one default team per department (where its cases go when no routing rule matches).
+            e.HasIndex(new[] { nameof(TeamDepartment.OrgDepartmentId) }, "IX_TeamDepartments_OneDefaultPerDepartment").IsUnique().HasFilter("\"IsDefault\"");
+        });
+
+        // A case's business department; a department that cases belong to cannot be deleted (deactivate it instead).
+        modelBuilder.Entity<Case>()
+            .HasOne(c => c.OrgDepartment).WithMany().HasForeignKey(c => c.OrgDepartmentId)
+            .IsRequired(false).OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<Case>().HasIndex(c => c.OrgDepartmentId);
+
+        // Sub-categories belong to a business department; the old team link is kept (nullable) for older code.
+        modelBuilder.Entity<DepartmentSubCategory>()
+            .HasOne(s => s.OrgDepartment).WithMany().HasForeignKey(s => s.OrgDepartmentId)
+            .IsRequired(false).OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<DepartmentSubCategory>().HasIndex(s => s.OrgDepartmentId);
+        modelBuilder.Entity<DepartmentSubCategory>()
+            .HasOne(s => s.Department).WithMany().HasForeignKey(s => s.DepartmentId)
+            .IsRequired(false).OnDelete(DeleteBehavior.SetNull);
+
+        // Values of the administrator-defined Create/Edit Team fields: one per team and field, removed with the team.
+        modelBuilder.Entity<TeamCustomAttribute>(e =>
+        {
+            e.HasIndex(a => new { a.TeamId, a.FieldKey }).IsUnique();
+            e.Property(a => a.FieldKey).HasMaxLength(100);
+            e.HasOne(a => a.Team).WithMany(t => t.CustomAttributes).HasForeignKey(a => a.TeamId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // Team settings (one row); the form rules are a small jsonb list
+        modelBuilder.Entity<TeamSettings>()
+            .Property(s => s.FormFields)
+            .HasColumnType("jsonb")
+            .HasConversion(
+                v => System.Text.Json.JsonSerializer.Serialize(v, (System.Text.Json.JsonSerializerOptions?)null),
+                v => TeamFormFields.Normalise(System.Text.Json.JsonSerializer.Deserialize<List<TeamFormFieldRule>>(v, (System.Text.Json.JsonSerializerOptions?)null)),
+                new Microsoft.EntityFrameworkCore.ChangeTracking.ValueComparer<List<TeamFormFieldRule>>(
+                    (a, b) => System.Text.Json.JsonSerializer.Serialize(a, (System.Text.Json.JsonSerializerOptions?)null) == System.Text.Json.JsonSerializer.Serialize(b, (System.Text.Json.JsonSerializerOptions?)null),
+                    v => System.Text.Json.JsonSerializer.Serialize(v, (System.Text.Json.JsonSerializerOptions?)null).GetHashCode(),
+                    v => TeamFormFields.Normalise(v)));
 
         // Routing Rules Configuration
         modelBuilder.Entity<RoutingRule>()

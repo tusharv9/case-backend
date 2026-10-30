@@ -119,17 +119,17 @@ public class DataReconciliationService
             else report.CasesNeedingADecision.Add(fix with { NewHolder = null, Reason = reason + (c.TeamActive ? "; the team has no active lead" : "; the team is inactive") });
         }
 
-        // 3. Sub-category text on cases that is not a sub-category of the case's team.
+        // 3. Sub-category text on cases that is not a sub-category of the case's (business) department.
         report.BlankSubcategoriesToClear = await _context.Cases.CountAsync(c => c.Subcategory != null && c.Subcategory.Trim() == "", ct);
-        var known = await _context.DepartmentSubCategories.AsNoTracking().Select(s => new { s.DepartmentId, Name = s.Name.ToLower() }).ToListAsync(ct);
-        var knownSet = known.Select(k => (k.DepartmentId, k.Name)).ToHashSet();
+        var known = await _context.DepartmentSubCategories.AsNoTracking().Select(s => new { s.OrgDepartmentId, Name = s.Name.ToLower() }).ToListAsync(ct);
+        var knownSet = known.Select(k => (k.OrgDepartmentId, k.Name)).ToHashSet();
         var used = await _context.Cases.AsNoTracking()
             .Where(c => c.Subcategory != null && c.Subcategory.Trim() != "")
-            .GroupBy(c => new { c.DepartmentId, Team = c.Department.Name, c.Subcategory })
-            .Select(g => new { g.Key.DepartmentId, g.Key.Team, g.Key.Subcategory, Cases = g.Count(), Open = g.Count(c => c.Status != CaseStatus.Resolved && c.Status != CaseStatus.Closed && c.Status != CaseStatus.Cancelled) })
+            .GroupBy(c => new { c.OrgDepartmentId, Team = c.OrgDepartment != null ? c.OrgDepartment.Name : c.Department.Name, c.Subcategory })
+            .Select(g => new { g.Key.OrgDepartmentId, g.Key.Team, g.Key.Subcategory, Cases = g.Count(), Open = g.Count(c => c.Status != CaseStatus.Resolved && c.Status != CaseStatus.Closed && c.Status != CaseStatus.Cancelled) })
             .ToListAsync(ct);
         report.UnknownSubcategories = used
-            .Where(u => !knownSet.Contains((u.DepartmentId, u.Subcategory!.ToLower())))
+            .Where(u => !knownSet.Contains((u.OrgDepartmentId, u.Subcategory!.ToLower())))
             .Select(u => new UnknownSubcategory(u.Team, u.Subcategory!, u.Cases, u.Open))
             .OrderBy(u => u.Team).ThenBy(u => u.Subcategory)
             .ToList();

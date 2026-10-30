@@ -25,7 +25,21 @@ public class TeamDto
     /// <summary>True when the team has its own settings; false when it follows the global default.</summary>
     public bool HasOwnAssignmentSettings { get; set; }
 
+    /// <summary>The business departments this team serves (Configurable Settings → Teams → Departments).</summary>
+    public List<TeamDepartmentDto> Departments { get; set; } = new();
+
+    /// <summary>Values of the administrator-defined Create/Edit Team fields, by field key.</summary>
+    public Dictionary<string, string> CustomAttributes { get; set; } = new();
+
     public List<TeamMemberDto> Members { get; set; } = new();
+}
+
+public class TeamDepartmentDto
+{
+    public Guid Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string Code { get; set; } = string.Empty;
+    public bool IsActive { get; set; }
 }
 
 public class TeamMemberDto
@@ -62,6 +76,12 @@ public class CreateTeamDto
     public List<TeamMemberInputDto>? Members { get; set; }
     public List<Guid>? MemberUserIds { get; set; }
 
+    /// <summary>The business departments the team serves; omit (null) for none.</summary>
+    public List<Guid>? DepartmentIds { get; set; }
+
+    /// <summary>Values of the administrator-defined form fields (Case Settings → Teams → Create Team Form), by field key.</summary>
+    public Dictionary<string, string>? CustomAttributes { get; set; }
+
     /// <summary>Optional team-specific assignment settings; omit to follow the global default.</summary>
     public string? AssignmentAlgorithm { get; set; }
     public int? MaxConcurrentCapacity { get; set; }
@@ -76,6 +96,12 @@ public class UpdateTeamDto
     public bool? IsActive { get; set; }
     public List<TeamMemberInputDto>? Members { get; set; }
     public List<Guid>? MemberUserIds { get; set; }
+
+    /// <summary>The business departments the team serves. Null leaves them as they are (a hidden field never clears them).</summary>
+    public List<Guid>? DepartmentIds { get; set; }
+
+    /// <summary>Custom field values to change, by key; a blank value clears one. Null (or a key left out) keeps what is stored.</summary>
+    public Dictionary<string, string>? CustomAttributes { get; set; }
 
     public string? AssignmentAlgorithm { get; set; }
     public int? MaxConcurrentCapacity { get; set; }

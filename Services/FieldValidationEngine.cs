@@ -112,6 +112,7 @@ public sealed class FieldValidationEngine : IFieldValidationEngine
             var label = string.IsNullOrWhiteSpace(config.DisplayLabel) ? config.ApiField : config.DisplayLabel;
             supplied.TryGetValue(config.ApiField, out var raw);
             var value = raw?.Trim() ?? string.Empty;
+            if (IsMultiSelect(config) && MultiSelectValues.Parse(value) is { Count: 0 }) value = string.Empty;   // "[]" is nothing chosen
 
             var required = config.IsRequired || config.IsSystemRequired;
             if (required && value.Length == 0 && requirednessHandledElsewhere?.Contains(config.ApiField) != true)
@@ -212,6 +213,27 @@ public sealed class FieldValidationEngine : IFieldValidationEngine
                 }
                 break;
 
+            case "multiselect":
+            {
+                var chosen = MultiSelectValues.Parse(value);
+                if (chosen == null)
+                {
+                    errors.Add(new FieldError(config.ApiField, $"{label} must be a list of options."));
+                    return;
+                }
+                if (!string.IsNullOrWhiteSpace(config.LookupTypeCode))
+                {
+                    var options = _includeInactive.Value ? await GetAllLookupAsync(config.LookupTypeCode) : await GetLookupAsync(config.LookupTypeCode);
+                    var invalid = chosen.FirstOrDefault(v => !options.ContainsKey(v));
+                    if (invalid != null)
+                    {
+                        errors.Add(new FieldError(config.ApiField, $"'{invalid}' is not a valid option for {label}."));
+                        return;
+                    }
+                }
+                return;   // a pattern applies to one value, not to a list
+            }
+
             case "dropdown":
                 if (!string.IsNullOrWhiteSpace(config.LookupTypeCode))
                 {
@@ -272,11 +294,20 @@ public sealed class FieldValidationEngine : IFieldValidationEngine
 
     private async Task<string> CanonicalAsync(FieldConfiguration config, string value)
     {
+        if (IsMultiSelect(config))
+        {
+            var chosen = MultiSelectValues.Parse(value) ?? new List<string>();
+            if (string.IsNullOrWhiteSpace(config.LookupTypeCode)) return MultiSelectValues.Format(chosen);
+            var all = await GetLookupAsync(config.LookupTypeCode);
+            return MultiSelectValues.Format(chosen.Select(v => all.TryGetValue(v, out var c) ? c : v));
+        }
         if (!string.Equals(config.FieldType, "Dropdown", StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(config.LookupTypeCode))
             return value;
         var options = await GetLookupAsync(config.LookupTypeCode);
         return options.TryGetValue(value, out var canonical) ? canonical : value;
     }
+
+    private static bool IsMultiSelect(FieldConfiguration config) => string.Equals(config.FieldType, "MultiSelect", StringComparison.OrdinalIgnoreCase);
 
     private Task<IReadOnlyList<FieldConfiguration>> GetConfigsAsync(string moduleKey, string sectionKey) =>
         _cache.GetOrCreateAsync<IReadOnlyList<FieldConfiguration>>($"fields:{moduleKey}:{sectionKey}", async () =>

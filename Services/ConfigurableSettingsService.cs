@@ -69,12 +69,13 @@ public class ConfigurableSettingsService : IConfigurableSettingsService
         }
     }
 
-    /// <summary>Built-in field keys of the Create Case and Add Customer forms; a custom field may not reuse them.</summary>
+    /// <summary>Built-in field keys of the Create Case, Add Customer and Create Team forms; a custom field may not reuse them.</summary>
     private static readonly HashSet<string> ReservedFieldKeys = new(StringComparer.OrdinalIgnoreCase)
     {
         "caseType", "title", "description", "selectCustomer", "departmentId", "subCategory", "severity", "sourceChannel",
         "preferredLanguage", "preferredCommunicationChannel", "communicationChannel", "customerId",
-        "fullName", "idType", "idValue", "nric", "passport", "accountNumber", "dateOfBirth", "phoneNumber", "email", "branch", "customerSegment"
+        "fullName", "idType", "idValue", "nric", "passport", "accountNumber", "dateOfBirth", "phoneNumber", "email", "branch", "customerSegment",
+        "name", "code", "departments", "teamLead", "members", "function", "isActive"
     };
 
     private static FieldDefinitionRules.Definition DefinitionOf(string label, string fieldType, string? maskingRule, int visibleChars, int displayOrder,
@@ -352,8 +353,41 @@ public class ConfigurableSettingsService : IConfigurableSettingsService
     public async Task<IEnumerable<LookupTypeDto>> GetLookupTypesAsync(CancellationToken ct = default)
     {
         var types = await _context.LookupTypes.AsNoTracking().OrderBy(t => t.Name).ToListAsync(ct);
-        return types.Select(t => new LookupTypeDto { Code = t.Code, Name = t.Name, Description = t.Description, AllowAdd = t.AllowAdd, UsesFormatRules = t.UsesFormatRules });
+        var fields = await _context.FieldConfigurations.AsNoTracking().Where(f => f.LookupTypeCode != null && f.LookupTypeCode != "")
+            .Select(f => new { f.LookupTypeCode, f.ModuleKey, f.SectionKey, f.DisplayLabel }).ToListAsync(ct);
+        return types.Select(t =>
+        {
+            // Every place that reads this list: form fields bound to it, plus the parts of the application that use it directly.
+            var usedBy = fields.Where(f => string.Equals(f.LookupTypeCode, t.Code, StringComparison.OrdinalIgnoreCase))
+                .Select(f => $"{FormName(f.ModuleKey, f.SectionKey)} → {f.DisplayLabel}")
+                .Concat(SystemUses.TryGetValue(t.Code, out var system) ? system : Array.Empty<string>())
+                .Distinct().OrderBy(u => u).ToList();
+            return new LookupTypeDto
+            {
+                Code = t.Code, Name = t.Name, Description = t.Description, AllowAdd = t.AllowAdd, UsesFormatRules = t.UsesFormatRules,
+                UsedBy = usedBy, IsShared = usedBy.Count > 1,
+            };
+        });
     }
+
+    /// <summary>Lists the application itself reads (beyond the form fields bound to them), so an edit's reach is visible.</summary>
+    private static readonly Dictionary<string, string[]> SystemUses = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["SOURCE_CHANNEL"] = new[] { "Routing rules → Channel", "Team Monitoring → Queue health by source channel" },
+        ["COMMUNICATION_CHANNEL"] = new[] { "Case details → Preferred channel" },
+        ["CASE_STATUS"] = new[] { "Case list and reports → Status names" },
+        ["SLA_STATUS"] = new[] { "Reports → SLA status" },
+    };
+
+    private static string FormName(string module, string section) => (module, section) switch
+    {
+        ("CaseManagement", "CreateCase") => "Create Case",
+        ("CaseManagement", "CreateTeam") => "Create/Edit Team",
+        ("Customer360", "AddNewCustomer") => "Add Customer",
+        ("Customer360", "ExistingCustomer") => "Existing Customer",
+        (_, "Filters") => "Search filters",
+        _ => $"{module} / {section}",
+    };
 
     public async Task<IEnumerable<LookupValueDto>> GetLookupValuesAsync(string typeCode, bool activeOnly = true, CancellationToken ct = default)
     {
@@ -683,8 +717,8 @@ public class ConfigurableSettingsService : IConfigurableSettingsService
         return items.Select(s => new DepartmentSubCategoryDto
         {
             Id = s.Id,
-            DepartmentId = s.DepartmentId,
-            DepartmentName = s.Department?.Name ?? string.Empty,
+            DepartmentId = s.OrgDepartmentId ?? Guid.Empty,
+            DepartmentName = s.OrgDepartment?.Name ?? string.Empty,
             Name = s.Name,
             Code = s.Code,
             Description = s.Description,
@@ -695,9 +729,10 @@ public class ConfigurableSettingsService : IConfigurableSettingsService
 
     public async Task<DepartmentSubCategoryDto> AddSubCategoryAsync(CreateDepartmentSubCategoryDto dto, CancellationToken ct = default)
     {
+        // dto.DepartmentId is the business department; the legacy team link is left empty.
         var entity = new DepartmentSubCategory
         {
-            DepartmentId = dto.DepartmentId,
+            OrgDepartmentId = dto.DepartmentId,
             Name = dto.Name.Trim(),
             Code = await SubCategoryCodeAsync(dto.Code, dto.Name, null, ct),
             Description = string.IsNullOrWhiteSpace(dto.Description) ? null : dto.Description.Trim(),
@@ -705,18 +740,18 @@ public class ConfigurableSettingsService : IConfigurableSettingsService
             IsActive = true
         };
 
-        if (!await _repository.DepartmentExistsAsync(entity.DepartmentId, ct))
+        if (!await _repository.DepartmentExistsAsync(dto.DepartmentId, ct))
             throw new InvalidOperationException("The selected department no longer exists.");
 
-        if (await _repository.SubCategoryExistsAsync(entity.DepartmentId, entity.Name, null, ct))
+        if (await _repository.SubCategoryExistsAsync(entity.OrgDepartmentId, entity.Name, null, ct))
             throw new InvalidOperationException($"Sub-category '{entity.Name}' already exists for this department.");
 
         var created = await _repository.AddSubCategoryAsync(entity, ct);
         return new DepartmentSubCategoryDto
         {
             Id = created.Id,
-            DepartmentId = created.DepartmentId,
-            DepartmentName = created.Department?.Name ?? string.Empty,
+            DepartmentId = created.OrgDepartmentId ?? Guid.Empty,
+            DepartmentName = await _context.OrgDepartments.Where(d => d.Id == created.OrgDepartmentId).Select(d => d.Name).FirstOrDefaultAsync(ct) ?? string.Empty,
             Name = created.Name,
             Code = created.Code,
             Description = created.Description,
@@ -734,7 +769,7 @@ public class ConfigurableSettingsService : IConfigurableSettingsService
 
         // The sub-category keeps its parent department: renaming must never turn it into a
         // free-floating global value.
-        if (await _repository.SubCategoryExistsAsync(existing.DepartmentId, dto.Name.Trim(), id, ct))
+        if (await _repository.SubCategoryExistsAsync(existing.OrgDepartmentId, dto.Name.Trim(), id, ct))
             throw new InvalidOperationException($"Sub-category '{dto.Name.Trim()}' already exists for this department.");
 
         var entity = new DepartmentSubCategory
@@ -752,7 +787,7 @@ public class ConfigurableSettingsService : IConfigurableSettingsService
             if (result != null && !string.Equals(existing.Name, result.Name, StringComparison.Ordinal))
             {
                 // Cases of THIS department keep pointing at the renamed sub-category.
-                await _context.Cases.Where(c => c.DepartmentId == existing.DepartmentId && c.Subcategory != null && c.Subcategory.ToLower() == existing.Name.ToLower())
+                await _context.Cases.Where(c => c.OrgDepartmentId == existing.OrgDepartmentId && c.Subcategory != null && c.Subcategory.ToLower() == existing.Name.ToLower())
                     .ExecuteUpdateAsync(u => u.SetProperty(c => c.Subcategory, result.Name), ct);
                 // Routing and skill rules match a sub-category by NAME across departments: rename them only when no other
                 // sub-category still uses the old name, otherwise they would silently stop applying there.
@@ -771,8 +806,8 @@ public class ConfigurableSettingsService : IConfigurableSettingsService
         return new DepartmentSubCategoryDto
         {
             Id = updated.Id,
-            DepartmentId = updated.DepartmentId,
-            DepartmentName = updated.Department?.Name ?? string.Empty,
+            DepartmentId = updated.OrgDepartmentId ?? Guid.Empty,
+            DepartmentName = existing.OrgDepartment?.Name ?? string.Empty,
             Name = updated.Name,
             Code = updated.Code,
             Description = updated.Description,
@@ -787,14 +822,14 @@ public class ConfigurableSettingsService : IConfigurableSettingsService
     /// </summary>
     private async Task<string> SubCategoryCodeAsync(string? requested, string name, Guid? excludeId, CancellationToken ct)
     {
-        async Task<DepartmentSubCategory?> HolderAsync(string code) => await _context.DepartmentSubCategories.AsNoTracking().Include(s => s.Department)
+        async Task<DepartmentSubCategory?> HolderAsync(string code) => await _context.DepartmentSubCategories.AsNoTracking().Include(s => s.OrgDepartment)
             .FirstOrDefaultAsync(s => s.Id != excludeId && s.Code.ToLower() == code.ToLower(), ct);
 
         if (!string.IsNullOrWhiteSpace(requested))
         {
             var code = requested.Trim();
             if (await HolderAsync(code) is { } holder)
-                throw new InvalidOperationException($"The code '{code}' is already used by '{holder.Department.Name} / {holder.Name}'. Each sub-category needs its own code.");
+                throw new InvalidOperationException($"The code '{code}' is already used by '{holder.OrgDepartment?.Name ?? "another department"} / {holder.Name}'. Each sub-category needs its own code.");
             return code;
         }
 
@@ -809,7 +844,7 @@ public class ConfigurableSettingsService : IConfigurableSettingsService
         var existing = (await _repository.GetSubCategoriesAsync(null, false, ct)).FirstOrDefault(s => s.Id == id);
         if (existing == null) return false;
 
-        var inUse = await _repository.CountCasesBySubCategoryAsync(existing.DepartmentId, existing.Name, ct);
+        var inUse = await _repository.CountCasesBySubCategoryAsync(existing.OrgDepartmentId, existing.Name, ct);
         if (inUse > 0)
             throw new InvalidOperationException(
                 $"Sub-category '{existing.Name}' cannot be deleted because {inUse} case(s) use it. Deactivate it instead.");
@@ -850,9 +885,24 @@ public class ConfigurableSettingsService : IConfigurableSettingsService
         var rules = await _context.PrioritySlaRules.AsNoTracking()
             .OrderBy(r => r.DisplayOrder).ThenBy(r => r.Priority).ToListAsync(ct);
 
-        var result = new List<SeverityDto>();
-        foreach (var rule in rules) result.Add(await ToSeverityDtoAsync(rule, ct));
-        return result;
+        // Cases per priority in ONE grouped query (it was one count per priority, a round trip each).
+        var counts = await _context.Cases.AsNoTracking()
+            .GroupBy(c => c.Severity.ToLower())
+            .Select(g => new { g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.Key, x => x.Count, ct);
+
+        return rules.Select(rule => new SeverityDto
+        {
+            Id = rule.Id,
+            Name = rule.Priority,
+            DisplayOrder = rule.DisplayOrder,
+            InternalHours = ToHours(rule.InternalResolutionMinutes),
+            ExternalHours = ToHours(rule.ExternalResolutionMinutes),
+            FirstResponseMinutes = rule.FirstResponseMinutes,
+            IsSystem = false,
+            CasesUsing = counts.GetValueOrDefault(rule.Priority.ToLower()),
+            IsActive = rule.IsActive
+        }).ToList();
     }
 
     public async Task<SeverityDto> AddSeverityAsync(CreateSeverityDto dto, CancellationToken ct = default)
@@ -869,7 +919,7 @@ public class ConfigurableSettingsService : IConfigurableSettingsService
 
         // A priority without SLA targets would give cases arbitrary deadlines, so every target must be stated (no built-in defaults).
         if (dto.FirstResponseMinutes <= 0 || dto.InternalHours <= 0 || dto.ExternalHours <= 0)
-            throw new InvalidOperationException("A new priority needs its first response, internal and external SLA targets. Add priorities on Cases SLA & Routing → Priority SLA Matrix.");
+            throw new InvalidOperationException("A new priority needs its first response, internal and external SLA targets: enter all three.");
         var internalHours = dto.InternalHours;
         var externalHours = dto.ExternalHours;
         var firstResponseMinutes = dto.FirstResponseMinutes;

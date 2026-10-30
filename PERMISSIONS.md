@@ -19,8 +19,12 @@ Setup → Applications.
 | Look up customers (Customer 360, local) | `customers:View` | `customers.read` | `Customer360Controller`, `CustomersController` | Existing Customer |
 | Add a new (local) customer | `customers:Edit` | `customers.write` | `POST /api/customers` | + New Customer |
 | Manage teams and members | `teams:Manage` | `teams.manage` | `TeamsController` writes, `HostUsersController`, `SkillsController` | Teams page actions |
-| Team Monitoring | `monitoring:View` / `monitoring:Nudge` | `monitoring.view` / `monitoring.nudge` | `TeamMonitoringController` | page / Nudge button |
-| Case audit trail | `audit:View` | `audit.view` | `AuditController`, case audit | page |
+| Team Monitoring (overview, agent drawer: agent, cases, activity) | `monitoring:View` / `monitoring:Nudge` | `monitoring.view` / `monitoring.nudge` | `TeamMonitoringController` — limited to the teams the caller leads or belongs to unless `cases.viewall`; an agent outside them is 404 | page, agent drawer / Nudge button |
+| Case audit trail (list, filters, count, CSV export) | `audit:View` | `audit.view` | `AuditController` — only the cases the caller may see; configuration history only with `cases.viewall` | page, Export CSV |
+| Team rules and departments (incl. order and default team) | `settings:Manage` (to change) | any Case access to read, `config.manage` to change | `TeamSettingsController`, `OrgDepartmentsController` | Case Settings → Teams → Team Rules |
+| Team form definition | `settings:Manage` (to change) | any Case access to read (`GET /api/metadata/team-form`), `config.manage` to change (field-configuration API, section `CreateTeam`) | `MetadataController`, `ConfigurableSettingsController` | Case Settings → Teams → Create Team Form |
+| Team Monitoring export | `monitoring:View` | `monitoring.view`; rows limited to the teams the caller monitors | `TeamMonitoringController` (`export`, `export/count`) | Team Monitoring → Export CSV |
+| Agent sign-in history | `monitoring:View` + Host `host.system.audit-logs:View` | read from the Host with the viewer's own token; refused (403, explained) without the Host permission | `TeamMonitoringController` (`agents/{id}/activity?actionType=signin`) | Team Monitoring → agent → Activity |
 | Case configuration (forms, lists, SLA, routing, assignment) | `settings:Manage` | `config.manage` | configuration controllers | settings pages |
 | Unmasked customer data | `pii:Unmask` | `pii.unmask` | `PiiMaskingService` (by name only) | — |
 

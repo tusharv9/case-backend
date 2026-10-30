@@ -27,6 +27,8 @@ public static class MappingExtensions
             ResolvedAt = c.ResolvedAt,
             DepartmentId = c.DepartmentId,
             DepartmentName = c.Department != null ? c.Department.Name : string.Empty,
+            BusinessDepartmentId = c.OrgDepartmentId,
+            BusinessDepartmentName = c.OrgDepartment != null ? c.OrgDepartment.Name : null,
             OwnerId = c.OwnerId,
             OwnerName = c.Owner != null ? c.Owner.Name : string.Empty,
             OwnerRole = c.Owner != null ? c.Owner.Role : null,
@@ -81,6 +83,8 @@ ExternalCustomerId = c.ExternalCustomerId,
             ResolvedAt = c.ResolvedAt,
             DepartmentId = c.DepartmentId,
             DepartmentName = c.Department != null ? c.Department.Name : string.Empty,
+            BusinessDepartmentId = c.OrgDepartmentId,
+            BusinessDepartmentName = c.OrgDepartment != null ? c.OrgDepartment.Name : null,
             OwnerId = c.OwnerId,
             OwnerName = c.Owner != null ? c.Owner.Name : string.Empty,
             OwnerRole = c.Owner != null ? c.Owner.Role : null,
@@ -128,7 +132,9 @@ ExternalCustomerId = c.ExternalCustomerId,
                 OpenCasesCount = c.Customer.Cases.Count(x => x.Status != CaseStatus.Resolved && x.Status != CaseStatus.Closed && x.Status != CaseStatus.Cancelled),
                 TotalCasesCount = c.Customer.Cases.Count()
             } : null!,
+            // The case's history; views are audit records (Case Audit Trail, Team Monitoring), not events of the case's story.
             Events = c.Events
+                .Where(e => e.EventType != EventType.View)
                 .OrderByDescending(e => e.CreatedAt)
                 .Take(50)
                 .Select(e => new CaseEventDto
@@ -262,6 +268,8 @@ ExternalCustomerId = sc.ExternalCustomerId,
                 ResolvedAt = caseItem.ResolvedAt,
                 DepartmentId = caseItem.DepartmentId,
                 DepartmentName = caseItem.Department != null ? caseItem.Department.Name : string.Empty,
+                BusinessDepartmentId = caseItem.OrgDepartmentId,
+                BusinessDepartmentName = caseItem.OrgDepartment != null ? caseItem.OrgDepartment.Name : null,
                 OwnerId = caseItem.OwnerId,
                 OwnerName = caseItem.Owner != null ? caseItem.Owner.Name : string.Empty,
                 CreatedAt = caseItem.CreatedAt,

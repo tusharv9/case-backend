@@ -284,6 +284,7 @@ public class PostgresIntegrationTests
             new DepartmentSubCategory { Id = usedSub, DepartmentId = deptId, Name = "Used", Code = "U", IsActive = true, CreatedAt = DateTime.UtcNow },
             new DepartmentSubCategory { Id = freeSub, DepartmentId = deptId, Name = "Free", Code = "F", IsActive = true, CreatedAt = DateTime.UtcNow });
         await ctx.SaveChangesAsync();
+        await TestDepartments.LinkTeamsAsync(ctx);
         ctx.AddRange(
             new PriorityCategoryMapping { Id = Guid.NewGuid(), PrioritySlaRuleId = rule.Id, DepartmentSubCategoryId = freeSub, CreatedAt = DateTime.UtcNow },
             new Case

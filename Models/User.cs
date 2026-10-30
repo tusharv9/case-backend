@@ -25,7 +25,13 @@ public class User : AuditableEntity
     public DateTime? LastSyncedAt { get; set; }
     
     public UserStatus Status { get; set; } = UserStatus.Available;
-    
+
+    /// <summary>
+    /// When the person last set <see cref="Status"/> themselves. Null means they never have: the status is the default given when
+    /// their record was created, not something they confirmed — Team Monitoring shows it as such.
+    /// </summary>
+    public DateTime? StatusUpdatedAt { get; set; }
+
     public string? Team { get; set; }
     public string? Queue { get; set; }
 

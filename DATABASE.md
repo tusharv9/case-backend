@@ -122,6 +122,51 @@ variable they are skipped.
   `config.manage`). The default routing strategy on that tab is the existing global `AssignmentConfigurations` row, not a copy.
   A save carries the version it was loaded at; a newer save in between returns 409 and nothing is changed.
 
+## Departments and Teams settings (migration `TeamDepartmentsAndSettings`)
+
+- A **`Departments`** row is a TEAM (cases, sub-categories, routing, SLA and members point at it). Business departments are
+  a separate list: **`OrgDepartments`** (`Name`, `Code` unique; `Description`, `IsActive`, `DisplayOrder`), linked to teams
+  many-to-many by **`TeamDepartments`** (key `TeamId`+`OrgDepartmentId`; deleting a team drops its links, a department still
+  linked cannot be deleted — deactivate it). The migration creates one department per existing team (same name and code) and
+  links them, so filtering by department starts out exactly as filtering by team.
+- **`TeamSettings`** — one row (unique index on a constant): `AllowMultipleTeamMembership`, `AllowMultipleTeamLeads`,
+  `AllowMultipleDepartments` (all true: the behaviour before they existed) and `FormFields` (jsonb: per Create/Edit Team field,
+  shown / required). Edited under Configurable Settings → Case Management → Teams (`GET/PUT /api/team-settings`, saving needs
+  `config.manage`, version-guarded like Assign & Reassign). Tightening a policy is refused while existing teams break it.
+  Team saves that check the policies take a transaction-scoped advisory lock, so two saves cannot both pass the check.
+- **`Users.StatusUpdatedAt`** — when the person last set their own status; null = never (Team Monitoring shows the status as
+  "not set", not as confirmed).
+
+## Cases belong to departments; the configurable team form (migration `CaseDepartmentsAndTeamForm`)
+
+Additive only — nothing is dropped, so code from before this migration keeps working.
+
+- **`Cases.OrgDepartmentId`** (nullable, FK Restrict, indexed) — the business department the case is about, chosen on Create
+  Case. `Cases.DepartmentId` stays the TEAM that handles it, chosen by routing. Backfilled from each case's team.
+- **`DepartmentSubCategories.OrgDepartmentId`** (nullable, FK Restrict) — sub-categories now belong to a department (Create Case
+  lists the chosen department's; the priority mapping is found by department + name). The old `DepartmentId` team link became
+  nullable (SetNull) and is kept for rollback; nothing new reads it. Backfilled from each sub-category's team.
+- **`TeamDepartments.IsDefault`** — the department's default team: where its cases go when no routing rule matches (partial
+  unique index: at most one per department). Backfilled: each department's earliest-linked team. With several teams and no
+  default, a case that no rule routes is refused with a message — never sent to an arbitrary team.
+- **`RoutingRules.ConditionsJson`** — the `Department` condition now names the case's business department; values that named a
+  team were rewritten to that team's department (the same text for the seeded one-to-one links). Unreadable JSON is untouched.
+  A rule that names a department sends cases only to a team serving it; a rule with no department condition (a
+  cross-department lane such as "Premier + Critical") may send any case to any active team.
+- **`TeamCustomAttributes`** (`TeamId`+`FieldKey` unique, cascade with the team) — values of administrator-defined Create/Edit
+  Team fields.
+- **`FieldConfigurations`** rows for module `CaseManagement`, section **`CreateTeam`** — the Create/Edit Team form (name, code,
+  description, departments, team lead, members, plus custom fields), seeded from the old `TeamSettings.FormFields` (kept, unused).
+  Edited under Case Settings → Teams → Create Team Form; enforced by `TeamService` through `FieldValidationEngine`.
+- **`TeamSettings`** gains `AllowTeamsWithoutMembers`, `AllowLeadInOtherTeams`, `AllowDeactivateWithOpenCases` (true) and
+  `RequireTeamLead` (false) — today's behaviour. Edited under Case Settings → Teams → Team Rules.
+- **`CaseEvents (UserId, CreatedAt desc)`** index — one person's activity. Case views are recorded as `EventType.View`
+  (`CaseViewLog`, one per person and case per 10 minutes), kept out of the case timeline, shown in the audit trail as "Case viewed".
+- A new field type, **`MultiSelect`**: the value is a JSON array of option values.
+
+Rollback: `Down()` removes the CreateTeam rows, gives team-less sub-categories their department's default team, and reverses
+the schema steps; data in kept tables is untouched.
+
 ## Settings consolidation (Phase 5; seed `bootstrap.case-list-filter-fields.v1`, no schema change)
 
 - The Case Management "Master Data & Dropdowns" screen is gone. Its data is unchanged and is edited where it belongs:

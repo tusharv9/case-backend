@@ -70,6 +70,7 @@ public class UsersController : BaseApiController
         }
 
         user.Status = newStatus;
+        user.StatusUpdatedAt = DateTime.UtcNow;   // the person chose it (Team Monitoring tells this apart from the default)
         await _context.SaveChangesAsync();
 
         return Ok(new { message = "Status updated successfully.", status = newStatus.ToString() });

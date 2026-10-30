@@ -42,10 +42,18 @@ public class TeamVisibilityTests
                 ctx.Departments.AddRange(
                     new Department { Id = e.Loans, Name = "Loans", Code = "LN", CreatedAt = DateTime.UtcNow },
                     new Department { Id = e.Cards, Name = "Cards", Code = "CD", CreatedAt = DateTime.UtcNow });
+                // Each team serves its own business department (cases are created for the team, as older callers do).
+                var lending = Guid.NewGuid(); var cardServices = Guid.NewGuid();
+                ctx.OrgDepartments.AddRange(
+                    new OrgDepartment { Id = lending, Name = "Lending", Code = "LEN", IsActive = true, CreatedAt = DateTime.UtcNow },
+                    new OrgDepartment { Id = cardServices, Name = "Card Services", Code = "CRD", IsActive = true, CreatedAt = DateTime.UtcNow });
                 await ctx.SaveChangesAsync();
+                ctx.TeamDepartments.AddRange(
+                    new TeamDepartment { TeamId = e.Loans, OrgDepartmentId = lending, IsDefault = true },
+                    new TeamDepartment { TeamId = e.Cards, OrgDepartmentId = cardServices, IsDefault = true });
                 ctx.AddRange(
-                    new DepartmentSubCategory { Id = Guid.NewGuid(), DepartmentId = e.Loans, Name = "Repayment", Code = "R", IsActive = true, CreatedAt = DateTime.UtcNow },
-                    new DepartmentSubCategory { Id = Guid.NewGuid(), DepartmentId = e.Cards, Name = "Fraud", Code = "F", IsActive = true, CreatedAt = DateTime.UtcNow },
+                    new DepartmentSubCategory { Id = Guid.NewGuid(), DepartmentId = e.Loans, OrgDepartmentId = lending, Name = "Repayment", Code = "R", IsActive = true, CreatedAt = DateTime.UtcNow },
+                    new DepartmentSubCategory { Id = Guid.NewGuid(), DepartmentId = e.Cards, OrgDepartmentId = cardServices, Name = "Fraud", Code = "F", IsActive = true, CreatedAt = DateTime.UtcNow },
                     new Customer { Id = e.Customer, FullName = "Siti Aminah", IdType = "Passport Number", Passport = "B12345678", PhoneNumber = "+60 12-111 2222", PreferredLanguage = "English", CreatedAt = DateTime.UtcNow });
                 await ctx.SaveChangesAsync();
             }

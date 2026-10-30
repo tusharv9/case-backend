@@ -32,12 +32,12 @@ public interface IConfigurableSettingsRepository
     Task<DepartmentSubCategory> AddSubCategoryAsync(DepartmentSubCategory subCategory, CancellationToken ct = default);
     Task<DepartmentSubCategory?> UpdateSubCategoryAsync(Guid id, DepartmentSubCategory subCategory, CancellationToken ct = default);
     Task<bool> DeleteSubCategoryAsync(Guid id, CancellationToken ct = default);
-    Task<bool> SubCategoryExistsAsync(Guid departmentId, string name, Guid? excludeId = null, CancellationToken ct = default);
+    Task<bool> SubCategoryExistsAsync(Guid? departmentId, string name, Guid? excludeId = null, CancellationToken ct = default);
     Task<bool> DepartmentExistsAsync(Guid departmentId, CancellationToken ct = default);
 
     Task<int> CountCasesBySeverityAsync(string severity, CancellationToken ct = default);
     Task<int> CountCasesByCaseTypeAsync(string code, string name, CancellationToken ct = default);
-    Task<int> CountCasesBySubCategoryAsync(Guid departmentId, string name, CancellationToken ct = default);
+    Task<int> CountCasesBySubCategoryAsync(Guid? departmentId, string name, CancellationToken ct = default);
     Task<int> RenameCaseSeverityAsync(string oldSeverity, string newSeverity, CancellationToken ct = default);
 
 }

@@ -27,6 +27,9 @@ public class CaseSummaryDto
     public bool IsSlaPaused => Sla?.IsPaused ?? false;
     public Guid DepartmentId { get; set; }
     public string DepartmentName { get; set; } = string.Empty;
+    /// <summary>The business department the case belongs to (DepartmentId/Name above are its TEAM). Null for cases from before departments.</summary>
+    public Guid? BusinessDepartmentId { get; set; }
+    public string? BusinessDepartmentName { get; set; }
     public string OwnerName { get; set; } = string.Empty;
     public Guid OwnerId { get; set; }
     public string? OwnerRole { get; set; }
@@ -211,6 +214,9 @@ public class DepartmentSubCategoryDto
     public Guid Id { get; set; }
     public Guid DepartmentId { get; set; }
     public string DepartmentName { get; set; } = string.Empty;
+    /// <summary>The business department the case belongs to (DepartmentId/Name above are its TEAM). Null for cases from before departments.</summary>
+    public Guid? BusinessDepartmentId { get; set; }
+    public string? BusinessDepartmentName { get; set; }
     public string Name { get; set; } = string.Empty;
     public string Code { get; set; } = string.Empty;
     public string? Description { get; set; }

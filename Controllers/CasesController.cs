@@ -2,6 +2,7 @@ namespace CaseManagement.Api.Controllers;
 
 using CaseManagement.Api.HostIntegration;
 using CaseManagement.Api.DTOs;
+using CaseManagement.Api.Data;
 using CaseManagement.Api.Services;
 using CaseManagement.Api.Services.Customer360;
 using Microsoft.AspNetCore.Mvc;
@@ -60,10 +61,12 @@ public class CasesController : BaseApiController
     internal static Guid? CrossTeamFilter(ICaseAccessScope access, Guid? departmentId) => access.SeesAll ? departmentId : null;
 
     [HttpGet("{id:guid}")]
-    public async Task<IActionResult> GetCaseDetails(Guid id, CancellationToken ct)
+    public async Task<IActionResult> GetCaseDetails(Guid id, [FromServices] AppDbContext db, [FromServices] ILogger<CasesController> logger, CancellationToken ct)
     {
         var caseDetails = await _caseService.GetCaseDetailsAsync(id, ct);
         if (caseDetails == null) return NotFound();
+        // Only a case the caller may see reaches this line (the case-access filter answers 404 otherwise).
+        await CaseViewLog.RecordAsync(db, id, CurrentUserId, logger, ct);
         return Ok(caseDetails);
     }
 
@@ -299,7 +302,7 @@ public class CasesController : BaseApiController
     [HttpGet("audit")]
     public async Task<IActionResult> GetAuditLogs([FromQuery] int page = 1, [FromQuery] int pageSize = 10, [FromQuery] string? actionType = null, [FromQuery] string? search = null, CancellationToken ct = default)
     {
-        var logs = await _caseService.GetCaseAuditEventsAsync(page, pageSize, actionType, search, ct);
+        var logs = await _caseService.GetCaseAuditEventsAsync(new AuditFilter(actionType, search), page, pageSize, ct);
         return Ok(logs);
     }
 

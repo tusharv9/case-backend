@@ -69,6 +69,7 @@ public class PermissionEnforcementTests
                     new DepartmentSubCategory { Id = Guid.NewGuid(), DepartmentId = e.Other, Name = "Fraud", Code = "F", IsActive = true, CreatedAt = DateTime.UtcNow },
                     new Customer { Id = e.Customer, FullName = "Siti Aminah", IdType = "Passport Number", Passport = "B12345678", PhoneNumber = "+60 12-111 2222", PreferredLanguage = "English", CreatedAt = DateTime.UtcNow });
                 await ctx.SaveChangesAsync();
+                await TestDepartments.LinkTeamsAsync(ctx);
             }
             e.App = new AppUnderTest(e.Db.ConnectionString);
             e.Client = await e.App.ReadyClientAsync();

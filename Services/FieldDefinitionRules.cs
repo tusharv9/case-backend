@@ -23,6 +23,8 @@ public static class FieldDefinitionRules
             ["Date"]     = new(Length: false, Pattern: false, Range: true,  Lookup: false, Masking: true),
             ["Dropdown"] = new(Length: false, Pattern: false, Range: false, Lookup: true,  Masking: true),
             ["Checkbox"] = new(Length: false, Pattern: false, Range: false, Lookup: false, Masking: false),
+            // Several options of one list, stored as a JSON array of option values (see MultiSelectValues).
+            ["MultiSelect"] = new(Length: false, Pattern: false, Range: false, Lookup: true, Masking: false),
         };
 
     public static readonly string[] MaskingRules = { "None", "FullMask", "HideMiddle", "HideFirstShowLast" };

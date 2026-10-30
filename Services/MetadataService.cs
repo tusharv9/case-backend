@@ -8,6 +8,8 @@ public interface IMetadataService
 {
     Task<CaseFormMetadataDto> GetCaseFormAsync(CancellationToken ct = default);
     Task<CustomerFormMetadataDto> GetCustomerFormAsync(CancellationToken ct = default);
+    /// <summary>The Create/Edit Team form: its configured fields and the options of the lists its custom fields use.</summary>
+    Task<CustomerFormMetadataDto> GetTeamFormAsync(CancellationToken ct = default);
 }
 
 /// <summary>
@@ -37,16 +39,17 @@ public class MetadataService : IMetadataService
                 .Select(c => new CaseTypeOptionDto { Code = c.Code, Name = c.Name, Prefix = c.Prefix })
                 .ToListAsync(ct);
 
-            var departments = await _context.Departments.AsNoTracking()
-                .Where(d => d.IsActive).OrderBy(d => d.Name)
+            // The Department field offers BUSINESS departments (routing then picks the team), each with its sub-categories.
+            var departments = await _context.OrgDepartments.AsNoTracking()
+                .Where(d => d.IsActive).OrderBy(d => d.DisplayOrder).ThenBy(d => d.Name)
                 .Select(d => new DepartmentOptionDto { Id = d.Id, Name = d.Name, Code = d.Code })
                 .ToListAsync(ct);
             var subCategories = await _context.DepartmentSubCategories.AsNoTracking()
-                .Where(s => s.IsActive).OrderBy(s => s.DisplayOrder).ThenBy(s => s.Name)
-                .Select(s => new { s.DepartmentId, Option = new SubCategoryOptionDto { Id = s.Id, Name = s.Name, Code = s.Code, Description = s.Description } })
+                .Where(s => s.IsActive && s.OrgDepartmentId != null).OrderBy(s => s.DisplayOrder).ThenBy(s => s.Name)
+                .Select(s => new { s.OrgDepartmentId, Option = new SubCategoryOptionDto { Id = s.Id, Name = s.Name, Code = s.Code, Description = s.Description } })
                 .ToListAsync(ct);
             foreach (var department in departments)
-                department.SubCategories = subCategories.Where(s => s.DepartmentId == department.Id).Select(s => s.Option).ToList();
+                department.SubCategories = subCategories.Where(s => s.OrgDepartmentId == department.Id).Select(s => s.Option).ToList();
 
             var priorities = await _context.PrioritySlaRules.AsNoTracking()
                 .Where(r => r.IsActive).OrderBy(r => r.DisplayOrder)
@@ -74,6 +77,13 @@ public class MetadataService : IMetadataService
         _cache.GetOrCreateAsync("metadata:customer-form", async () =>
         {
             var fields = await LoadFieldsAsync("Customer360", "AddNewCustomer");
+            return new CustomerFormMetadataDto { Fields = fields, Lookups = await LoadLookupsAsync(fields, ct) };
+        });
+
+    public Task<CustomerFormMetadataDto> GetTeamFormAsync(CancellationToken ct = default) =>
+        _cache.GetOrCreateAsync("metadata:team-form", async () =>
+        {
+            var fields = await LoadFieldsAsync("CaseManagement", Models.TeamFormFields.SectionKey);
             return new CustomerFormMetadataDto { Fields = fields, Lookups = await LoadLookupsAsync(fields, ct) };
         });
 

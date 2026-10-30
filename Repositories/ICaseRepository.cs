@@ -31,5 +31,8 @@ public interface ICaseRepository
     Task<CaseChildRelation?> GetChildRelationByChildIdAsync(string childId, CancellationToken ct = default);
 
     // Case Audit Events
-    Task<PagedResponseDto<CaseAuditEventDto>> GetCaseAuditEventsAsync(int page = 1, int pageSize = 10, string? actionType = null, string? search = null, CancellationToken ct = default);
+    Task<PagedResponseDto<CaseAuditEventDto>> GetCaseAuditEventsAsync(AuditFilter filter, int page = 1, int pageSize = 10, CancellationToken ct = default);
+    Task<int> CountCaseAuditEventsAsync(AuditFilter filter, CancellationToken ct = default);
+    /// <summary>The newest <paramref name="limit"/> events matching the filter, for an export.</summary>
+    Task<List<CaseAuditEventDto>> GetCaseAuditEventsForExportAsync(AuditFilter filter, int limit, CancellationToken ct = default);
 }

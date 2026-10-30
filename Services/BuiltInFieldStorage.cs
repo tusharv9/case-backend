@@ -43,6 +43,8 @@ public static class BuiltInFieldStorage
         {
             return f.ModuleKey == "Customer360"
                 ? db.CustomerCustomAttributes.Where(a => a.FieldKey == f.ApiField).Select(a => (string?)a.FieldValue)
+                : f.ModuleKey == "CaseManagement" && f.SectionKey == TeamFormFields.SectionKey
+                    ? db.TeamCustomAttributes.Where(a => a.FieldKey == f.ApiField).Select(a => (string?)a.FieldValue)
                 : f.ModuleKey == "CaseManagement"
                     ? db.CaseCustomAttributes.Where(a => a.FieldKey == f.ApiField).Select(a => (string?)a.FieldValue)
                     : null;
@@ -50,5 +52,6 @@ public static class BuiltInFieldStorage
         return f.ModuleKey == "Customer360" && Customer360.TryGetValue(f.ApiField, out var b) ? b.Values?.Invoke(db) : null;
     }
 
-    public static string RecordsName(FieldConfiguration f) => f.ModuleKey == "Customer360" ? "customer" : "case";
+    public static string RecordsName(FieldConfiguration f) =>
+        f.ModuleKey == "Customer360" ? "customer" : f.SectionKey == TeamFormFields.SectionKey ? "team" : "case";
 }

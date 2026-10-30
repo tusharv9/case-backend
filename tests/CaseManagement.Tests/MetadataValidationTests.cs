@@ -42,15 +42,20 @@ public class MetadataValidationTests
             Code = "CC",
             IsActive = true
         };
+        // The tests pass the TEAM's id, the form older callers send: the case's department is the one that team serves.
+        var business = new OrgDepartment { Id = Guid.NewGuid(), Name = "Customer Service", Code = "CS", IsActive = true };
         var subcat = new DepartmentSubCategory
         {
             Id = Guid.NewGuid(),
             DepartmentId = dept.Id,
+            OrgDepartmentId = business.Id,
             Name = "General Inquiry",
             IsActive = true
         };
         db.Customers.Add(cust);
         db.Departments.Add(dept);
+        db.OrgDepartments.Add(business);
+        db.TeamDepartments.Add(new TeamDepartment { TeamId = dept.Id, OrgDepartmentId = business.Id, IsDefault = true });
         db.CaseTypeConfigs.Add(new CaseTypeConfig { Id = Guid.NewGuid(), Code = "Inquiry", Name = "Inquiry", Prefix = "I-", IsActive = true, CreatedAt = DateTime.UtcNow });
         db.DepartmentSubCategories.Add(subcat);
         await db.SaveChangesAsync();

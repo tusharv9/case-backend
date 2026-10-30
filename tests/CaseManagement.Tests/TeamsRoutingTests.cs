@@ -322,6 +322,7 @@ public class TeamsRoutingTests
                 new DepartmentSubCategory { Id = Guid.NewGuid(), DepartmentId = w.Team, Name = "Fraud", Code = "F", IsActive = true, CreatedAt = DateTime.UtcNow },
                 new DepartmentSubCategory { Id = Guid.NewGuid(), DepartmentId = w.Team, Name = "Fraud Prevention", Code = "FP", IsActive = true, CreatedAt = DateTime.UtcNow });
             await ctx.SaveChangesAsync();
+            await TestDepartments.LinkTeamsAsync(ctx);
             await w.Engine(ctx).CreateRuleAsync(Rule("Fraud", other, new RuleConditionsDto { Category = "Fraud" }), w.Admin);
         }
 
@@ -473,15 +474,17 @@ public class TeamsRoutingTests
     {
         await using var w = await World.CreateAsync(UserStatus.Offline);
         await using var ctx = w.Ctx();
-        var o = await Monitor(ctx, w).GetOverviewAsync();
+        var o = await Monitor(ctx, w).GetOverviewAsync(new MonitoringQuery());
 
         Assert.Equal(0, o.Summary.OnlineAgentsCount);
         Assert.Equal(4, o.Summary.TotalAgentsCount);                 // the 3 agents plus the lead, who is a member
         Assert.Null(o.Summary.LongestQueueWaitMinutes);              // not "38"
         Assert.Null(o.Summary.AvgResolutionMinutes);                 // not "6m 12s"
         Assert.Null(o.Summary.OccupancyPercent);                     // not 78%
-        Assert.Empty(o.SlaAtRisk);
-        Assert.All(o.Queues, q => Assert.Equal(0, q.WaitingCount));  // not fabricated per-channel defaults
+        Assert.All(o.QueueHealth.ByTeam, q => Assert.Equal(0, q.Total));   // not fabricated queue defaults
+        Assert.Empty(o.QueueHealth.ByChannel);                         // no open cases, so no channel rows
+        Assert.Equal(0, o.QueueHealth.TotalOpen);
+        Assert.Empty(o.AgentPerformance);                              // nobody holds or resolved anything: nothing to compare
         Assert.All(o.Agents, a => Assert.Equal(0, a.HandledTodayCount));
     }
 
@@ -522,7 +525,7 @@ public class TeamsRoutingTests
         await using var read = w.Ctx();
         var monitor = Monitor(read, w);
 
-        var team = await monitor.GetOverviewAsync(w.Team);
+        var team = await monitor.GetOverviewAsync(new MonitoringQuery(w.Team));
         Assert.Equal("Support", team.TeamName);
         Assert.Equal(4, team.Summary.TotalAgentsCount);
 
@@ -535,16 +538,19 @@ public class TeamsRoutingTests
 
         Assert.Equal("Voice", team.Summary.LongestQueueChannel);       // only the fresh one is still waiting for a first answer
         Assert.InRange(team.Summary.LongestQueueWaitMinutes!.Value, 4, 7);
-        var voice = team.Queues.Single(q => q.Channel == "Voice");
-        Assert.Equal(1, voice.WaitingCount);
-        Assert.Equal(1, voice.OpenCount);
-        Assert.Contains(team.SlaAtRisk, c => c.Health == "Breached");
+        var queue = team.QueueHealth.ByTeam.Single();
+        Assert.Equal(1, queue.AwaitingFirstResponse);                  // the fresh Voice case
+        Assert.Equal(1, queue.InProgress);
+        Assert.Equal(1, queue.Breached);
+        Assert.Equal(2, team.QueueHealth.ByChannel.Sum(b => b.Total));        // every view adds up to the same open cases
+        Assert.Equal(2, team.QueueHealth.ByStatus.Sum(b => b.Count));
+        Assert.Equal(1, team.AgentPerformance.Single(p => p.UserId == w.B).ResolvedCount);
 
         // Occupancy = open cases held by available agents / their capacity (3 online × 5, plus the lead's own 5).
         Assert.InRange(team.Summary.OccupancyPercent!.Value, 10, 25);
 
-        var all = await monitor.GetOverviewAsync();
+        var all = await monitor.GetOverviewAsync(new MonitoringQuery());
         Assert.Equal(3, all.Agents.Single(a => a.UserId == w.C).OpenCasesCount + 2);   // C holds the other team's case (1) → proves unfiltered scope
-        await Assert.ThrowsAsync<KeyNotFoundException>(() => monitor.GetOverviewAsync(Guid.NewGuid()));
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => monitor.GetOverviewAsync(new MonitoringQuery(Guid.NewGuid())));
     }
 }

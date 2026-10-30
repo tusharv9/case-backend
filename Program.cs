@@ -304,6 +304,7 @@ builder.Services.AddScoped<ICaseAccessScope, CaseAccessScope>();
 // The Host's user directory, read with the caller's token, for choosing team members (HostIntegration/HostUsers.cs).
 builder.Services.Configure<AuthServiceOptions>(builder.Configuration.GetSection(AuthServiceOptions.SectionName));
 builder.Services.AddHttpClient<HostUserDirectoryClient>();
+builder.Services.AddHttpClient<HostSignInHistoryClient>();
 builder.Services.AddScoped<HostUserService>();
 
 // Customer 360: existing customers are read from it with the caller's own token, and a case keeps only their
@@ -333,6 +334,9 @@ builder.Services.AddScoped<ISlaClockProvider, SlaClockProvider>();
 builder.Services.AddScoped<ISlaMonitor, SlaMonitorService>();
 builder.Services.Configure<SlaMonitorOptions>(builder.Configuration.GetSection(SlaMonitorOptions.SectionName));
 builder.Services.AddScoped<ISlaRoutingService, SlaRoutingService>();
+builder.Services.AddScoped<IAuditLogService, AuditLogService>();
+builder.Services.AddScoped<ITeamSettingsService, TeamSettingsService>();
+builder.Services.AddScoped<IOrgDepartmentService, OrgDepartmentService>();
 builder.Services.AddScoped<ITeamService, TeamService>();
 builder.Services.AddScoped<ITeamMonitoringService, TeamMonitoringService>();
 builder.Services.Configure<TeamMonitoringOptions>(builder.Configuration.GetSection(TeamMonitoringOptions.SectionName));

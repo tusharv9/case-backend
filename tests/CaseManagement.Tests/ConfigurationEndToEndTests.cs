@@ -46,6 +46,7 @@ public class ConfigurationEndToEndTests
                     new DepartmentSubCategory { Id = e.PaymentSub, DepartmentId = e.Dept, Name = "Payment Issue", Code = "P", IsActive = true, CreatedAt = DateTime.UtcNow },
                     new Customer { Id = e.Customer, FullName = "Ahmad Razak", IdType = "Passport Number", Passport = "A98765432", PhoneNumber = "+60 12-345 6789", Email = "ahmad@example.test", PreferredLanguage = "English", Branch = "KL HQ", CreatedAt = DateTime.UtcNow });
                 await ctx.SaveChangesAsync();
+                await TestDepartments.LinkTeamsAsync(ctx);
 
                 var critical = await ctx.PrioritySlaRules.FirstAsync(r => r.Priority == "Critical");
                 ctx.PriorityCategoryMappings.Add(new PriorityCategoryMapping { Id = Guid.NewGuid(), PrioritySlaRuleId = critical.Id, DepartmentSubCategoryId = e.FraudSub, CreatedAt = DateTime.UtcNow });

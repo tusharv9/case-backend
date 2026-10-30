@@ -28,6 +28,10 @@ public class CreateCaseDto
     public Guid? CustomerId { get; set; }
     /// <summary>An existing Customer 360 customer, as chosen from the search results. Only identifiers are stored.</summary>
     public Customer360SelectionDto? Customer360 { get; set; }
+    /// <summary>
+    /// The business department the case belongs to (Create Case → Department); routing picks the team. For older callers a
+    /// TEAM id is still accepted here: the case then starts with that team, and its department is the one the team serves.
+    /// </summary>
     public Guid DepartmentId { get; set; }
     public string Severity { get; set; } = string.Empty;
 

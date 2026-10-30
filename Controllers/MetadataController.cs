@@ -23,6 +23,9 @@ public class MetadataController : BaseApiController
     [HttpGet("case-form")]
     public async Task<IActionResult> GetCaseForm(CancellationToken ct) => Ok(await _metadata.GetCaseFormAsync(ct));
 
+    [HttpGet("team-form")]
+    public async Task<IActionResult> GetTeamForm(CancellationToken ct) => Ok(await _metadata.GetTeamFormAsync(ct));
+
     [HttpGet("customer-form")]
     public async Task<IActionResult> GetCustomerForm(CancellationToken ct) => Ok(await _metadata.GetCustomerFormAsync(ct));
 

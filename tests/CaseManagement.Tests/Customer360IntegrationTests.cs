@@ -338,6 +338,7 @@ public class Customer360CaseTests
                     new DepartmentSubCategory { Id = Guid.NewGuid(), DepartmentId = e.Dept, Name = "Fraud", Code = "F", IsActive = true, CreatedAt = DateTime.UtcNow },
                     new Customer { Id = e.LocalCustomer, FullName = "Ahmad Razak", IdType = "Passport Number", Passport = "A98765432", PhoneNumber = "+60 12-345 6789", PreferredLanguage = "English", CreatedAt = DateTime.UtcNow });
                 await ctx.SaveChangesAsync();
+                await TestDepartments.LinkTeamsAsync(ctx);
             }
 
             var settings = new Dictionary<string, string> { ["Customer360:BaseUrl"] = "http://c360.test" };

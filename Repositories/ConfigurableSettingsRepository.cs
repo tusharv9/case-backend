@@ -254,8 +254,9 @@ public class ConfigurableSettingsRepository : IConfigurableSettingsRepository
 
     public async Task<IEnumerable<DepartmentSubCategory>> GetSubCategoriesAsync(Guid? departmentId = null, bool activeOnly = true, CancellationToken ct = default)
     {
-        var query = _context.DepartmentSubCategories.Include(s => s.Department).AsNoTracking();
-        if (departmentId.HasValue && departmentId.Value != Guid.Empty) query = query.Where(s => s.DepartmentId == departmentId.Value);
+        // departmentId is the BUSINESS department (OrgDepartment) the sub-categories belong to.
+        var query = _context.DepartmentSubCategories.Include(s => s.OrgDepartment).AsNoTracking();
+        if (departmentId.HasValue && departmentId.Value != Guid.Empty) query = query.Where(s => s.OrgDepartmentId == departmentId.Value);
         if (activeOnly) query = query.Where(s => s.IsActive);
         return await query.OrderBy(s => s.DisplayOrder).ThenBy(s => s.Name).ToListAsync(ct);
     }
@@ -287,17 +288,18 @@ public class ConfigurableSettingsRepository : IConfigurableSettingsRepository
         return target;
     }
 
-    public async Task<bool> SubCategoryExistsAsync(Guid departmentId, string name, Guid? excludeId = null, CancellationToken ct = default)
+    public async Task<bool> SubCategoryExistsAsync(Guid? departmentId, string name, Guid? excludeId = null, CancellationToken ct = default)
     {
         return await _context.DepartmentSubCategories.AnyAsync(s =>
-            s.DepartmentId == departmentId &&
+            s.OrgDepartmentId == departmentId &&
             s.Name.ToLower() == name.ToLower() &&
             (excludeId == null || s.Id != excludeId), ct);
     }
 
+    /// <summary>Whether the business department (OrgDepartment) exists.</summary>
     public async Task<bool> DepartmentExistsAsync(Guid departmentId, CancellationToken ct = default)
     {
-        return await _context.Departments.AnyAsync(d => d.Id == departmentId, ct);
+        return await _context.OrgDepartments.AnyAsync(d => d.Id == departmentId, ct);
     }
 
     public async Task<bool> DeleteSubCategoryAsync(Guid id, CancellationToken ct = default)
@@ -324,11 +326,11 @@ public class ConfigurableSettingsRepository : IConfigurableSettingsRepository
         return await _context.Cases.CountAsync(c => c.CaseType.ToLower() == lowerCode || c.CaseType.ToLower() == lowerName, ct);
     }
 
-    public async Task<int> CountCasesBySubCategoryAsync(Guid departmentId, string name, CancellationToken ct = default)
+    public async Task<int> CountCasesBySubCategoryAsync(Guid? departmentId, string name, CancellationToken ct = default)
     {
         var lowerName = name.ToLower();
         return await _context.Cases.CountAsync(
-            c => c.DepartmentId == departmentId && c.Subcategory != null && c.Subcategory.ToLower() == lowerName, ct);
+            c => c.OrgDepartmentId == departmentId && c.Subcategory != null && c.Subcategory.ToLower() == lowerName, ct);
     }
 
     /// <summary>

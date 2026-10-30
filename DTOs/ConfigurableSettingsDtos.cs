@@ -102,6 +102,12 @@ public class LookupTypeDto
 
     /// <summary>True when each option can carry a format rule (ID types).</summary>
     public bool UsesFormatRules { get; set; }
+
+    /// <summary>Every form field and part of the application that reads this list ("Create Case → Source channel").</summary>
+    public List<string> UsedBy { get; set; } = new();
+
+    /// <summary>Read in more than one place: changing an option changes it everywhere listed in <see cref="UsedBy"/>.</summary>
+    public bool IsShared { get; set; }
 }
 
 public class LookupValueDto
