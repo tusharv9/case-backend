@@ -12,6 +12,12 @@ public class AuthServiceOptions
     public const string SectionName = "AuthService";
     public string? BaseUrl { get; set; }
     public int TimeoutSeconds { get; set; } = 15;
+
+    /// <summary>
+    /// This service's own key for AuthService's internal routes (<c>Internal__Services__CaseManagement__ApiKey</c> there).
+    /// With it, permissions are asked of AuthService on every request (<see cref="HostCapabilitiesClient"/>).
+    /// </summary>
+    public string? InternalApiKey { get; set; }
 }
 
 /// <summary>Why the Host's user directory could not be read, worded for the person using the Teams page.</summary>

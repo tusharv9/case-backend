@@ -45,7 +45,16 @@ public sealed class HostIdentityMiddleware
             return;
         }
 
-        var principal = await resolver.ResolveAsync(context, context.RequestAborted);
+        HostPrincipal? principal;
+        try
+        {
+            principal = await resolver.ResolveAsync(context, context.RequestAborted);
+        }
+        catch (HostAccessException ex)
+        {
+            await Reject(context, ex.Status, ex.Message);
+            return;
+        }
         if (principal == null)
         {
             await Reject(context, StatusCodes.Status401Unauthorized,

@@ -271,6 +271,8 @@ else
             o.TokenValidationParameters = HostJwtValidation.Parameters(jwt, hostOptions.Claims);
         });
 
+    // Permissions are asked of AuthService on every request once AuthService:InternalApiKey is set (HostCapabilities.cs).
+    builder.Services.AddHttpClient<HostCapabilitiesClient>();
     builder.Services.AddScoped<IHostIdentityResolver, JwtIdentityResolver>();
     builder.Services.AddScoped<IPermissionProvider, ConfiguredPermissionProvider>();
 

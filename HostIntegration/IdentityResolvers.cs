@@ -2,23 +2,35 @@ namespace CaseManagement.Api.HostIntegration;
 
 using System.Security.Claims;
 using System.Text.Json;
+using CaseManagement.Api.Data;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
 /// <summary>
 /// STANDALONE (development): the caller names themselves with the <c>X-User-Id</c> header. This is
 /// not authentication and exists only so the application runs without a Host App.
 /// </summary>
-public sealed class StandaloneIdentityResolver : IHostIdentityResolver
+/// <remarks>
+/// The user picker sends a user's own id (what <c>GET /api/users</c> lists). For a user first seen through the Host,
+/// that is not the external id the user is known by — so it is translated, or every such user (and on a database
+/// shared with a Host deployment, that can be every user) is refused with 401 and the standalone app cannot start.
+/// </remarks>
+public sealed class StandaloneIdentityResolver(AppDbContext? db = null) : IHostIdentityResolver
 {
     public const string HeaderName = "X-User-Id";
 
-    public Task<HostPrincipal?> ResolveAsync(HttpContext context, CancellationToken ct)
+    public async Task<HostPrincipal?> ResolveAsync(HttpContext context, CancellationToken ct)
     {
         if (!context.Request.Headers.TryGetValue(HeaderName, out var value) || string.IsNullOrWhiteSpace(value))
-            return Task.FromResult<HostPrincipal?>(null);
+            return null;
 
         var id = value.ToString().Trim();
-        return Task.FromResult<HostPrincipal?>(new HostPrincipal(id, null, null, Array.Empty<string>(), Array.Empty<string>()));
+        if (db != null && Guid.TryParse(id, out var localId))
+        {
+            var external = await db.Users.AsNoTracking().Where(u => u.Id == localId).Select(u => u.ExternalUserId).FirstOrDefaultAsync(ct);
+            if (!string.IsNullOrWhiteSpace(external)) id = external;
+        }
+        return new HostPrincipal(id, null, null, Array.Empty<string>(), Array.Empty<string>());
     }
 }
 
@@ -29,27 +41,37 @@ public sealed class StandaloneIdentityResolver : IHostIdentityResolver
 public sealed class JwtIdentityResolver : IHostIdentityResolver
 {
     private readonly HostIntegrationOptions.ClaimSettings _claims;
+    private readonly HostCapabilitiesClient? _capabilities;
 
-    public JwtIdentityResolver(IOptions<HostIntegrationOptions> options) => _claims = options.Value.Claims;
+    public JwtIdentityResolver(IOptions<HostIntegrationOptions> options, HostCapabilitiesClient? capabilities = null)
+    {
+        _claims = options.Value.Claims;
+        _capabilities = capabilities;
+    }
 
-    public Task<HostPrincipal?> ResolveAsync(HttpContext context, CancellationToken ct)
+    public async Task<HostPrincipal?> ResolveAsync(HttpContext context, CancellationToken ct)
     {
         var user = context.User;
         if (user.Identity?.IsAuthenticated != true)
-            return Task.FromResult<HostPrincipal?>(null);
+            return null;
 
         var id = First(user, _claims.UserId);
         if (string.IsNullOrWhiteSpace(id))
-            return Task.FromResult<HostPrincipal?>(null);
+            return null;
 
-        return Task.FromResult<HostPrincipal?>(new HostPrincipal(
-            id,
-            First(user, _claims.Name),
-            First(user, _claims.Email),
-            Many(user, _claims.Roles),
-            Many(user, _claims.Permissions),
-            // Exactly "true", as AuthService writes it — never inferred from a role or any other claim.
-            !string.IsNullOrWhiteSpace(_claims.Administrator) && First(user, _claims.Administrator) == "true"));
+        var permissions = Many(user, _claims.Permissions);
+        // Exactly "true", as AuthService writes it — never inferred from a role or any other claim.
+        var administrator = !string.IsNullOrWhiteSpace(_claims.Administrator) && First(user, _claims.Administrator) == "true";
+
+        // The current Host no longer puts permissions in the token: ask AuthService, which answers live.
+        if (_capabilities is { IsConfigured: true })
+        {
+            var answer = await _capabilities.ForUserAsync(id, ct);
+            permissions = answer.Permissions;
+            administrator = answer.IsAdministrator;
+        }
+
+        return new HostPrincipal(id, First(user, _claims.Name), First(user, _claims.Email), Many(user, _claims.Roles), permissions, administrator);
     }
 
     private static string? First(ClaimsPrincipal user, string type) =>
