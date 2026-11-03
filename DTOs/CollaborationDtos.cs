@@ -20,6 +20,8 @@ public class CaseCollaborationDto
     public List<ParticipantDto> Collaborators { get; set; } = new();
     public List<CollaborationActivityDto> Activities { get; set; } = new();
     public bool HasMore { get; set; }
+    /// <summary>The case's swarm requests (Team Leads and Supervisors asked for help), newest first.</summary>
+    public List<SwarmRequestDto> SwarmRequests { get; set; } = new();
 }
 
 public class AddCollaborationNoteDto

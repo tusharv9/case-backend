@@ -79,6 +79,9 @@ public class EscalateCaseDto
     /// <summary>The explanation, required when the chosen option RequiresDetail (e.g. "Other").</summary>
     public string? ReasonDetail { get; set; }
     public string? Note { get; set; }
+    /// <summary>The escalation-matrix level to escalate to; the next one above the case's current level when omitted.</summary>
+    public int? LevelNumber { get; set; }
+    /// <summary>Required: someone holding the level's role, from the escalation options (never the caller).</summary>
     public Guid? TargetUserId { get; set; }
     public Guid UserId { get; set; }
 }

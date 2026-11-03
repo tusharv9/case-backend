@@ -26,6 +26,7 @@ public class AppDbContext : DbContext
     public DbSet<CaseCustomAttribute> CaseCustomAttributes { get; set; } = null!;
     public DbSet<CaseAttachment> CaseAttachments { get; set; } = null!;
     public DbSet<CaseCollaborationActivity> CaseCollaborationActivities { get; set; } = null!;
+    public DbSet<CaseSwarmRequest> CaseSwarmRequests { get; set; } = null!;
 
     public DbSet<CaseTypeConfig> CaseTypeConfigs { get; set; } = null!;
     public DbSet<DepartmentSubCategory> DepartmentSubCategories { get; set; } = null!;
@@ -203,6 +204,21 @@ public class AppDbContext : DbContext
             .HasIndex(a => new { a.CaseId, a.CreatedAt })
             .IsDescending(false, true);
 
+        modelBuilder.Entity<CaseSwarmRequest>(entity =>
+        {
+            entity.HasOne(r => r.Case).WithMany().HasForeignKey(r => r.CaseId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(r => r.RequestedByUser).WithMany().HasForeignKey(r => r.RequestedByUserId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(r => r.RecipientUser).WithMany().HasForeignKey(r => r.RecipientUserId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(r => r.Team).WithMany().HasForeignKey(r => r.TeamId).OnDelete(DeleteBehavior.SetNull);
+            entity.Property(r => r.RecipientKind).HasMaxLength(20);
+            entity.Property(r => r.Status).HasMaxLength(20);
+            entity.Property(r => r.Message).HasMaxLength(2000);
+            entity.Property(r => r.ResponseNote).HasMaxLength(2000);
+            entity.HasIndex(r => new { r.CaseId, r.CreatedAt }).IsDescending(false, true);
+            // "My pending swarm requests" for the recipient.
+            entity.HasIndex(r => new { r.RecipientUserId, r.Status });
+        });
+
         // --- Performance indexes ---
         // Mirrored as idempotent CREATE INDEX IF NOT EXISTS statements in Program.cs, because
         // this project provisions with EnsureCreated() rather than Migrate(); the SQL block
@@ -321,6 +337,7 @@ public class AppDbContext : DbContext
             .HasOne(ce => ce.User)
             .WithMany()
             .HasForeignKey(ce => ce.UserId)
+            .IsRequired(false)
             .OnDelete(DeleteBehavior.Restrict);
 
         modelBuilder.Entity<Case>()

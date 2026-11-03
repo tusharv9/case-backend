@@ -27,6 +27,9 @@ public interface ICaseService
     Task UnlinkCaseAsync(Guid caseId, UnlinkCaseDto dto);
     Task ResolveCaseAsync(Guid caseId, ResolveCaseDto dto);
     Task EscalateCaseAsync(Guid caseId, EscalateCaseDto dto, Guid userId);
+    Task<EscalationOptionsDto> GetEscalationOptionsAsync(Guid caseId, Guid userId, CancellationToken ct = default);
+    /// <summary>Resolve with the single-case rules; <paramref name="bulk"/> only labels the audit event.</summary>
+    Task ResolveCaseAsync(Guid caseId, ResolveCaseDto dto, bool bulk);
     
     Task<EscalationMatrixResponseDto> GetEscalationMatrixConfigAsync(Guid? caseId = null, CancellationToken ct = default);
     Task<ReopenCaseResultDto> ReopenCaseAsync(Guid caseId, ReopenCaseDto dto);

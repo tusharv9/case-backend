@@ -67,15 +67,9 @@ public class CaseSummaryDto
     public string FirstResponseStatus { get; set; } = "Pending"; // Met, Breached, Pending
 
     // Escalation Matrix Tracking
-    public int EscalationLevel { get; set; } = 1;
-    public string EscalationLevelName => EscalationLevel switch
-    {
-        1 => "Assigned Agent",
-        2 => "Team Lead",
-        3 => "CX Supervisor",
-        4 => "Head of Customer Experience",
-        _ => "Assigned Agent"
-    };
+    /// <summary>0 = not escalated; n = the escalation matrix's Level n.</summary>
+    public int EscalationLevel { get; set; }
+    public string EscalationLevelName => EscalationLevel > 0 ? $"Level {EscalationLevel}" : "Not escalated";
 }
 
 public class CaseDetailDto : CaseSummaryDto
@@ -93,6 +87,8 @@ public class CaseDetailDto : CaseSummaryDto
     public List<LinkedCaseDto> LinkedCases { get; set; } = new();
     public List<CaseSummaryDto> Subcases { get; set; } = new();
     public List<CaseAttachmentDto> Attachments { get; set; } = new();
+    /// <summary>What the caller may do with the case's status now; null when there is no signed-in caller.</summary>
+    public CaseWorkflowDto? Workflow { get; set; }
 }
 
 public class CaseChildRelationDto
@@ -150,7 +146,8 @@ public class CustomerDetailDto : CustomerSummaryDto
 public class CaseEventDto
 {
     public Guid Id { get; set; }
-    public Guid UserId { get; set; }
+    /// <summary>Null when the person who did it has since been removed.</summary>
+    public Guid? UserId { get; set; }
     public string EventType { get; set; } = string.Empty;
     public string Message { get; set; } = string.Empty;
     public DateTime CreatedAt { get; set; }

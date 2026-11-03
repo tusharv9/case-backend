@@ -222,8 +222,8 @@ public class TransactionSafetyTests
             Department = dept,
             OwnerId = agent.Id,
             Owner = agent,
-            Status = CaseStatus.Open,
-            EscalationLevel = 1,
+            Status = CaseStatus.InProgress,
+            EscalationLevel = 0,
             CreatedAt = DateTime.UtcNow
         };
         db.Cases.Add(testCase);
@@ -238,8 +238,8 @@ public class TransactionSafetyTests
         db.LookupValues.Add(new LookupValue { Id = Guid.NewGuid(), LookupTypeId = reasonList.Id, TypeCode = "ESCALATION_REASON", Value = "Management Escalation", Label = "Management Escalation", IsActive = true });
 
         db.EscalationLevelConfigs.AddRange(
-            new EscalationLevelConfig { LevelNumber = 1, Name = "Level 1", AssignmentType = "Owner", TriggerType = "SlaPercentage", TriggerValue = 70, ReassignOwner = false, IsActive = true },
-            new EscalationLevelConfig { LevelNumber = 2, Name = "Level 2", AssignmentType = "Role", TargetRole = supervisor.Role, TriggerType = "SlaPercentage", TriggerValue = 90, ReassignOwner = true, IsActive = true });
+            new EscalationLevelConfig { LevelNumber = 1, Name = "Level 1", AssignmentType = "Role", TargetRole = "Team Lead", TriggerType = "SlaPercentage", TriggerValue = 70, ActionDescription = "Lead review", IsActive = true },
+            new EscalationLevelConfig { LevelNumber = 2, Name = "Level 2", AssignmentType = "Role", TargetRole = supervisor.Role, TriggerType = "SlaPercentage", TriggerValue = 90, ActionDescription = "Supervisor review", IsActive = true });
         await db.SaveChangesAsync();
 
         var service = new CaseService(
@@ -248,11 +248,12 @@ public class TransactionSafetyTests
             new Mock<IConfigurableSettingsService>().Object,
             db,
             mockEnv.Object,
-            escalation: new EscalationService(db, new ConfigCache(new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions())))
+            escalation: new EscalationService(db, new ConfigCache(new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions())), new FakeOrgDirectory(db))
         );
 
         var escalateDto = new EscalateCaseDto
         {
+            LevelNumber = 2,
             TargetUserId = supervisor.Id,
             Reason = "Management Escalation",
             Note = "Handled smoothly"

@@ -35,4 +35,6 @@ public static class CollaborationActivityTypes
     public const string CollaboratorRemoved = "CollaboratorRemoved";
     public const string NoteAdded = "NoteAdded";
     public const string SwarmRequested = "SwarmRequested";
+    public const string SwarmAccepted = "SwarmAccepted";
+    public const string SwarmDeclined = "SwarmDeclined";
 }

@@ -130,7 +130,7 @@ public sealed class SlaClock
         c.SlaTotalPausedMinutes = 0;
         c.SlaBreachedAt = null;
         c.SlaReminderSent = false;
-        c.EscalationLevel = 1;
+        c.EscalationLevel = 0;
         c.FirstResponseActualAt = null;
         c.FirstResponseStatus = "Pending";
         SnapshotRule(c, rule);

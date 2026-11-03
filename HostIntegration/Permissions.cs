@@ -32,6 +32,12 @@ public static class Permissions
     /// they lead or are an active member of (<see cref="ICaseAccessScope"/>).
     /// </summary>
     public const string CasesViewAll = "cases.viewall";
+
+    /// <summary>
+    /// Supervise cases: bulk reassign and bulk resolve, act on an escalated case someone else holds, and be offered as a
+    /// Supervisor in Request Swarm. Host roles granted <c>cases:Supervise</c> are the platform's Supervisors.
+    /// </summary>
+    public const string CasesSupervise = "cases.supervise";
     public const string CustomersRead = "customers.read";
     public const string CustomersWrite = "customers.write";
     public const string ConfigManage = "config.manage";
@@ -50,7 +56,7 @@ public static class Permissions
 
     public static readonly string[] All =
     {
-        CasesRead, CasesCreate, CasesWrite, CasesTransfer, CasesResolve, CasesAssign, CasesViewAll, CustomersRead, CustomersWrite, ConfigManage,
+        CasesRead, CasesCreate, CasesWrite, CasesTransfer, CasesResolve, CasesAssign, CasesViewAll, CasesSupervise, CustomersRead, CustomersWrite, ConfigManage,
         TeamsManage, MonitoringView, MonitoringNudge, AuditView, PiiUnmask
     };
 
@@ -63,7 +69,7 @@ public static class Permissions
         {
             ["Agent"] = new[] { CasesRead, CasesCreate, CasesWrite, CasesResolve, CustomersRead, CustomersWrite },
             ["Team Lead"] = new[] { CasesRead, CasesCreate, CasesWrite, CasesTransfer, CasesResolve, CasesAssign, CustomersRead, CustomersWrite, MonitoringView, MonitoringNudge, AuditView },
-            ["Supervisor"] = new[] { CasesRead, CasesCreate, CasesWrite, CasesTransfer, CasesResolve, CasesAssign, CasesViewAll, CustomersRead, CustomersWrite, MonitoringView, MonitoringNudge, AuditView, TeamsManage },
+            ["Supervisor"] = new[] { CasesRead, CasesCreate, CasesWrite, CasesTransfer, CasesResolve, CasesAssign, CasesViewAll, CasesSupervise, CustomersRead, CustomersWrite, MonitoringView, MonitoringNudge, AuditView, TeamsManage },
             ["Admin"] = new[] { Everything, PiiUnmask }
         };
 }

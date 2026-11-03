@@ -323,6 +323,8 @@ builder.Services.AddScoped<ICaseAccessScope, CaseAccessScope>();
 // The Host's user directory, read with the caller's token, for choosing team members (HostIntegration/HostUsers.cs).
 builder.Services.Configure<AuthServiceOptions>(builder.Configuration.GetSection(AuthServiceOptions.SectionName));
 builder.Services.AddHttpClient<HostUserDirectoryClient>();
+// Roles and the people holding them, read from AuthService (escalation matrix, escalation recipients, Supervisors).
+builder.Services.AddHttpClient<IOrgDirectory, HostOrgDirectory>();
 builder.Services.AddHttpClient<HostSignInHistoryClient>();
 builder.Services.AddScoped<HostUserService>();
 
@@ -367,6 +369,7 @@ builder.Services.AddSingleton<IAttachmentStore, LocalDiskAttachmentStore>();
 builder.Services.AddScoped<IAttachmentService, AttachmentService>();
 builder.Services.AddScoped<IMentionService, MentionService>();
 builder.Services.AddScoped<ICaseCollaborationService, CaseCollaborationService>();
+builder.Services.AddScoped<IBulkCaseService, BulkCaseService>();
 builder.Services.AddScoped<IDashboardService, DashboardService>();
 builder.Services.AddScoped<IAssignmentEligibilityService, AssignmentEligibilityService>();
 builder.Services.AddScoped<IAgentPoolService>(sp => new AgentPoolService(sp.GetRequiredService<IAssignmentEligibilityService>()));

@@ -25,6 +25,16 @@ public class EscalationLevelConfig : AuditableEntity
     public string ActionDescription { get; set; } = string.Empty; // e.g. "Reminder to assigned agent", "Reassign to team lead"
     public bool ReassignOwner { get; set; } = false;
 
+    // Notification (automatic escalation only notifies; it never reassigns). Who is told when the level is reached:
+    /// <summary>The people holding <see cref="TargetRole"/> — those of the case's team when there are any, otherwise all of them.</summary>
+    public bool NotifyRoleHolders { get; set; } = true;
+    /// <summary>The person holding the case.</summary>
+    public bool NotifyCaseOwner { get; set; }
+    /// <summary>The lead of the team handling the case.</summary>
+    public bool NotifyTeamLead { get; set; }
+    /// <summary>Priority of the notification: Medium, High or Critical.</summary>
+    public string NotificationPriority { get; set; } = "High";
+
     public int DisplayOrder { get; set; } = 1;
     public bool IsActive { get; set; } = true;
 }

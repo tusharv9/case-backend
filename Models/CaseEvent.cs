@@ -10,8 +10,9 @@ public class CaseEvent
     public string Message { get; set; } = string.Empty;
     public DateTime CreatedAt { get; set; }
     
-    public Guid UserId { get; set; }
-    public User User { get; set; } = null!;
+    /// <summary>Who did it. Null only when that person's record has since been removed (shown as "Former user").</summary>
+    public Guid? UserId { get; set; }
+    public User? User { get; set; }
 
     // Configurable Settings & Audit Trail enhancements
     public string? Module { get; set; }

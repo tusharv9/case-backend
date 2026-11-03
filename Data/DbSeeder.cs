@@ -930,77 +930,8 @@ public static class DbSeeder
                 context.SaveChanges();
             }
 
-            // 5. Seed EscalationLevelConfigs (default 4 levels) if empty
-            if (!context.EscalationLevelConfigs.Any())
-            {
-                context.EscalationLevelConfigs.AddRange(
-                    new EscalationLevelConfig
-                    {
-                        Id = Guid.NewGuid(),
-                        LevelNumber = 1,
-                        Name = "Level 1",
-                        AssignmentType = "Owner",
-                        TargetRole = "Assigned Agent",
-                        TriggerType = "SlaPercentage",
-                        TriggerValue = 70,
-                        TriggerDescription = "SLA consumption reaches 70%",
-                        ActionDescription = "Reminder to assigned agent",
-                        ReassignOwner = false,
-                        DisplayOrder = 1,
-                        IsActive = true,
-                        CreatedAt = now
-                    },
-                    new EscalationLevelConfig
-                    {
-                        Id = Guid.NewGuid(),
-                        LevelNumber = 2,
-                        Name = "Level 2",
-                        AssignmentType = "Role",
-                        TargetRole = "Team Lead",
-                        TriggerType = "SlaPercentage",
-                        TriggerValue = 90,
-                        TriggerDescription = "SLA consumption reaches 90%",
-                        ActionDescription = "Reassign to team lead",
-                        ReassignOwner = true,
-                        DisplayOrder = 2,
-                        IsActive = true,
-                        CreatedAt = now
-                    },
-                    new EscalationLevelConfig
-                    {
-                        Id = Guid.NewGuid(),
-                        LevelNumber = 3,
-                        Name = "Level 3",
-                        AssignmentType = "Role",
-                        TargetRole = "CX Supervisor",
-                        TriggerType = "SlaBreached",
-                        TriggerValue = null,
-                        TriggerDescription = "SLA is breached",
-                        ActionDescription = "Breach review and customer callback",
-                        ReassignOwner = true,
-                        DisplayOrder = 3,
-                        IsActive = true,
-                        CreatedAt = now
-                    },
-                    new EscalationLevelConfig
-                    {
-                        Id = Guid.NewGuid(),
-                        LevelNumber = 4,
-                        Name = "Level 4",
-                        AssignmentType = "Role",
-                        TargetRole = "Head of Customer Experience",
-                        TriggerType = "SlaPostBreachHours",
-                        TriggerValue = 12,
-                        TriggerDescription = "SLA has been breached for 12 hours",
-                        ActionDescription = "Executive escalation and RCA required",
-                        ReassignOwner = true,
-                        DisplayOrder = 4,
-                        IsActive = true,
-                        CreatedAt = now
-                    }
-                );
-                context.SaveChanges();
-            }
+            // 5. Escalation levels are not seeded: each one names a Host role granted Case Management access, which only an
+            //    administrator can choose (SLA & Routing → Escalation Matrix).
         }
         catch (Exception ex)
         {

@@ -78,6 +78,7 @@ public class ExceptionMiddleware
 
         // Signed in, but not allowed to change who holds this case; or the chosen person cannot hold it (the body carries a "code").
         AssignmentForbiddenException => (403, ex.Message, null),
+        CaseLockedException => (403, ex.Message, null),
         // Customer 360 is a dependency, not the user's input: unreachable is 503, refused access is 403.
         Customer360Exception { Failure: Customer360Failure.NotPermitted } => (403, ex.Message, null),
         Customer360Exception { Failure: Customer360Failure.Rejected } => (400, ex.Message, null),

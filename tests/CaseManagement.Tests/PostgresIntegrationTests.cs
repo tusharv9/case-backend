@@ -137,7 +137,8 @@ public class PostgresIntegrationTests
         Assert.True(await db.ScalarAsync<long>("SELECT count(*) FROM \"LookupValues\"") > 0);
         Assert.Equal(7L, await db.ScalarAsync<long>("SELECT count(*) FROM \"BusinessHours\""));
         Assert.True(await db.ScalarAsync<long>("SELECT count(*) FROM \"PrioritySlaRules\"") > 0);
-        Assert.True(await db.ScalarAsync<long>("SELECT count(*) FROM \"EscalationLevelConfigs\"") > 0);
+        // Escalation levels name Host roles, which only an administrator can choose: none are seeded.
+        Assert.Equal(0L, await db.ScalarAsync<long>("SELECT count(*) FROM \"EscalationLevelConfigs\""));
 
         Assert.Equal(0L, await db.ScalarAsync<long>("SELECT count(*) FROM \"Users\""));
         Assert.Equal(0L, await db.ScalarAsync<long>("SELECT count(*) FROM \"Departments\""));

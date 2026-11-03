@@ -569,7 +569,7 @@ namespace CaseManagement.Api.Migrations
                     b.Property<string>("OldValue")
                         .HasColumnType("text");
 
-                    b.Property<Guid>("UserId")
+                    b.Property<Guid?>("UserId")
                         .HasColumnType("uuid");
 
                     b.HasKey("Id");
@@ -603,6 +603,63 @@ namespace CaseManagement.Api.Migrations
                     b.HasIndex("UserId");
 
                     b.ToTable("CaseParticipants");
+                });
+
+            modelBuilder.Entity("CaseManagement.Api.Models.CaseSwarmRequest", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("CaseId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Message")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
+                    b.Property<string>("RecipientKind")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<Guid>("RecipientUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("RequestedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("RespondedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ResponseNote")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<Guid?>("TeamId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RequestedByUserId");
+
+                    b.HasIndex("TeamId");
+
+                    b.HasIndex("CaseId", "CreatedAt")
+                        .IsDescending(false, true);
+
+                    b.HasIndex("RecipientUserId", "Status");
+
+                    b.ToTable("CaseSwarmRequests");
                 });
 
             modelBuilder.Entity("CaseManagement.Api.Models.CaseTypeConfig", b =>
@@ -927,6 +984,19 @@ namespace CaseManagement.Api.Migrations
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasColumnType("text");
+
+                    b.Property<string>("NotificationPriority")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<bool>("NotifyCaseOwner")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("NotifyRoleHolders")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("NotifyTeamLead")
+                        .HasColumnType("boolean");
 
                     b.Property<bool>("ReassignOwner")
                         .HasColumnType("boolean");
@@ -1946,8 +2016,7 @@ namespace CaseManagement.Api.Migrations
                     b.HasOne("CaseManagement.Api.Models.User", "User")
                         .WithMany()
                         .HasForeignKey("UserId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("Case");
 
@@ -1971,6 +2040,40 @@ namespace CaseManagement.Api.Migrations
                     b.Navigation("Case");
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("CaseManagement.Api.Models.CaseSwarmRequest", b =>
+                {
+                    b.HasOne("CaseManagement.Api.Models.Case", "Case")
+                        .WithMany()
+                        .HasForeignKey("CaseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("CaseManagement.Api.Models.User", "RecipientUser")
+                        .WithMany()
+                        .HasForeignKey("RecipientUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("CaseManagement.Api.Models.User", "RequestedByUser")
+                        .WithMany()
+                        .HasForeignKey("RequestedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("CaseManagement.Api.Models.Department", "Team")
+                        .WithMany()
+                        .HasForeignKey("TeamId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("Case");
+
+                    b.Navigation("RecipientUser");
+
+                    b.Navigation("RequestedByUser");
+
+                    b.Navigation("Team");
                 });
 
             modelBuilder.Entity("CaseManagement.Api.Models.CustomerCustomAttribute", b =>

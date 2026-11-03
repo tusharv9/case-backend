@@ -125,13 +125,19 @@ public class CasesController : BaseApiController
         return Ok(new { message = dto.IsInternal ? "Internal note posted successfully." : "Customer reply sent successfully." });
     }
 
+    /// <summary>Who a swarm can be requested from: every team's lead and the Supervisors (never regular agents).</summary>
+    [HttpGet("{id:guid}/swarm/candidates")]
+    public async Task<IActionResult> GetSwarmCandidates(Guid id, CancellationToken ct)
+        => Ok(await _collaboration.GetSwarmCandidatesAsync(id, CurrentUserId, ct));
+
     [HttpPost("{id:guid}/swarm")]
-    public async Task<IActionResult> RequestSwarm(Guid id, [FromBody] RequestSwarmDto dto)
-    {
-        dto.UserId = CurrentUserId;
-        await _collaboration.RequestSwarmAsync(id, dto, CurrentUserId);
-        return Ok(new { message = "Swarm requested successfully. Team Lead and Subject Matter Experts have been notified and added to the case." });
-    }
+    public async Task<IActionResult> RequestSwarm(Guid id, [FromBody] CreateSwarmRequestDto dto)
+        => Ok(await _collaboration.RequestSwarmAsync(id, dto, CurrentUserId));
+
+    /// <summary>The recipient accepts (joins as a collaborator) or declines a swarm request.</summary>
+    [HttpPost("{id:guid}/swarm/{requestId:guid}/respond")]
+    public async Task<IActionResult> RespondToSwarm(Guid id, Guid requestId, [FromBody] RespondSwarmRequestDto dto)
+        => Ok(await _collaboration.RespondToSwarmAsync(id, requestId, dto, CurrentUserId));
 
     [HttpGet("{id:guid}/attachments")]
     public async Task<IActionResult> GetAttachments(Guid id, CancellationToken ct)
@@ -166,11 +172,21 @@ public class CasesController : BaseApiController
         return File(download.Content, download.ContentType, download.FileName);   // File(...) sends Content-Disposition: attachment
     }
 
+    /// <summary>Teams to choose collaborators from (Add Collaborator, step 1).</summary>
+    [HttpGet("{id:guid}/collaborators/teams")]
+    public async Task<IActionResult> GetCollaboratorTeams(Guid id, CancellationToken ct)
+        => Ok(await _collaboration.GetCollaboratorTeamsAsync(id, ct));
+
+    /// <summary>One team's members and lead (Add Collaborator, step 2).</summary>
+    [HttpGet("{id:guid}/collaborators/candidates")]
+    public async Task<IActionResult> GetCollaboratorCandidates(Guid id, [FromQuery] Guid teamId, CancellationToken ct)
+        => Ok(await _collaboration.GetCollaboratorCandidatesAsync(id, teamId, CurrentUserId, ct));
+
     [HttpPost("{id:guid}/coworkers")]
-    public async Task<IActionResult> AddCoworkers(Guid id, [FromBody] AddCoworkersDto dto)
+    public async Task<IActionResult> AddCoworkers(Guid id, [FromBody] AddCollaboratorsDto dto)
     {
-        await _collaboration.AddCoworkersAsync(id, dto.CoworkerIds, CurrentUserId);
-        return Ok(new { message = "Coworkers added successfully." });
+        await _collaboration.AddCoworkersAsync(id, dto, CurrentUserId);
+        return Ok(new { message = "Collaborators added successfully." });
     }
 
     [HttpDelete("{id:guid}/coworkers/{coworkerId:guid}")]
@@ -291,6 +307,11 @@ public class CasesController : BaseApiController
         await _caseService.EscalateCaseAsync(id, dto, CurrentUserId);
         return Ok(new { message = "Case escalated successfully." });
     }
+
+    /// <summary>The levels this case can be escalated to and, for each, who may receive it.</summary>
+    [HttpGet("{id:guid}/escalation-options")]
+    public async Task<IActionResult> GetEscalationOptions(Guid id, CancellationToken ct)
+        => Ok(await _caseService.GetEscalationOptionsAsync(id, CurrentUserId, ct));
 
     [HttpGet("escalation-matrix")]
     public async Task<IActionResult> GetEscalationMatrix([FromQuery] Guid? caseId, CancellationToken ct)

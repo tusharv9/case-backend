@@ -508,7 +508,7 @@ public class CaseRepository : ICaseRepository
         if (filter.ActorIds != null)
         {
             var actors = filter.ActorIds.ToList();
-            query = query.Where(ce => actors.Contains(ce.UserId)).Where(AutomaticEvents.IsPersonal);
+            query = query.Where(ce => ce.UserId != null && actors.Contains(ce.UserId.Value)).Where(AutomaticEvents.IsPersonal);
         }
         if (filter.TeamId.HasValue) query = query.Where(ce => ce.Case != null && ce.Case.DepartmentId == filter.TeamId.Value);
         if (filter.DepartmentId.HasValue)
@@ -603,7 +603,7 @@ public class CaseRepository : ICaseRepository
             ActionType = !string.IsNullOrEmpty(e.ActionType) ? e.ActionType : e.EventType.ToString(),
             ActionLabel = AuditLabels.For(e.EventType, e.ActionType, e.Module),
             ActorId = e.UserId,
-            ActorName = e.ActorName ?? "System",
+            ActorName = e.ActorName ?? (e.UserId == null ? "Former user" : "System"),
             ActorRole = e.ActorRole ?? string.Empty,
             CaseId = e.CaseId,
             CaseNumber = e.CaseNumber ?? "Configurable Settings",
@@ -629,7 +629,7 @@ public class CaseRepository : ICaseRepository
         public DateTime CreatedAt { get; init; }
         public EventType EventType { get; init; }
         public string Message { get; init; } = string.Empty;
-        public Guid UserId { get; init; }
+        public Guid? UserId { get; init; }
         public string? ActorName { get; init; }
         public string? ActorRole { get; init; }
         public Guid? CaseId { get; init; }

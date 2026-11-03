@@ -73,9 +73,22 @@ public class EscalationLevelConfigDto
     public decimal? TriggerValue { get; set; }
     public string TriggerDescription { get; set; } = string.Empty;
 
+    /// <summary>The escalation reason / description shown with the level.</summary>
     public string ActionDescription { get; set; } = string.Empty;
+    /// <summary>Kept for older clients; escalation never reassigns automatically (it only notifies).</summary>
     public bool ReassignOwner { get; set; } = false;
     public bool IsActive { get; set; } = true;
+
+    // Notification settings (automatic escalation only notifies).
+    public bool NotifyRoleHolders { get; set; } = true;
+    public bool NotifyCaseOwner { get; set; }
+    public bool NotifyTeamLead { get; set; }
+    public string NotificationPriority { get; set; } = "High";
+
+    /// <summary>Read only: what this level still needs before it can run (empty when complete).</summary>
+    public List<string> MissingFields { get; set; } = new();
+    /// <summary>Read only: the role no longer has Case Management access in OmniConnect.</summary>
+    public bool RoleUnavailable { get; set; }
 }
 
 public class CreateEscalationLevelDto
@@ -92,7 +105,11 @@ public class CreateEscalationLevelDto
     public string TriggerType { get; set; } = "SlaBreached";
     public decimal? TriggerValue { get; set; }
     public string? ActionDescription { get; set; }
-    public bool ReassignOwner { get; set; } = true;
+    public bool ReassignOwner { get; set; }
+    public bool NotifyRoleHolders { get; set; } = true;
+    public bool NotifyCaseOwner { get; set; }
+    public bool NotifyTeamLead { get; set; }
+    public string NotificationPriority { get; set; } = "High";
 }
 
 /// <summary>Only the fields that are supplied change.</summary>
@@ -107,6 +124,10 @@ public class UpdateEscalationLevelDto
     public string? ActionDescription { get; set; }
     public bool? ReassignOwner { get; set; }
     public bool? IsActive { get; set; }
+    public bool? NotifyRoleHolders { get; set; }
+    public bool? NotifyCaseOwner { get; set; }
+    public bool? NotifyTeamLead { get; set; }
+    public string? NotificationPriority { get; set; }
 }
 
 /// <summary>A trigger the escalation engine can execute — what the editor offers, so nothing unexecutable can be configured.</summary>
@@ -156,7 +177,11 @@ public class SlaRoutingConfigResponseDto
     public List<BusinessHourDto> BusinessHours { get; set; } = new();
     public List<PublicHolidayDto> PublicHolidays { get; set; } = new();
     public List<EscalationLevelConfigDto> EscalationLevels { get; set; } = new();
+    /// <summary>The Host roles granted Case Management access — the only roles a level may be given.</summary>
     public List<string> AvailableRoles { get; set; } = new();
+    /// <summary>Set when the Host's roles could not be read (the editor says so instead of offering an empty list).</summary>
+    public string? RolesUnavailableMessage { get; set; }
+    public List<string> NotificationPriorities { get; set; } = new();
     public List<UserOptionDto> AvailableUsers { get; set; } = new();
 
     /// <summary>The zone the business hours are written in (IANA id).</summary>

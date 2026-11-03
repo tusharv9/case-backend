@@ -269,218 +269,221 @@ public class SlaClockTests
     }
 }
 
+/// <summary>Automatic escalation runs on SLA consumption only, between 1 and 100%.</summary>
 public class EscalationTriggerTests
 {
     [Theory]
     [InlineData("SlaPercentage", 70, true)]
+    [InlineData("SlaPercentage", 100, true)]
     [InlineData("SlaPercentage", null, false)]      // a threshold is required
     [InlineData("SlaPercentage", 0, false)]
-    [InlineData("SlaPostBreachHours", 12, true)]
-    [InlineData("SlaPostBreachHours", null, false)]
-    [InlineData("SlaBreached", null, true)]
-    [InlineData("FirstResponseBreached", null, true)]
-    [InlineData("ManualOnly", null, true)]
-    [InlineData("WhenTheMoonIsFull", null, false)]  // only triggers the engine can execute
-    public void Validate_AcceptsOnlyExecutableTriggers(string type, int? value, bool valid)
+    [InlineData("SlaPercentage", 101, false)]       // more than all of the SLA is not a consumption threshold
+    [InlineData("SlaBreached", null, false)]        // older trigger kinds are no longer executed
+    [InlineData("SlaPostBreachHours", 12, false)]
+    [InlineData("ManualOnly", null, false)]
+    public void Only_an_SLA_consumption_percentage_is_a_trigger(string type, int? value, bool valid)
     {
         Assert.Equal(valid, EscalationTriggers.Validate(type, value) == null);
     }
 
     [Fact]
-    public void Describe_IsDerivedFromTheStructure()
+    public void The_description_is_derived_from_the_threshold()
     {
         Assert.Equal("SLA consumption reaches 90%", EscalationTriggers.Describe("SlaPercentage", 90m));
-        Assert.Equal("SLA has been breached for 12 hours", EscalationTriggers.Describe("SlaPostBreachHours", 12m));
-        Assert.Equal("SLA is breached", EscalationTriggers.Describe("SlaBreached", null));
+        Assert.Equal(string.Empty, EscalationTriggers.Describe("SlaBreached", null));
+    }
+}
+
+/// <summary>
+/// What makes a level usable, and what makes a matrix savable. An incomplete level must never run, a role may sit on only
+/// one level, and thresholds must rise with the level — otherwise a later level could fire before an earlier one.
+/// </summary>
+public class EscalationLevelRulesTests
+{
+    private static EscalationLevelRules.Input L(int n, string? role, decimal? pct, string? why = "Needs attention", bool notify = true) =>
+        new(n, role, "SlaPercentage", pct, why, notify, false, false, "High");
+
+    [Fact]
+    public void An_incomplete_level_names_every_missing_field()
+    {
+        var missing = EscalationLevelRules.MissingFields(null, "SlaPercentage", null, " ", false, false, false, "High");
+
+        Assert.Equal(new[] { EscalationLevelRules.RoleField, EscalationLevelRules.ThresholdField, EscalationLevelRules.DescriptionField, EscalationLevelRules.NotificationField }, missing);
+    }
+
+    [Fact]
+    public void A_complete_matrix_with_rising_thresholds_and_distinct_roles_is_accepted()
+    {
+        var errors = EscalationLevelRules.Validate(new[] { L(1, "Team Lead", 50), L(2, "Supervisor", 75), L(3, "Manager", 90) },
+            new[] { "Team Lead", "Supervisor", "Manager" });
+
+        Assert.Empty(errors);
+    }
+
+    [Fact]
+    public void A_role_used_on_two_levels_is_refused()
+    {
+        var errors = EscalationLevelRules.Validate(new[] { L(1, "Team Lead", 50), L(2, "team lead", 75) }, null);
+
+        Assert.Contains(errors, e => e.Field == "Level 2" && e.Message.Contains("already assigned to Level 1"));
+    }
+
+    [Fact]
+    public void Thresholds_must_rise_with_the_level()
+    {
+        var errors = EscalationLevelRules.Validate(new[] { L(1, "Team Lead", 75), L(2, "Supervisor", 75) }, null);
+
+        Assert.Contains(errors, e => e.Field == "Level 2" && e.Message.Contains("must be higher than Level 1"));
+    }
+
+    [Fact]
+    public void A_new_level_is_refused_until_it_is_complete()
+    {
+        var errors = EscalationLevelRules.Validate(new[] { L(1, "Team Lead", 50), L(2, null, null, why: null, notify: false) }, null);
+
+        Assert.Contains(errors, e => e.Field == "Level 2" && e.Message.StartsWith("Level 2 is incomplete"));
+    }
+
+    [Fact]
+    public void A_role_without_Case_Management_access_is_refused_unless_the_level_already_had_it()
+    {
+        var allowed = new[] { "Team Lead" };
+
+        var fresh = EscalationLevelRules.Validate(new[] { L(1, "Team Lead", 50), L(2, "Teller", 75) }, allowed);
+        var kept = EscalationLevelRules.Validate(new[] { L(1, "Team Lead", 50), L(2, "Teller", 80) }, allowed,
+            new Dictionary<int, string> { [2] = "Teller" });
+
+        Assert.Contains(fresh, e => e.Field == "Level 2" && e.Message.Contains("does not have access to Case Management"));
+        Assert.Empty(kept);
     }
 }
 
 public class EscalationDecisionTests
 {
-    private static EscalationLevelConfig Level(int n, string type, decimal? value = null, bool active = true) => new()
+    private static EscalationLevelConfig Level(int n, decimal value) => new()
     {
-        LevelNumber = n, Name = $"Level {n}", TriggerType = type, TriggerValue = value, IsActive = active, TargetRole = "Role" + n,
+        LevelNumber = n, Name = $"Level {n}", TriggerType = "SlaPercentage", TriggerValue = value, IsActive = true, TargetRole = "Role" + n,
+        ActionDescription = "Why", NotifyRoleHolders = true, NotificationPriority = "High",
     };
 
-    private static EscalationDecision? Decide(Case c, SlaSnapshot s, params EscalationLevelConfig[] levels)
-    {
-        var svc = new EscalationService(null!, null!);
-        var policy = new EscalationPolicy(levels.Where(l => l.IsActive).ToList(), null);
-        return svc.FindDueLevel(c, s, policy, DateTime.UtcNow);
-    }
+    private static EscalationDecision? Decide(Case c, SlaSnapshot s, params EscalationLevelConfig[] levels) =>
+        new EscalationService(null!, null!).FindDueLevel(c, s, new EscalationPolicy(levels), DateTime.UtcNow);
 
-    private static SlaSnapshot Snapshot(double internalPct = 0, bool internalBreached = false, bool paused = false, bool frBreached = false, bool stopped = false)
+    private static SlaSnapshot Snapshot(double internalPct = 0, bool paused = false, bool stopped = false)
     {
         SlaTargetState T(double pct, bool b) => new(100, pct, 100 - pct, pct, null, b);
-        return new SlaSnapshot(SlaHealth.Healthy, paused, stopped, !paused, T(internalPct, internalBreached), T(internalPct / 2, false),
-            T(0, frBreached), "Pending", DateTime.UtcNow);
+        return new SlaSnapshot(SlaHealth.Healthy, paused, stopped, !paused, T(internalPct, internalPct >= 100), T(internalPct / 2, false),
+            T(0, false), "Pending", DateTime.UtcNow);
     }
 
     [Fact]
-    public void PercentageTrigger_FiresAtItsThreshold()
+    public void A_new_case_reaches_Level_1_at_its_threshold()
     {
-        var c = new Case { EscalationLevel = 1 };
-        var levels = new[] { Level(1, "SlaPercentage", 70), Level(2, "SlaPercentage", 90) };
+        var c = new Case { EscalationLevel = 0 };
+        var levels = new[] { Level(1, 50), Level(2, 75) };
 
-        Assert.Null(Decide(c, Snapshot(89), levels));
-        Assert.Equal(2, Decide(c, Snapshot(90), levels)!.Level.LevelNumber);
+        Assert.Null(Decide(c, Snapshot(49), levels));
+        Assert.Equal(1, Decide(c, Snapshot(50), levels)!.Level.LevelNumber);
     }
 
     [Fact]
-    public void ANewLevel_UsesItsOwnThreshold_NotADefault70()
+    public void When_several_thresholds_are_met_the_highest_is_reached()
     {
-        // Regression: levels added without a value used to fire at 70%.
+        var c = new Case { EscalationLevel = 0 };
+
+        Assert.Equal(3, Decide(c, Snapshot(95), Level(1, 50), Level(2, 75), Level(3, 90), Level(4, 100))!.Level.LevelNumber);
+    }
+
+    [Fact]
+    public void Levels_the_case_already_reached_never_fire_again()
+    {
         var c = new Case { EscalationLevel = 2 };
-        var levels = new[] { Level(1, "SlaPercentage", 70), Level(2, "SlaPercentage", 90), Level(5, "SlaPercentage", 150) };
 
-        Assert.Null(Decide(c, Snapshot(100), levels));
-        Assert.Equal(5, Decide(c, Snapshot(150), levels)!.Level.LevelNumber);
+        Assert.Null(Decide(c, Snapshot(80), Level(1, 50), Level(2, 75), Level(3, 90)));
     }
 
     [Fact]
-    public void PausedAndResolvedCases_NeverEscalate()
+    public void Paused_and_resolved_cases_never_escalate()
     {
-        var c = new Case { EscalationLevel = 1 };
-        var levels = new[] { Level(1, "SlaPercentage", 70), Level(2, "SlaBreached") };
+        var c = new Case { EscalationLevel = 0 };
 
-        Assert.Null(Decide(c, Snapshot(200, internalBreached: true, paused: true), levels));
-        Assert.Null(Decide(c, Snapshot(200, internalBreached: true, stopped: true), levels));
-        Assert.NotNull(Decide(c, Snapshot(200, internalBreached: true), levels));
-    }
-
-    [Fact]
-    public void InactiveLevels_AreSkipped_AndManualOnlyLevelsDoNotBlock()
-    {
-        var c = new Case { EscalationLevel = 1 };
-        var levels = new[]
-        {
-            Level(1, "SlaPercentage", 70),
-            Level(2, "SlaBreached", active: false),
-            Level(3, "ManualOnly"),
-            Level(4, "SlaBreached"),
-        };
-        Assert.Equal(4, Decide(c, Snapshot(120, internalBreached: true), levels)!.Level.LevelNumber);
-    }
-
-    [Fact]
-    public void Levels_AreSequential()
-    {
-        // Level 3's trigger is met but level 2's is not: 2 must come first.
-        var c = new Case { EscalationLevel = 1 };
-        var levels = new[] { Level(1, "SlaPercentage", 70), Level(2, "SlaPercentage", 200), Level(3, "SlaBreached") };
-        Assert.Null(Decide(c, Snapshot(120, internalBreached: true), levels));
-    }
-
-    [Fact]
-    public void PostBreachHours_CountsFromTheRecordedBreach()
-    {
-        var svc = new EscalationService(null!, null!);
-        var policy = new EscalationPolicy(new[] { Level(1, "SlaPercentage", 70), Level(2, "SlaPostBreachHours", 12) }, null);
-        var now = DateTime.UtcNow;
-        var s = Snapshot(150, internalBreached: true);
-
-        Assert.Null(svc.FindDueLevel(new Case { EscalationLevel = 1, SlaBreachedAt = now.AddHours(-11) }, s, policy, now));
-        Assert.NotNull(svc.FindDueLevel(new Case { EscalationLevel = 1, SlaBreachedAt = now.AddHours(-13) }, s, policy, now));
-    }
-
-    [Fact]
-    public void FirstResponseTrigger_FiresOnAMissedFirstResponse()
-    {
-        var c = new Case { EscalationLevel = 1 };
-        var levels = new[] { Level(1, "SlaPercentage", 70), Level(2, "FirstResponseBreached") };
-        Assert.Null(Decide(c, Snapshot(10), levels));
-        Assert.NotNull(Decide(c, Snapshot(10, frBreached: true), levels));
+        Assert.Null(Decide(c, Snapshot(200, paused: true), Level(1, 50)));
+        Assert.Null(Decide(c, Snapshot(200, stopped: true), Level(1, 50)));
     }
 }
 
-public class EscalationTargetTests
+/// <summary>
+/// Who a case can be escalated to at a level: people holding the level's role, narrowed to the case's team, then to the
+/// teams serving the case's department, else everyone in the role — and never the caller or the current holder.
+/// </summary>
+public class EscalationRecipientTests
 {
     private static AppDbContext NewDb() =>
         new(new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase("esc_" + Guid.NewGuid()).Options);
 
     private static EscalationService Service(AppDbContext db) =>
-        new(db, new ConfigCache(new MemoryCache(new MemoryCacheOptions())));
+        new(db, new ConfigCache(new MemoryCache(new MemoryCacheOptions())), new FakeOrgDirectory(db));
 
-    private static User U(string name, string role, Guid? dept = null, bool active = true) =>
-        new() { Id = Guid.NewGuid(), Name = name, Email = name + "@x.test", Role = role, DepartmentId = dept, IsActive = active };
+    private static User U(string name, string role, bool active = true) =>
+        new() { Id = Guid.NewGuid(), Name = name, Email = name + "@x.test", Role = role, IsActive = active };
+
+    private static EscalationLevelConfig Level(string role) => new() { LevelNumber = 1, Name = "Level 1", TargetRole = role };
 
     [Fact]
-    public async Task RoleMatch_IsExact_NotAContainsGuess()
+    public async Task Holders_of_the_role_in_the_cases_own_team_are_offered_first()
     {
         using var db = NewDb();
         var owner = U("Owner", "Agent");
-        var headTeller = U("Head Teller", "Head Teller");       // contains "Head" — must NOT become the Head of CX
-        var head = U("Real Head", "Head of Customer Experience");
-        db.Users.AddRange(owner, headTeller, head);
+        var ourLead = U("Ours", "Team Lead");
+        var theirLead = U("Theirs", "Team Lead");
+        var team = new Department { Id = Guid.NewGuid(), Name = "Cards", Code = "CRD", OwnerId = ourLead.Id };
+        var other = new Department { Id = Guid.NewGuid(), Name = "Loans", Code = "LNS", OwnerId = theirLead.Id };
+        db.AddRange(owner, ourLead, theirLead, team, other);
         await db.SaveChangesAsync();
 
-        var c = new Case { OwnerId = owner.Id, DepartmentId = Guid.NewGuid() };
-        var level = new EscalationLevelConfig { AssignmentType = "Role", TargetRole = "Head of Customer Experience" };
+        var c = new Case { OwnerId = owner.Id, DepartmentId = team.Id };
+        var people = await Service(db).RecipientsAsync(c, Level("team lead"), owner.Id);
 
-        Assert.Equal(head.Id, (await Service(db).ResolveTargetAsync(c, level))!.Id);
+        Assert.Equal(new[] { ourLead.Id }, people.Select(p => p.User.Id));
+        Assert.True(people[0].IsCaseTeam);
     }
 
     [Fact]
-    public async Task PrefersTheCasesOwnTeam_AndNeverTheCurrentOwner()
-    {
-        using var db = NewDb();
-        var deptA = Guid.NewGuid(); var deptB = Guid.NewGuid();
-        var owner = U("Owner", "Team Lead", deptA);
-        var otherTeamLead = U("Alpha", "Team Lead", deptB);
-        var sameTeamLead = U("Zed", "Team Lead", deptA);
-        db.Users.AddRange(owner, otherTeamLead, sameTeamLead);
-        await db.SaveChangesAsync();
-
-        var c = new Case { OwnerId = owner.Id, DepartmentId = deptA };
-        var level = new EscalationLevelConfig { AssignmentType = "Role", TargetRole = "team lead" };   // case-insensitive
-
-        Assert.Equal(sameTeamLead.Id, (await Service(db).ResolveTargetAsync(c, level))!.Id);
-    }
-
-    [Fact]
-    public async Task InactiveUsers_AreNeverTargets()
+    public async Task A_team_serving_the_cases_department_comes_next_then_everyone_in_the_role()
     {
         using var db = NewDb();
         var owner = U("Owner", "Agent");
-        var gone = U("Gone", "Team Lead", active: false);
-        db.Users.AddRange(owner, gone);
+        var deptSupervisor = U("Dept", "Supervisor");
+        var elsewhere = U("Elsewhere", "Supervisor");
+        var caseTeam = new Department { Id = Guid.NewGuid(), Name = "Cards", Code = "CRD" };
+        var servingTeam = new Department { Id = Guid.NewGuid(), Name = "Disputes", Code = "DSP", IsActive = true };
+        var department = new OrgDepartment { Id = Guid.NewGuid(), Name = "Retail", Code = "RTL" };
+        db.AddRange(owner, deptSupervisor, elsewhere, caseTeam, servingTeam, department);
+        db.TeamDepartments.Add(new TeamDepartment { TeamId = servingTeam.Id, OrgDepartmentId = department.Id });
+        db.TeamMembers.Add(new TeamMember { DepartmentId = servingTeam.Id, UserId = deptSupervisor.Id });
         await db.SaveChangesAsync();
 
-        var c = new Case { OwnerId = owner.Id, DepartmentId = Guid.NewGuid() };
-        Assert.Null(await Service(db).ResolveTargetAsync(c, new EscalationLevelConfig { AssignmentType = "Role", TargetRole = "Team Lead" }));
+        var inDepartment = await Service(db).RecipientsAsync(new Case { OwnerId = owner.Id, DepartmentId = caseTeam.Id, OrgDepartmentId = department.Id }, Level("Supervisor"), owner.Id);
+        var anywhere = await Service(db).RecipientsAsync(new Case { OwnerId = owner.Id, DepartmentId = caseTeam.Id }, Level("Supervisor"), owner.Id);
+
+        Assert.Equal(new[] { deptSupervisor.Id }, inDepartment.Select(p => p.User.Id));
+        Assert.Equal(new[] { deptSupervisor.Id, elsewhere.Id }.OrderBy(x => x), anywhere.Select(p => p.User.Id).OrderBy(x => x));
     }
 
     [Fact]
-    public async Task WhenNobodyHoldsTheRole_ItFallsBackToTheDepartmentOwner_NotToAnyone()
+    public async Task The_caller_the_holder_and_inactive_people_are_never_offered()
     {
         using var db = NewDb();
-        var owner = U("Owner", "Agent");
-        var deptOwner = U("DeptOwner", "Manager");
-        var stranger = U("Stranger", "Cashier");
-        var dept = new Department { Id = Guid.NewGuid(), Name = "D", Code = "D", OwnerId = deptOwner.Id };
-        db.AddRange(owner, deptOwner, stranger, dept);
+        var owner = U("Owner", "Manager");
+        var me = U("Me", "Manager");
+        var gone = U("Gone", "Manager", active: false);
+        var other = U("Other", "Manager");
+        db.Users.AddRange(owner, me, gone, other);
         await db.SaveChangesAsync();
 
-        var c = new Case { OwnerId = owner.Id, DepartmentId = dept.Id };
-        var level = new EscalationLevelConfig { AssignmentType = "Role", TargetRole = "CX Supervisor" };
-        Assert.Equal(deptOwner.Id, (await Service(db).ResolveTargetAsync(c, level))!.Id);
+        var people = await Service(db).RecipientsAsync(new Case { OwnerId = owner.Id, DepartmentId = Guid.NewGuid() }, Level("Manager"), me.Id);
 
-        dept.OwnerId = null;
-        await db.SaveChangesAsync();
-        Assert.Null(await Service(db).ResolveTargetAsync(c, level));
-    }
-
-    [Fact]
-    public async Task AssignmentTypes_UserAndOwner()
-    {
-        using var db = NewDb();
-        var owner = U("Owner", "Agent"); var named = U("Named", "Whatever");
-        db.Users.AddRange(owner, named);
-        await db.SaveChangesAsync();
-        var c = new Case { OwnerId = owner.Id, DepartmentId = Guid.NewGuid() };
-
-        Assert.Equal(named.Id, (await Service(db).ResolveTargetAsync(c, new EscalationLevelConfig { AssignmentType = "User", TargetUserId = named.Id }))!.Id);
-        Assert.Equal(owner.Id, (await Service(db).ResolveTargetAsync(c, new EscalationLevelConfig { AssignmentType = "Owner" }))!.Id);
+        Assert.Equal(new[] { other.Id }, people.Select(p => p.User.Id));
     }
 }
 
@@ -516,6 +519,16 @@ public class SlaMonitorTests
                     new User { Id = w.Lead, Name = "Lead", Email = "l@x.test", Role = "Team Lead", DepartmentId = w.Dept, CreatedAt = DateTime.UtcNow },
                     new User { Id = w.Supervisor, Name = "Sup", Email = "s@x.test", Role = "CX Supervisor", DepartmentId = w.Dept, CreatedAt = DateTime.UtcNow });
                 await setup.SaveChangesAsync();
+
+                // Escalation levels are never seeded (each names a Host role an administrator chooses).
+                EscalationLevelConfig L(int n, string role, decimal pct, bool owner = false) => new()
+                {
+                    Id = Guid.NewGuid(), LevelNumber = n, Name = $"Level {n}", AssignmentType = "Role", TargetRole = role, TriggerType = "SlaPercentage",
+                    TriggerValue = pct, ActionDescription = $"Escalate to {role}", NotifyRoleHolders = true, NotifyCaseOwner = owner,
+                    NotificationPriority = "High", DisplayOrder = n, IsActive = true, CreatedAt = DateTime.UtcNow,
+                };
+                setup.EscalationLevelConfigs.AddRange(L(1, "Team Lead", 70, owner: true), L(2, "CX Supervisor", 90), L(3, "Head of Customer Experience", 100));
+                await setup.SaveChangesAsync();
             }
             return w;
         }
@@ -523,7 +536,7 @@ public class SlaMonitorTests
         public SlaMonitorService Monitor(AppDbContext ctx, INotificationService? notifications = null)
         {
             var cache = new ConfigCache(new MemoryCache(new MemoryCacheOptions()));
-            var escalation = new EscalationService(ctx, cache);
+            var escalation = new EscalationService(ctx, cache, new FakeOrgDirectory(ctx));
             var clock = new SlaClockProvider(new BusinessTimeService(ctx, cache), escalation);
             return new SlaMonitorService(ctx, clock, escalation, notifications ?? new NotificationService(ctx, new ConfiguredPermissionProvider(Options.Create(new HostIntegrationOptions())), Options.Create(new NotificationOptions())), NullLogger<SlaMonitorService>.Instance);
         }
@@ -540,7 +553,7 @@ public class SlaMonitorTests
                 Id = Guid.NewGuid(), CaseNumber = "T-" + Guid.NewGuid().ToString("N")[..8], Title = "t", CustomerId = customer.Id, DepartmentId = Dept, OwnerId = Owner,
                 Status = status, Severity = "High", SlaStartTime = start, SlaPausedAt = pausedAt,
                 FirstResponseTargetMinutes = 30, InternalResolutionTargetMinutes = 100, ExternalResolutionTargetMinutes = 200,
-                FirstResponseActualAt = start.AddMinutes(1), FirstResponseStatus = "Met", EscalationLevel = 1, CreatedAt = start,
+                FirstResponseActualAt = start.AddMinutes(1), FirstResponseStatus = "Met", EscalationLevel = 0, CreatedAt = start,
             };
             ctx.Cases.Add(c);
             await ctx.SaveChangesAsync();
@@ -551,23 +564,24 @@ public class SlaMonitorTests
     }
 
     [PostgresFact]
-    public async Task Reminder_UsesTheFirstLevelsThreshold_AndIsSentOnce()
+    public async Task Reaching_a_level_notifies_the_people_it_names_once()
     {
         await using var w = await World.CreateAsync();
         var young = await w.AddCaseAsync(ageMinutes: 50);     // 50% of 100
-        var old = await w.AddCaseAsync(ageMinutes: 75);       // 75% >= 70
+        var old = await w.AddCaseAsync(ageMinutes: 75);       // 75% >= 70: Level 1
 
-        await using (var ctx = w.Ctx()) { var r1 = await w.Monitor(ctx).RunCycleAsync(); Assert.True(r1.Ran); Assert.Equal(1, r1.Reminders); }
-        await using (var ctx = w.Ctx()) { var r2 = await w.Monitor(ctx).RunCycleAsync(); Assert.Equal(0, r2.Reminders); }
+        await using (var ctx = w.Ctx()) { var r1 = await w.Monitor(ctx).RunCycleAsync(); Assert.True(r1.Ran); Assert.Equal(1, r1.Escalations); }
+        await using (var ctx = w.Ctx()) { var r2 = await w.Monitor(ctx).RunCycleAsync(); Assert.Equal(0, r2.Escalations); }
 
         await using var check = w.Ctx();
-        Assert.True((await check.Cases.FindAsync(old))!.SlaReminderSent);
-        Assert.False((await check.Cases.FindAsync(young))!.SlaReminderSent);
-        Assert.Equal(1, await check.Notifications.CountAsync(n => n.CaseId == old && n.Type == "SLA_REMINDER"));
+        Assert.Equal(1, (await check.Cases.FindAsync(old))!.EscalationLevel);
+        Assert.Equal(0, (await check.Cases.FindAsync(young))!.EscalationLevel);
+        var told = await check.Notifications.Where(n => n.CaseId == old && n.Type == "CASE_AUTOMATICALLY_ESCALATED").Select(n => n.RecipientUserId).ToListAsync();
+        Assert.Equal(new[] { w.Lead, w.Owner }.OrderBy(x => x), told.OrderBy(x => x));   // the role's holder and, as configured, the case's holder
     }
 
     [PostgresFact]
-    public async Task ChangingLevelOnesThreshold_ChangesWhenTheReminderFires()
+    public async Task Changing_a_levels_threshold_changes_when_it_is_reached()
     {
         await using var w = await World.CreateAsync();
         await using (var ctx = w.Ctx())
@@ -575,39 +589,38 @@ public class SlaMonitorTests
         await w.AddCaseAsync(ageMinutes: 50);
 
         await using var run = w.Ctx();
-        Assert.Equal(1, (await w.Monitor(run).RunCycleAsync()).Reminders);
+        Assert.Equal(1, (await w.Monitor(run).RunCycleAsync()).Escalations);
     }
 
     [PostgresFact]
-    public async Task EscalatesOneLevelPerCycle_ReassignsToTheRoleHolder_AndNotifiesOnce()
+    public async Task Automatic_escalation_only_notifies_the_holder_and_status_stay()
     {
         await using var w = await World.CreateAsync();
-        var id = await w.AddCaseAsync(ageMinutes: 95);        // 95% of internal: level 2 (90%)
+        var id = await w.AddCaseAsync(ageMinutes: 95);        // 95%: Level 2 (90%)
 
         await using (var ctx = w.Ctx()) Assert.Equal(1, (await w.Monitor(ctx).RunCycleAsync()).Escalations);
-        await using (var ctx = w.Ctx()) Assert.Equal(0, (await w.Monitor(ctx).RunCycleAsync()).Escalations);   // level 3 needs a breach
 
         await using var check = w.Ctx();
         var c = (await check.Cases.FindAsync(id))!;
         Assert.Equal(2, c.EscalationLevel);
-        Assert.Equal(CaseStatus.Escalated, c.Status);
-        Assert.Equal(w.Lead, c.OwnerId);
-        Assert.Equal(1, await check.Notifications.CountAsync(n => n.CaseId == id && n.Type == "CASE_AUTOMATICALLY_ESCALATED" && n.RecipientUserId == w.Lead));
+        Assert.Equal(CaseStatus.InProgress, c.Status);
+        Assert.Equal(w.Owner, c.OwnerId);
+        Assert.Equal(1, await check.Notifications.CountAsync(n => n.CaseId == id && n.Type == "CASE_AUTOMATICALLY_ESCALATED" && n.RecipientUserId == w.Supervisor));
+        Assert.Equal(1, await check.CaseEvents.CountAsync(e => e.CaseId == id && e.ActionType == "AUTO_ESCALATION"));
     }
 
     [PostgresFact]
-    public async Task ABreachedCase_ReachesTheNextLevel_AndRecordsWhenItBreached()
+    public async Task A_breached_case_records_when_it_breached_and_reaches_the_full_consumption_level()
     {
         await using var w = await World.CreateAsync();
         var id = await w.AddCaseAsync(ageMinutes: 130);       // internal breached, external (200) not yet
 
-        for (var i = 0; i < 3; i++) { await using var ctx = w.Ctx(); await w.Monitor(ctx).RunCycleAsync(); }
+        await using (var ctx = w.Ctx()) await w.Monitor(ctx).RunCycleAsync();
 
         await using var check = w.Ctx();
         var c = (await check.Cases.FindAsync(id))!;
         Assert.NotNull(c.SlaBreachedAt);
-        Assert.Equal(3, c.EscalationLevel);                   // SlaBreached level, then waits for 12h post-breach
-        Assert.Equal(w.Supervisor, c.OwnerId);
+        Assert.Equal(3, c.EscalationLevel);
     }
 
     [PostgresFact]
@@ -617,24 +630,27 @@ public class SlaMonitorTests
         // Waiting on the customer since 10 minutes after it started — only 10% consumed, however long it waits.
         var id = await w.AddCaseAsync(ageMinutes: 600, CaseStatus.WaitingOnCustomer, pausedAt: DateTime.UtcNow.AddMinutes(-590));
 
-        await using (var ctx = w.Ctx()) { var r = await w.Monitor(ctx).RunCycleAsync(); Assert.Equal(0, r.Escalations + r.Reminders + r.Breaches); }
+        await using (var ctx = w.Ctx()) { var r = await w.Monitor(ctx).RunCycleAsync(); Assert.Equal(0, r.Escalations + r.Breaches); }
 
         await using var check = w.Ctx();
         var c = (await check.Cases.FindAsync(id))!;
-        Assert.Equal(1, c.EscalationLevel);
+        Assert.Equal(0, c.EscalationLevel);
         Assert.Equal(CaseStatus.WaitingOnCustomer, c.Status);
         Assert.Null(c.SlaBreachedAt);
     }
 
     [PostgresFact]
-    public async Task InactiveLevels_AreNotExecuted()
+    public async Task Inactive_and_incomplete_levels_are_not_executed()
     {
         await using var w = await World.CreateAsync();
         await using (var ctx = w.Ctx())
+        {
             await ctx.EscalationLevelConfigs.Where(l => l.LevelNumber == 2).ExecuteUpdateAsync(u => u.SetProperty(l => l.IsActive, false));
-        var id = await w.AddCaseAsync(ageMinutes: 95);        // would have hit level 2 at 90%
+            await ctx.EscalationLevelConfigs.Where(l => l.LevelNumber == 3).ExecuteUpdateAsync(u => u.SetProperty(l => l.ActionDescription, ""));
+        }
+        var id = await w.AddCaseAsync(ageMinutes: 130);       // would have reached Level 3
 
-        await using (var ctx = w.Ctx()) Assert.Equal(0, (await w.Monitor(ctx).RunCycleAsync()).Escalations);
+        await using (var ctx = w.Ctx()) await w.Monitor(ctx).RunCycleAsync();
         await using var check = w.Ctx();
         Assert.Equal(1, (await check.Cases.FindAsync(id))!.EscalationLevel);
     }
@@ -668,7 +684,7 @@ public class SlaMonitorTests
         await using var run = w.Ctx();
         var report = await w.Monitor(run).RunCycleAsync();
         Assert.True(report.Ran);
-        Assert.Equal(1, report.Reminders);
+        Assert.Equal(1, report.Escalations);
     }
 
     [PostgresFact]
@@ -692,23 +708,27 @@ public class SlaMonitorTests
         await using var w = await World.CreateAsync();
         await using var ctx = w.Ctx();
         var cache = new ConfigCache(new MemoryCache(new MemoryCacheOptions()));
-        var svc = new SlaRoutingService(ctx, NullLogger<SlaRoutingService>.Instance, new EscalationService(ctx, cache));
+        var directory = new FakeOrgDirectory(ctx, caseRoles: new[] { "Team Lead", "CX Supervisor", "Head of Customer Experience", "Director" });
+        var svc = new SlaRoutingService(ctx, NullLogger<SlaRoutingService>.Instance, new EscalationService(ctx, cache, directory), cache, directory);
+        await ctx.EscalationLevelConfigs.Where(l => l.LevelNumber == 3).ExecuteDeleteAsync();
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => svc.AddEscalationLevelAsync(
-            new Api.DTOs.CreateEscalationLevelDto { TriggerType = "SlaPercentage", TriggerValue = null, TargetRole = "Team Lead" }, w.Owner));
-        await Assert.ThrowsAsync<InvalidOperationException>(() => svc.AddEscalationLevelAsync(
-            new Api.DTOs.CreateEscalationLevelDto { TriggerType = "Bogus", TargetRole = "Team Lead" }, w.Owner));
-        await Assert.ThrowsAsync<InvalidOperationException>(() => svc.AddEscalationLevelAsync(
-            new Api.DTOs.CreateEscalationLevelDto { TriggerType = "SlaBreached", AssignmentType = "Role", TargetRole = "" }, w.Owner));
+        // Incomplete, a role already used, a role without access, a threshold not above Level 2's.
+        await Assert.ThrowsAsync<FieldValidationException>(() => svc.AddEscalationLevelAsync(
+            new Api.DTOs.CreateEscalationLevelDto { TriggerType = "SlaPercentage", TriggerValue = 95, TargetRole = "Director" }, w.Owner));
+        await Assert.ThrowsAsync<FieldValidationException>(() => svc.AddEscalationLevelAsync(
+            new Api.DTOs.CreateEscalationLevelDto { TriggerType = "SlaPercentage", TriggerValue = 95, TargetRole = "Team Lead", ActionDescription = "x" }, w.Owner));
+        await Assert.ThrowsAsync<FieldValidationException>(() => svc.AddEscalationLevelAsync(
+            new Api.DTOs.CreateEscalationLevelDto { TriggerType = "SlaPercentage", TriggerValue = 95, TargetRole = "Teller", ActionDescription = "x" }, w.Owner));
+        await Assert.ThrowsAsync<FieldValidationException>(() => svc.AddEscalationLevelAsync(
+            new Api.DTOs.CreateEscalationLevelDto { TriggerType = "SlaPercentage", TriggerValue = 85, TargetRole = "Director", ActionDescription = "x" }, w.Owner));
 
         var created = await svc.AddEscalationLevelAsync(
-            new Api.DTOs.CreateEscalationLevelDto { TriggerType = "SlaPercentage", TriggerValue = 150, TargetRole = "Director" }, w.Owner);
-        Assert.Equal("SLA consumption reaches 150%", created.TriggerDescription);
-        Assert.Equal(150m, created.TriggerValue);
+            new Api.DTOs.CreateEscalationLevelDto { TriggerType = "SlaPercentage", TriggerValue = 95, TargetRole = "Director", ActionDescription = "Director review", NotifyCaseOwner = true }, w.Owner);
+        Assert.Equal("SLA consumption reaches 95%", created.TriggerDescription);
+        Assert.Empty(created.MissingFields);
 
-        var updated = await svc.UpdateEscalationLevelAsync(created.Id!.Value, new Api.DTOs.UpdateEscalationLevelDto { TriggerType = "SlaBreached", IsActive = false }, w.Owner);
-        Assert.Equal("SLA is breached", updated!.TriggerDescription);
-        Assert.Null(updated.TriggerValue);
+        var updated = await svc.UpdateEscalationLevelAsync(created.Id!.Value, new Api.DTOs.UpdateEscalationLevelDto { TriggerValue = 100, IsActive = false }, w.Owner);
+        Assert.Equal("SLA consumption reaches 100%", updated!.TriggerDescription);
         Assert.False(updated.IsActive);
     }
 
@@ -725,7 +745,7 @@ public class SlaMonitorTests
         }
 
         await using var run = w.Ctx();
-        var svc = new SlaRoutingService(run, NullLogger<SlaRoutingService>.Instance, new EscalationService(run, new ConfigCache(new MemoryCache(new MemoryCacheOptions()))));
+        var svc = new SlaRoutingService(run, NullLogger<SlaRoutingService>.Instance, new EscalationService(run, new ConfigCache(new MemoryCache(new MemoryCacheOptions())), new FakeOrgDirectory(run)));
         var level2 = await run.EscalationLevelConfigs.AsNoTracking().FirstAsync(l => l.LevelNumber == 2);
         Assert.True(await svc.DeleteEscalationLevelAsync(level2.Id, w.Owner));
 

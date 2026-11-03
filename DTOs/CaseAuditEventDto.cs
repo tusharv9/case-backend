@@ -6,7 +6,8 @@ public class CaseAuditEventDto
     public DateTime Timestamp { get; set; }
     public string ActionType { get; set; } = string.Empty;
     public string ActionLabel { get; set; } = string.Empty;
-    public Guid ActorId { get; set; }
+    /// <summary>Null when the person who did it has since been removed ("Former user").</summary>
+    public Guid? ActorId { get; set; }
     public string ActorName { get; set; } = string.Empty;
     public string ActorRole { get; set; } = string.Empty;
     public Guid? CaseId { get; set; }

@@ -161,7 +161,8 @@ public class TeamMonitoringService : ITeamMonitoringService
             async db => lastActivity = await db.CaseEvents.AsNoTracking()
                 .Where(e => db.TeamMembers.Any(m => m.UserId == e.UserId && m.IsActive && teamIds.Contains(m.DepartmentId)))
                 .Where(AutomaticEvents.IsPersonal)
-                .GroupBy(e => e.UserId).Select(g => new { g.Key, At = g.Max(e => e.CreatedAt) })
+                .Where(e => e.UserId != null)
+                .GroupBy(e => e.UserId!.Value).Select(g => new { g.Key, At = g.Max(e => e.CreatedAt) })
                 .ToDictionaryAsync(x => x.Key, x => x.At, ct));
 
         var verdicts = open.ToDictionary(c => c.Id, c => clock.Evaluate(c.Inputs, now));

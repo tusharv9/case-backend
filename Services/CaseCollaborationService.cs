@@ -2,6 +2,7 @@ namespace CaseManagement.Api.Services;
 
 using CaseManagement.Api.Data;
 using CaseManagement.Api.DTOs;
+using CaseManagement.Api.HostIntegration;
 using CaseManagement.Api.Models;
 using CaseManagement.Api.Repositories;
 using Microsoft.EntityFrameworkCore;
@@ -9,9 +10,17 @@ using Microsoft.Extensions.Logging;
 
 public interface ICaseCollaborationService
 {
-    Task AddCoworkersAsync(Guid caseId, List<Guid> coworkerUserIds, Guid addedByUserId);
+    /// <summary>Active teams to choose collaborators from, the case's own team first.</summary>
+    Task<IReadOnlyList<TeamOptionDto>> GetCollaboratorTeamsAsync(Guid caseId, CancellationToken ct = default);
+    /// <summary>The active members and lead of one team, marking who is already on the case.</summary>
+    Task<IReadOnlyList<CollaboratorCandidateDto>> GetCollaboratorCandidatesAsync(Guid caseId, Guid teamId, Guid callerId, CancellationToken ct = default);
+    Task AddCoworkersAsync(Guid caseId, AddCollaboratorsDto dto, Guid addedByUserId);
     Task RemoveCoworkerAsync(Guid caseId, Guid coworkerUserId, Guid removedByUserId);
-    Task RequestSwarmAsync(Guid caseId, RequestSwarmDto dto, Guid userId);
+
+    /// <summary>Who a swarm can be requested from: every team's lead and the Supervisors (never regular agents).</summary>
+    Task<SwarmCandidatesDto> GetSwarmCandidatesAsync(Guid caseId, Guid callerId, CancellationToken ct = default);
+    Task<SwarmRequestDto> RequestSwarmAsync(Guid caseId, CreateSwarmRequestDto dto, Guid userId);
+    Task<SwarmRequestDto> RespondToSwarmAsync(Guid caseId, Guid requestId, RespondSwarmRequestDto dto, Guid userId);
 
     /// <summary>The collaboration feed (collaborators + collaboration-only activity), separate from the workflow timeline.</summary>
     Task<CaseCollaborationDto> GetCollaborationAsync(Guid caseId, DateTime? before, int limit, CancellationToken ct = default);
@@ -27,6 +36,7 @@ public class CaseCollaborationService : ICaseCollaborationService
     private readonly ISlaClockProvider _slaClock;
     private readonly AppDbContext _context;
     private readonly ILogger<CaseCollaborationService> _logger;
+    private readonly IOrgDirectory? _directory;
 
     public CaseCollaborationService(
         ICaseRepository caseRepository,
@@ -34,8 +44,10 @@ public class CaseCollaborationService : ICaseCollaborationService
         IMentionService mentions,
         ISlaClockProvider slaClock,
         AppDbContext context,
-        ILogger<CaseCollaborationService> logger)
+        ILogger<CaseCollaborationService> logger,
+        IOrgDirectory? directory = null)
     {
+        _directory = directory;
         _caseRepository = caseRepository;
         _notificationService = notificationService;
         _mentions = mentions;
@@ -44,41 +56,89 @@ public class CaseCollaborationService : ICaseCollaborationService
         _logger = logger;
     }
 
-    public async Task AddCoworkersAsync(Guid caseId, List<Guid> coworkerUserIds, Guid addedByUserId)
+    public async Task<IReadOnlyList<TeamOptionDto>> GetCollaboratorTeamsAsync(Guid caseId, CancellationToken ct = default)
+    {
+        var caseTeamId = await _context.Cases.AsNoTracking().Where(c => c.Id == caseId).Select(c => (Guid?)c.DepartmentId).FirstOrDefaultAsync(ct)
+            ?? throw new KeyNotFoundException("Case not found");
+        var teams = await _context.Departments.AsNoTracking().Where(d => d.IsActive)
+            .Select(d => new TeamOptionDto { Id = d.Id, Name = d.Name, IsCaseTeam = d.Id == caseTeamId }).ToListAsync(ct);
+        return teams.OrderByDescending(t => t.IsCaseTeam).ThenBy(t => t.Name, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    public async Task<IReadOnlyList<CollaboratorCandidateDto>> GetCollaboratorCandidatesAsync(Guid caseId, Guid teamId, Guid callerId, CancellationToken ct = default)
+    {
+        var c = await _context.Cases.AsNoTracking().Where(x => x.Id == caseId)
+            .Select(x => new { x.OwnerId, CoWorkers = x.Participants.Where(p => p.Role == ParticipantRole.CoWorker).Select(p => p.UserId).ToList() })
+            .FirstOrDefaultAsync(ct) ?? throw new KeyNotFoundException("Case not found");
+
+        var people = await TeamPeopleAsync(teamId, ct);
+        return people.Select(p =>
+        {
+            string? why = p.User.Id == c.OwnerId ? "Holds this case"
+                : c.CoWorkers.Contains(p.User.Id) ? "Already a collaborator"
+                : p.User.Id == callerId ? "You" : null;
+            return new CollaboratorCandidateDto
+            {
+                UserId = p.User.Id, Name = p.User.Name, Email = p.User.Email, TeamRole = p.IsLead ? "Team Lead" : p.MemberRole,
+                IsTeamLead = p.IsLead, IsUnavailable = why != null, UnavailableReason = why,
+            };
+        }).ToList();
+    }
+
+    private sealed record TeamPerson(User User, string MemberRole, bool IsLead);
+
+    /// <summary>A team's active members and its lead, active users only. Refuses an unknown or inactive team.</summary>
+    private async Task<List<TeamPerson>> TeamPeopleAsync(Guid teamId, CancellationToken ct)
+    {
+        var team = await _context.Departments.AsNoTracking().FirstOrDefaultAsync(d => d.Id == teamId, ct)
+            ?? throw new KeyNotFoundException("Team not found.");
+        if (!team.IsActive) throw new InvalidOperationException($"'{team.Name}' is inactive.");
+
+        var members = await _context.TeamMembers.AsNoTracking().Include(m => m.User)
+            .Where(m => m.DepartmentId == teamId && m.IsActive && m.User.IsActive).ToListAsync(ct);
+        var result = members.Select(m => new TeamPerson(m.User, m.MemberRole, m.UserId == team.OwnerId)).ToList();
+        if (team.OwnerId.HasValue && result.All(p => p.User.Id != team.OwnerId.Value)
+            && await _context.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == team.OwnerId.Value && u.IsActive, ct) is { } lead)
+            result.Add(new TeamPerson(lead, "Team Lead", true));
+        return result.OrderByDescending(p => p.IsLead).ThenBy(p => p.User.Name, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    public async Task AddCoworkersAsync(Guid caseId, AddCollaboratorsDto dto, Guid addedByUserId)
     {
         var existingCase = await _caseRepository.GetByIdAsync(caseId);
         if (existingCase == null) throw new KeyNotFoundException("Case not found");
-        
+
         if (existingCase.Status == CaseStatus.Resolved)
             throw new InvalidOperationException("Cannot add coworkers to a resolved case.");
+        if (!dto.TeamId.HasValue)
+            throw new ArgumentException("Choose the team the collaborators come from.");
 
-        var ids = (coworkerUserIds ?? new List<Guid>()).Where(id => id != Guid.Empty).Distinct().ToList();
+        var ids = (dto.CoworkerIds ?? new List<Guid>()).Where(id => id != Guid.Empty).Distinct().ToList();
         if (ids.Count == 0)
             throw new InvalidOperationException("Select at least one collaborator.");
 
         // Validate everything first so a bad id cannot leave the case half-updated.
+        var teamPeople = await TeamPeopleAsync(dto.TeamId.Value, default);
+        var outsiders = ids.Where(id => teamPeople.All(p => p.User.Id != id)).ToList();
+        if (outsiders.Count > 0)
+            throw new ArgumentException("Every collaborator must be an active member or the lead of the chosen team.");
+        if (ids.Contains(existingCase.OwnerId))
+            throw new InvalidOperationException("The person holding the case cannot also be a collaborator on it.");
         if (existingCase.Participants.Any(p => ids.Contains(p.UserId) && p.Role == ParticipantRole.CoWorker))
             throw new InvalidOperationException("One or more users are already coworkers on this case.");
 
-        var users = await _context.Users.AsNoTracking()
-            .Where(u => ids.Contains(u.Id) || u.Id == addedByUserId)
-            .Select(u => new { u.Id, u.Name })
-            .ToListAsync();
-        if (ids.Any(id => users.All(u => u.Id != id)))
-            throw new InvalidOperationException("One or more selected users no longer exist.");
-
         var now = DateTime.UtcNow;
-        var actorName = users.FirstOrDefault(u => u.Id == addedByUserId)?.Name ?? "A user";
+        var actorName = await _context.Users.AsNoTracking().Where(u => u.Id == addedByUserId).Select(u => u.Name).FirstOrDefaultAsync() ?? "A user";
+        var teamName = await _context.Departments.AsNoTracking().Where(d => d.Id == dto.TeamId.Value).Select(d => d.Name).FirstAsync();
         var addedNames = new List<string>();
 
         foreach (var id in ids)
         {
-            _context.CaseParticipants.Add(new CaseParticipant
-            {
-                CaseId = caseId,
-                UserId = id,
-                Role = ParticipantRole.CoWorker
-            });
+            // Someone watching the case (a pending swarm request) becomes a collaborator instead of a second row.
+            var watcher = existingCase.Participants.FirstOrDefault(p => p.UserId == id);
+            if (watcher != null) watcher.Role = ParticipantRole.CoWorker;
+            else _context.CaseParticipants.Add(new CaseParticipant { CaseId = caseId, UserId = id, Role = ParticipantRole.CoWorker });
+
             _context.CaseCollaborationActivities.Add(new CaseCollaborationActivity
             {
                 CaseId = caseId,
@@ -87,20 +147,33 @@ public class CaseCollaborationService : ICaseCollaborationService
                 TargetUserId = id,
                 CreatedAt = now
             });
-            addedNames.Add(users.First(u => u.Id == id).Name);
+            addedNames.Add(teamPeople.First(p => p.User.Id == id).User.Name);
         }
 
         _context.CaseEvents.Add(new CaseEvent
         {
             CaseId = caseId,
             EventType = EventType.Cowork,
-            Message = $"{actorName} added {string.Join(", ", addedNames)} as collaborator{(addedNames.Count > 1 ? "s" : "")}.",
+            ActionType = "COLLABORATOR_ADDED",
+            NewValue = string.Join(", ", addedNames),
+            Message = $"{actorName} added {string.Join(", ", addedNames)} from {teamName} as collaborator{(addedNames.Count > 1 ? "s" : "")}.",
             CreatedAt = now,
             UserId = addedByUserId
         });
 
         // Participants, collaboration activity and the audit event are saved together.
         await _context.SaveChangesAsync();
+
+        foreach (var id in ids.Where(id => id != addedByUserId))
+        {
+            try
+            {
+                await _notificationService.CreateNotificationAsync(id, "CASE_COLLABORATOR_ADDED", "Added as Collaborator",
+                    $"{actorName} added you as a collaborator on Case {existingCase.CaseNumber} ({existingCase.Title}).",
+                    existingCase.Id, existingCase.CaseNumber, "Medium");
+            }
+            catch (Exception ex) { _logger.LogWarning(ex, "Collaborator Notification Error"); }
+        }
     }
 
     public async Task RemoveCoworkerAsync(Guid caseId, Guid coworkerUserId, Guid removedByUserId)
@@ -135,6 +208,8 @@ public class CaseCollaborationService : ICaseCollaborationService
         {
             CaseId = caseId,
             EventType = EventType.Cowork,
+            ActionType = "COLLABORATOR_REMOVED",
+            OldValue = targetName,
             Message = $"{actorName} removed {targetName} as collaborator.",
             CreatedAt = now,
             UserId = removedByUserId
@@ -182,8 +257,12 @@ public class CaseCollaborationService : ICaseCollaborationService
             })
             .ToListAsync(ct);
 
+        var swarm = await _context.CaseSwarmRequests.AsNoTracking().Where(r => r.CaseId == caseId)
+            .OrderByDescending(r => r.CreatedAt).Take(50).Select(ProjectSwarm).ToListAsync(ct);
+
         return new CaseCollaborationDto
         {
+            SwarmRequests = swarm,
             Collaborators = collaborators,
             Activities = rows.Take(limit).ToList(),
             HasMore = rows.Count > limit
@@ -233,218 +312,219 @@ public class CaseCollaborationService : ICaseCollaborationService
     }
 
 
-    public async Task RequestSwarmAsync(Guid caseId, RequestSwarmDto dto, Guid userId)
+    private static readonly System.Linq.Expressions.Expression<Func<CaseSwarmRequest, SwarmRequestDto>> ProjectSwarm = r => new SwarmRequestDto
     {
-        var existingCase = await _context.Cases
-            .Include(c => c.Department)
-            .Include(c => c.Participants)
-            .FirstOrDefaultAsync(c => c.Id == caseId);
+        Id = r.Id, CaseId = r.CaseId, CaseNumber = r.Case.CaseNumber,
+        RequestedByUserId = r.RequestedByUserId, RequestedByName = r.RequestedByUser.Name,
+        RecipientUserId = r.RecipientUserId, RecipientName = r.RecipientUser.Name, RecipientKind = r.RecipientKind,
+        TeamId = r.TeamId, TeamName = r.Team != null ? r.Team.Name : null,
+        Message = r.Message, Status = r.Status, ResponseNote = r.ResponseNote, CreatedAt = r.CreatedAt, RespondedAt = r.RespondedAt,
+    };
 
-        if (existingCase == null) throw new KeyNotFoundException("Case not found");
+    public async Task<SwarmCandidatesDto> GetSwarmCandidatesAsync(Guid caseId, Guid callerId, CancellationToken ct = default)
+    {
+        var c = await _context.Cases.AsNoTracking().Where(x => x.Id == caseId)
+            .Select(x => new { x.OwnerId, x.DepartmentId, TeamName = x.Department.Name }).FirstOrDefaultAsync(ct)
+            ?? throw new KeyNotFoundException("Case not found");
+        var pending = await _context.CaseSwarmRequests.AsNoTracking()
+            .Where(r => r.CaseId == caseId && r.Status == SwarmRequestStatuses.Pending).Select(r => r.RecipientUserId).ToListAsync(ct);
 
-        if (existingCase.Status == CaseStatus.Resolved)
-            throw new InvalidOperationException("Cannot request a swarm on a resolved case.");
-
-        var requestingUser = await _context.Users.FindAsync(userId);
-        var addedUsers = new List<User>();
-
-        var specifiedIds = (dto.ParticipantUserIds ?? new List<Guid>())
-            .Where(id => id != Guid.Empty)
-            .Distinct()
-            .ToList();
-
-        if (specifiedIds.Count > 0)
-        {
-            // Dynamic user-selected participant resolution
-            var requestedUsers = await _context.Users
-                .Where(u => specifiedIds.Contains(u.Id) && u.IsActive)
-                .ToListAsync();
-
-            foreach (var user in requestedUsers)
+        // Every active team's lead — another team's lead may be asked too — the case's own team first.
+        var leads = await _context.Departments.AsNoTracking()
+            .Where(d => d.IsActive && d.OwnerId != null && d.Owner!.IsActive && d.OwnerId != callerId && d.OwnerId != c.OwnerId)
+            .Select(d => new SwarmRecipientDto
             {
-                if (!existingCase.Participants.Any(p => p.UserId == user.Id))
+                UserId = d.OwnerId!.Value, Name = d.Owner!.Name, Email = d.Owner.Email, Kind = SwarmRecipientKinds.TeamLead,
+                TeamId = d.Id, TeamName = d.Name, IsCaseTeam = d.Id == c.DepartmentId,
+            }).ToListAsync(ct);
+        foreach (var l in leads) l.HasPendingRequest = pending.Contains(l.UserId);
+
+        var result = new SwarmCandidatesDto
+        {
+            CaseTeamId = c.DepartmentId,
+            CaseTeamName = c.TeamName,
+            TeamLeads = leads.OrderByDescending(l => l.IsCaseTeam).ThenBy(l => l.TeamName, StringComparer.OrdinalIgnoreCase).ToList(),
+        };
+
+        try
+        {
+            result.Supervisors = (await SupervisorsAsync(ct))
+                .Where(u => u.Id != callerId && u.Id != c.OwnerId)
+                .Select(u => new SwarmRecipientDto
                 {
-                    _context.CaseParticipants.Add(new CaseParticipant
-                    {
-                        CaseId = caseId,
-                        UserId = user.Id,
-                        Role = ParticipantRole.CoWorker
-                    });
-                    addedUsers.Add(user);
-                }
-            }
+                    UserId = u.Id, Name = u.Name, Email = u.Email, Kind = SwarmRecipientKinds.Supervisor, HasPendingRequest = pending.Contains(u.Id),
+                }).ToList();
+        }
+        catch (HostUsersException ex) { result.SupervisorsUnavailableMessage = ex.Message; }
+        return result;
+    }
+
+    private async Task<IReadOnlyList<User>> SupervisorsAsync(CancellationToken ct) =>
+        _directory == null ? Array.Empty<User>() : await _directory.SupervisorsAsync(ct);
+
+    public async Task<SwarmRequestDto> RequestSwarmAsync(Guid caseId, CreateSwarmRequestDto dto, Guid userId)
+    {
+        var existingCase = await _context.Cases.Include(c => c.Participants).FirstOrDefaultAsync(c => c.Id == caseId)
+            ?? throw new KeyNotFoundException("Case not found");
+        if (CaseWorkflow.IsFinal(existingCase.Status))
+            throw new InvalidOperationException($"Cannot request a swarm on a case that is {CaseWorkflow.Label(existingCase.Status)}.");
+
+        if (dto.RecipientUserId == Guid.Empty) throw new ArgumentException("Choose the Team Lead or Supervisor to ask.");
+        if (dto.RecipientUserId == userId) throw new ArgumentException("You cannot request a swarm from yourself.");
+        if (dto.RecipientUserId == existingCase.OwnerId) throw new ArgumentException("The person holding the case cannot be asked to swarm on it.");
+
+        // Only Team Leads and Supervisors receive swarm requests — checked here whatever the screen offered.
+        Guid? teamId = null;
+        if (string.Equals(dto.RecipientKind, SwarmRecipientKinds.TeamLead, StringComparison.OrdinalIgnoreCase))
+        {
+            if (!dto.TeamId.HasValue) throw new ArgumentException("Choose the team whose lead you are asking.");
+            var team = await _context.Departments.AsNoTracking().FirstOrDefaultAsync(d => d.Id == dto.TeamId.Value)
+                ?? throw new KeyNotFoundException("Team not found.");
+            if (!team.IsActive) throw new InvalidOperationException($"'{team.Name}' is inactive.");
+            if (team.OwnerId != dto.RecipientUserId) throw new ArgumentException($"The chosen person is not the lead of {team.Name}.");
+            teamId = team.Id;
+        }
+        else if (string.Equals(dto.RecipientKind, SwarmRecipientKinds.Supervisor, StringComparison.OrdinalIgnoreCase))
+        {
+            if ((await SupervisorsAsync(default)).All(u => u.Id != dto.RecipientUserId))
+                throw new ArgumentException("The chosen person is not a Supervisor (their role is not granted 'Supervise cases').");
         }
         else
         {
-            // 1. Resolve Team Lead dynamically from department and role architecture
-            var deptMemberUserIds = await _context.TeamMembers
-                .Where(m => m.DepartmentId == existingCase.DepartmentId && m.IsActive)
-                .Select(m => m.UserId)
-                .ToListAsync();
-
-            var deptUsers = await _context.Users
-                .Where(u => u.DepartmentId == existingCase.DepartmentId || deptMemberUserIds.Contains(u.Id))
-                .ToListAsync();
-
-            User? teamLead = null;
-            if (existingCase.Department != null && existingCase.Department.OwnerId.HasValue)
-            {
-                teamLead = await _context.Users.FindAsync(existingCase.Department.OwnerId.Value);
-            }
-
-            if (teamLead == null)
-            {
-                teamLead = deptUsers.FirstOrDefault(u =>
-                    u.Role.Contains("Lead", StringComparison.OrdinalIgnoreCase) ||
-                    u.Role.Contains("Supervisor", StringComparison.OrdinalIgnoreCase) ||
-                    u.Role.Contains("Manager", StringComparison.OrdinalIgnoreCase)
-                );
-            }
-
-            if (teamLead == null)
-            {
-                teamLead = await _context.Users.FirstOrDefaultAsync(u =>
-                    u.Role.Contains("Lead", StringComparison.OrdinalIgnoreCase) ||
-                    u.Role.Contains("Supervisor", StringComparison.OrdinalIgnoreCase) ||
-                    u.Role.Contains("Manager", StringComparison.OrdinalIgnoreCase)
-                );
-            }
-
-            // 2. Resolve Subject Matter Experts (SMEs) dynamically
-            var smes = deptUsers.Where(u =>
-                (teamLead == null || u.Id != teamLead.Id) &&
-                u.Id != existingCase.OwnerId &&
-                (u.Role.Contains("Senior", StringComparison.OrdinalIgnoreCase) ||
-                 u.Role.Contains("Sr.", StringComparison.OrdinalIgnoreCase) ||
-                 u.Role.Contains("Specialist", StringComparison.OrdinalIgnoreCase) ||
-                 u.Role.Contains("Expert", StringComparison.OrdinalIgnoreCase) ||
-                 u.Role.Contains("Officer", StringComparison.OrdinalIgnoreCase))
-            ).Take(2).ToList();
-
-            if (smes.Count == 0)
-            {
-                smes = deptUsers.Where(u =>
-                    (teamLead == null || u.Id != teamLead.Id) &&
-                    u.Id != existingCase.OwnerId
-                ).Take(1).ToList();
-            }
-
-            if (smes.Count == 0)
-            {
-                smes = await _context.Users.Where(u =>
-                    (teamLead == null || u.Id != teamLead.Id) &&
-                    u.Id != existingCase.OwnerId &&
-                    (u.Role.Contains("Senior", StringComparison.OrdinalIgnoreCase) ||
-                     u.Role.Contains("Sr.", StringComparison.OrdinalIgnoreCase) ||
-                     u.Role.Contains("Specialist", StringComparison.OrdinalIgnoreCase) ||
-                     u.Role.Contains("Expert", StringComparison.OrdinalIgnoreCase) ||
-                     u.Role.Contains("Officer", StringComparison.OrdinalIgnoreCase))
-                ).Take(2).ToListAsync();
-            }
-
-            if (smes.Count == 0)
-            {
-                smes = await _context.Users.Where(u =>
-                    (teamLead == null || u.Id != teamLead.Id) &&
-                    u.Id != existingCase.OwnerId
-                ).Take(1).ToListAsync();
-            }
-
-            // 3. Add Team Lead and SMEs as case participants if not already added
-            if (teamLead != null && !existingCase.Participants.Any(p => p.UserId == teamLead.Id))
-            {
-                var p = new CaseParticipant
-                {
-                    CaseId = caseId,
-                    UserId = teamLead.Id,
-                    Role = ParticipantRole.CoWorker
-                };
-                _context.CaseParticipants.Add(p);
-                addedUsers.Add(teamLead);
-            }
-
-            foreach (var sme in smes)
-            {
-                if (!existingCase.Participants.Any(p => p.UserId == sme.Id))
-                {
-                    var p = new CaseParticipant
-                    {
-                        CaseId = caseId,
-                        UserId = sme.Id,
-                        Role = ParticipantRole.CoWorker
-                    };
-                    _context.CaseParticipants.Add(p);
-                    addedUsers.Add(sme);
-                }
-            }
+            throw new ArgumentException("A swarm request goes to a Team Lead or a Supervisor.");
         }
 
-        // Collaboration feed: the swarm request and every person it pulled in.
-        var swarmTime = DateTime.UtcNow;
+        var recipient = await _context.Users.FirstOrDefaultAsync(u => u.Id == dto.RecipientUserId && u.IsActive)
+            ?? throw new ArgumentException("The chosen person is not an active user.");
+        if (await _context.CaseSwarmRequests.AnyAsync(r => r.CaseId == caseId && r.RecipientUserId == recipient.Id && r.Status == SwarmRequestStatuses.Pending))
+            throw new InvalidOperationException($"{recipient.Name} already has a pending swarm request on this case.");
+
+        var requester = await _context.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId);
+        var now = DateTime.UtcNow;
+        var kind = string.Equals(dto.RecipientKind, SwarmRecipientKinds.TeamLead, StringComparison.OrdinalIgnoreCase) ? SwarmRecipientKinds.TeamLead : SwarmRecipientKinds.Supervisor;
+        var message = dto.Message?.Trim() ?? string.Empty;
+        if (message.Length > 2000) throw new ArgumentException("The message cannot exceed 2000 characters.");
+
+        // The first swarm on a case keeps the existing rule of raising its priority one step (never again on later requests).
+        var firstSwarm = !await _context.CaseSwarmRequests.AnyAsync(r => r.CaseId == caseId);
+
+        var request = new CaseSwarmRequest
+        {
+            CaseId = caseId, RequestedByUserId = userId, RecipientUserId = recipient.Id, RecipientKind = kind, TeamId = teamId,
+            Message = message, Status = SwarmRequestStatuses.Pending, CreatedAt = now,
+        };
+        _context.CaseSwarmRequests.Add(request);
+
+        // Watching lets the recipient open the case to decide; accepting makes them a collaborator.
+        if (existingCase.Participants.All(p => p.UserId != recipient.Id))
+            _context.CaseParticipants.Add(new CaseParticipant { CaseId = caseId, UserId = recipient.Id, Role = ParticipantRole.Watcher });
+
         _context.CaseCollaborationActivities.Add(new CaseCollaborationActivity
         {
-            CaseId = caseId,
-            ActivityType = CollaborationActivityTypes.SwarmRequested,
-            ActorUserId = userId,
-            Content = string.IsNullOrWhiteSpace(dto.Reason) ? null : dto.Reason.Trim(),
-            CreatedAt = swarmTime
+            CaseId = caseId, ActivityType = CollaborationActivityTypes.SwarmRequested, ActorUserId = userId, TargetUserId = recipient.Id,
+            Content = message.Length > 0 ? message : null, CreatedAt = now,
         });
-        foreach (var added in addedUsers)
+
+        string? priorityChange = null;
+        if (firstSwarm)
         {
-            _context.CaseCollaborationActivities.Add(new CaseCollaborationActivity
+            var moreUrgent = await GetNextMoreUrgentPriorityAsync(existingCase.Severity);
+            if (moreUrgent != null)
             {
-                CaseId = caseId,
-                ActivityType = CollaborationActivityTypes.CollaboratorAdded,
-                ActorUserId = userId,
-                TargetUserId = added.Id,
-                CreatedAt = swarmTime
-            });
+                priorityChange = $" Priority raised from {existingCase.Severity} to {moreUrgent.Priority}.";
+                existingCase.Severity = moreUrgent.Priority;
+                (await _slaClock.GetAsync()).ApplyRule(existingCase, moreUrgent);
+            }
         }
 
-        // 4. Raise the case's priority one step towards the most urgent configured priority (if it can go higher).
-        var moreUrgent = await GetNextMoreUrgentPriorityAsync(existingCase.Severity);
-        if (moreUrgent != null)
-        {
-            existingCase.Severity = moreUrgent.Priority;
-            (await _slaClock.GetAsync()).ApplyRule(existingCase, moreUrgent);
-        }
-
-        await _context.SaveChangesAsync();
-
-        // 5. Add Timeline Event matching Screenshot 1, 2, 3
-        var swarmEvent = new CaseEvent
+        var kindLabel = kind == SwarmRecipientKinds.TeamLead ? "Team Lead" : "Supervisor";
+        _context.CaseEvents.Add(new CaseEvent
         {
             CaseId = caseId,
             EventType = EventType.Cowork,
-            Message = "⚡ Swarm requested — pulling in team lead and subject-matter experts. Priority attention needed.",
+            ActionType = "SWARM_REQUESTED",
+            NewValue = $"{recipient.Name} ({kindLabel})",
+            Message = $"⚡ Swarm requested by {requester?.Name ?? "a user"} from {recipient.Name} ({kindLabel}).{(message.Length > 0 ? $" \"{message}\"" : "")}{priorityChange}",
             IsInternal = true,
-            CreatedAt = DateTime.UtcNow,
+            CreatedAt = now,
             UserId = userId
-        };
-        await _caseRepository.AddEventAsync(swarmEvent);
+        });
+        await _context.SaveChangesAsync();
 
-        // 6. Notify Team Lead and SMEs
-        foreach (var u in addedUsers)
+        try
         {
-            try
-            {
-                await _notificationService.CreateNotificationAsync(
-                    u.Id,
-                    "CASE_SWARM_REQUESTED",
-                    "⚡ Swarm Requested",
-                    $"Swarm requested on Case {existingCase.CaseNumber} ({existingCase.Title}) by {requestingUser?.Name ?? "Agent"}. You have been added to assist.",
-                    existingCase.Id,
-                    existingCase.CaseNumber,
-                    "Critical"
-                );
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Swarm Notification Error");
-            }
+            await _notificationService.CreateNotificationAsync(recipient.Id, "CASE_SWARM_REQUESTED", "⚡ Swarm Requested",
+                $"{requester?.Name ?? "An agent"} asked for your help on Case {existingCase.CaseNumber} ({existingCase.Title}).{(message.Length > 0 ? $" \"{message}\"" : "")}",
+                existingCase.Id, existingCase.CaseNumber, "Critical");
         }
+        catch (Exception ex) { _logger.LogWarning(ex, "Swarm Notification Error"); }
+
+        return await _context.CaseSwarmRequests.AsNoTracking().Where(r => r.Id == request.Id).Select(ProjectSwarm).FirstAsync();
     }
 
+    public async Task<SwarmRequestDto> RespondToSwarmAsync(Guid caseId, Guid requestId, RespondSwarmRequestDto dto, Guid userId)
+    {
+        var request = await _context.CaseSwarmRequests.Include(r => r.Case).FirstOrDefaultAsync(r => r.Id == requestId && r.CaseId == caseId)
+            ?? throw new KeyNotFoundException("Swarm request not found.");
+        if (request.RecipientUserId != userId)
+            throw new CaseLockedException("Only the person a swarm request was sent to can answer it.");
+        if (request.Status != SwarmRequestStatuses.Pending)
+            throw new InvalidOperationException($"This swarm request was already {request.Status.ToLower()}.");
+
+        var now = DateTime.UtcNow;
+        var note = dto.Note?.Trim();
+        request.Status = dto.Accept ? SwarmRequestStatuses.Accepted : SwarmRequestStatuses.Declined;
+        request.ResponseNote = string.IsNullOrEmpty(note) ? null : note;
+        request.RespondedAt = now;
+
+        var participant = await _context.CaseParticipants.FirstOrDefaultAsync(p => p.CaseId == caseId && p.UserId == userId);
+        if (dto.Accept)
+        {
+            if (participant == null) _context.CaseParticipants.Add(new CaseParticipant { CaseId = caseId, UserId = userId, Role = ParticipantRole.CoWorker });
+            else participant.Role = ParticipantRole.CoWorker;
+            _context.CaseCollaborationActivities.Add(new CaseCollaborationActivity
+            {
+                CaseId = caseId, ActivityType = CollaborationActivityTypes.CollaboratorAdded, ActorUserId = userId, TargetUserId = userId, CreatedAt = now,
+            });
+        }
+        else if (participant is { Role: ParticipantRole.Watcher }
+                 && !await _context.CaseSwarmRequests.AnyAsync(r => r.CaseId == caseId && r.RecipientUserId == userId && r.Id != requestId && r.Status == SwarmRequestStatuses.Pending))
+        {
+            _context.CaseParticipants.Remove(participant);
+        }
+
+        _context.CaseCollaborationActivities.Add(new CaseCollaborationActivity
+        {
+            CaseId = caseId, ActivityType = dto.Accept ? CollaborationActivityTypes.SwarmAccepted : CollaborationActivityTypes.SwarmDeclined,
+            ActorUserId = userId, TargetUserId = request.RequestedByUserId, Content = request.ResponseNote, CreatedAt = now,
+        });
+
+        var me = await _context.Users.AsNoTracking().Where(u => u.Id == userId).Select(u => u.Name).FirstOrDefaultAsync() ?? "The recipient";
+        _context.CaseEvents.Add(new CaseEvent
+        {
+            CaseId = caseId,
+            EventType = EventType.Cowork,
+            ActionType = dto.Accept ? "SWARM_ACCEPTED" : "SWARM_DECLINED",
+            OldValue = SwarmRequestStatuses.Pending,
+            NewValue = request.Status,
+            Message = $"{me} {(dto.Accept ? "accepted" : "declined")} the swarm request{(request.ResponseNote != null ? $": {request.ResponseNote}" : ".")}",
+            IsInternal = true,
+            CreatedAt = now,
+            UserId = userId
+        });
+        await _context.SaveChangesAsync();
+
+        try
+        {
+            await _notificationService.CreateNotificationAsync(request.RequestedByUserId, dto.Accept ? "CASE_SWARM_ACCEPTED" : "CASE_SWARM_DECLINED",
+                dto.Accept ? "Swarm Accepted" : "Swarm Declined",
+                $"{me} {(dto.Accept ? "joined" : "declined")} the swarm on Case {request.Case.CaseNumber}.{(request.ResponseNote != null ? $" \"{request.ResponseNote}\"" : "")}",
+                caseId, request.Case.CaseNumber, "Medium");
+        }
+        catch (Exception ex) { _logger.LogWarning(ex, "Swarm Notification Error"); }
+
+        return await _context.CaseSwarmRequests.AsNoTracking().Where(r => r.Id == requestId).Select(ProjectSwarm).FirstAsync();
+    }
 
     /// <summary>The active priority immediately more urgent than <paramref name="currentPriority"/> (null if it is already the most urgent).</summary>
     private async Task<PrioritySlaRule?> GetNextMoreUrgentPriorityAsync(string currentPriority)

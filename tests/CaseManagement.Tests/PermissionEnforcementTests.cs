@@ -44,7 +44,7 @@ public class PermissionEnforcementTests
     {
         var cases = HostPermissionCatalog.Modules.Single(m => m.Key == "cases").Capabilities.Select(c => c.Key);
 
-        Assert.Equal(new[] { "View", "Create", "Edit", "Transfer", "Resolve", "Assign", "ViewAll" }, cases);
+        Assert.Equal(new[] { "View", "Create", "Edit", "Transfer", "Resolve", "Assign", "ViewAll", "Supervise" }, cases);
     }
 
     private sealed class Env : IAsyncDisposable

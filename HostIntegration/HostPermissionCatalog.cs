@@ -47,6 +47,7 @@ public static class HostPermissionCatalog
             new("Resolve", "Resolve and close cases", "Resolve, close, cancel and reopen cases.", Permissions.CasesResolve),
             new("Assign", "Assign any case", "Assign, reassign and transfer cases outside the person's own teams.", Permissions.CasesAssign),
             new("ViewAll", "See every team's cases", "See all cases, not only those of the person's own teams and assignments.", Permissions.CasesViewAll),
+            new("Supervise", "Supervise cases", "Bulk reassign and bulk resolve, take over escalated cases, and be asked for help as a Supervisor in Request Swarm.", Permissions.CasesSupervise),
         ],
         [
             // Reports sits below the operational Cases row. Its key stays "dashboard" so existing links and pages.js keep working.

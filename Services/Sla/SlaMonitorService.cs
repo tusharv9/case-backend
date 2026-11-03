@@ -185,54 +185,42 @@ public class SlaMonitorService : ISlaMonitor
         if (snapshot.External.IsBreached)
             breached.Add(new SlaBreachCandidate(c.Id, c.CaseNumber, c.Title, c.OwnerId, c.SlaStartTime));
 
-        // Early reminder: the first escalation level's trigger, sent to whoever holds the case.
-        if (policy.ReminderPercent.HasValue && !c.SlaReminderSent && snapshot.Internal.ConsumedPercent >= (double)policy.ReminderPercent.Value)
-        {
-            c.SlaReminderSent = true;
-            onReminder();
-            var ownerName = c.Owner?.Name ?? "Agent";
-            _context.CaseEvents.Add(new CaseEvent
-            {
-                CaseId = c.Id,
-                EventType = EventType.Note,
-                Message = $"SLA reached {policy.ReminderPercent.Value:0.##}% — reminder sent to assigned agent ({ownerName}).",
-                IsInternal = true,
-                CreatedAt = now,
-                UserId = c.OwnerId
-            });
-            notifications.Add(new PendingNotification(c.OwnerId, "SLA_REMINDER", $"SLA {policy.ReminderPercent.Value:0.##}% Consumed",
-                $"SLA has reached {policy.ReminderPercent.Value:0.##}% consumption for Case {c.CaseNumber} ({c.Title}). Please take the required action before SLA breach.",
-                c.Id, c.CaseNumber, "Medium", $"reminder:{c.Id}"));
-        }
-
+        // Automatic escalation only NOTIFIES: the case keeps its holder and its status. Reaching a level records it on the
+        // case (so manual escalation continues from the next level) and tells whoever the level is configured to tell.
         var decision = _escalation.FindDueLevel(c, snapshot, policy, now);
         if (decision == null) return;
 
         var level = decision.Level;
-        var target = await _escalation.ResolveTargetAsync(c, level, ct);
-        var oldOwnerName = c.Owner?.Name ?? "Agent";
+        var recipients = await _escalation.NotificationRecipientsAsync(c, level, ct);
+        var names = recipients.Count == 0
+            ? new List<string>()
+            : await _context.Users.AsNoTracking().Where(u => recipients.Contains(u.Id)).OrderBy(u => u.Name).Select(u => u.Name).ToListAsync(ct);
 
+        var previous = c.EscalationLevel;
         c.EscalationLevel = level.LevelNumber;
-        c.Status = CaseStatus.Escalated;
-        if (target != null && level.ReassignOwner) c.OwnerId = target.Id;
+        c.SlaReminderSent = true;
         onEscalation();
 
-        var who = target != null ? $"{level.TargetRole}: {target.Name}" : $"no active user found for '{level.TargetRole}' — owner unchanged";
+        var notified = names.Count > 0 ? string.Join(", ", names) : $"nobody — no active user holds '{level.TargetRole}'";
         _context.CaseEvents.Add(new CaseEvent
         {
             CaseId = c.Id,
             EventType = EventType.Escalate,
-            Message = $"[Automatic Escalation] Escalated to {level.Name} ({who}) from {oldOwnerName}. Trigger: {decision.Reason}. Action: {level.ActionDescription}",
+            ActionType = "AUTO_ESCALATION",
+            Module = "SlaEscalation",
+            OldValue = previous > 0 ? $"Level {previous}" : "Not escalated",
+            NewValue = level.Name,
+            Message = $"[Automatic Escalation] Reached {level.Name} ({level.TargetRole}). Trigger: {decision.Reason}. Reason: {level.ActionDescription}. Notified: {notified}.",
             IsInternal = true,
             CreatedAt = now,
-            UserId = target?.Id ?? c.OwnerId
+            UserId = c.OwnerId
         });
 
-        if (target != null)
+        foreach (var recipient in recipients)
         {
-            notifications.Add(new PendingNotification(target.Id, "CASE_AUTOMATICALLY_ESCALATED", $"Automatic Escalation ({level.Name})",
-                $"Case {c.CaseNumber} has been automatically escalated to you. Trigger: {decision.Reason}",
-                c.Id, c.CaseNumber, "Critical", $"escalation:{c.Id}:{level.LevelNumber}"));
+            notifications.Add(new PendingNotification(recipient, "CASE_AUTOMATICALLY_ESCALATED", $"Escalation {level.Name}: Case {c.CaseNumber}",
+                $"Case {c.CaseNumber} ({c.Title}) reached {level.Name} — {decision.Reason}. {level.ActionDescription}",
+                c.Id, c.CaseNumber, level.NotificationPriority, $"escalation:{c.Id}:{level.LevelNumber}"));
         }
     }
 

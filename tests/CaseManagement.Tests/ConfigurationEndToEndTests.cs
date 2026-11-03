@@ -458,24 +458,21 @@ public class ConfigurationEndToEndTests
 
         var (_, config) = await env.Send(HttpMethod.Get, "/api/sla-routing/configuration", env.Admin);
         Assert.Equal("Asia/Kuala_Lumpur", config.GetProperty("timeZoneId").GetString());
-        Assert.Contains(config.GetProperty("triggerTypes").EnumerateArray(), t => t.GetProperty("type").GetString() == "SlaPostBreachHours" && t.GetProperty("needsValue").GetBoolean());
-        Assert.Equal(new[] { "Role", "User", "DepartmentOwner", "Owner" }, config.GetProperty("assignmentTypes").EnumerateArray().Select(a => a.GetString()!).ToArray());
+        Assert.Equal(new[] { "SlaPercentage" }, config.GetProperty("triggerTypes").EnumerateArray().Select(t => t.GetProperty("type").GetString()!).ToArray());
+        Assert.Equal(new[] { "Role" }, config.GetProperty("assignmentTypes").EnumerateArray().Select(a => a.GetString()!).ToArray());
+        Assert.Empty(config.GetProperty("escalationLevels").EnumerateArray());   // never seeded: each level names a Host role
 
-        // Free text is not a trigger.
+        // Free text is not a trigger, and a level without its threshold, reason and notification is incomplete.
         var (bad, badBody) = await env.Send(HttpMethod.Post, "/api/sla-routing/escalation-levels", env.Admin,
             new { triggerType = "When the customer is angry", targetRole = "Director" });
         Assert.Equal(HttpStatusCode.BadRequest, bad);
-        Assert.Contains("not an escalation trigger", badBody.GetProperty("error").GetString());
+        Assert.Contains("incomplete", badBody.GetProperty("error").GetString());
 
-        // A threshold is required where one makes sense.
-        var (noValue, _) = await env.Send(HttpMethod.Post, "/api/sla-routing/escalation-levels", env.Admin,
-            new { triggerType = "SlaPercentage", targetRole = "Director" });
-        Assert.Equal(HttpStatusCode.BadRequest, noValue);
-
-        var (ok, level) = await env.Send(HttpMethod.Post, "/api/sla-routing/escalation-levels", env.Admin,
-            new { triggerType = "SlaPercentage", triggerValue = 150, targetRole = "Director", actionDescription = "Executive review" });
-        Assert.True(ok is HttpStatusCode.OK or HttpStatusCode.Created);
-        Assert.Equal("SLA consumption reaches 150%", level.GetProperty("triggerDescription").GetString());
+        // A complete level whose role has no Case Management access in the Host is refused.
+        var (noAccess, noAccessBody) = await env.Send(HttpMethod.Post, "/api/sla-routing/escalation-levels", env.Admin,
+            new { triggerType = "SlaPercentage", triggerValue = 80, targetRole = "Director", actionDescription = "Executive review", notifyRoleHolders = true });
+        Assert.Equal(HttpStatusCode.BadRequest, noAccess);
+        Assert.Contains("does not have access to Case Management", noAccessBody.GetProperty("error").GetString());
 
         // An unknown time zone is refused; a real one is stored and used.
         var (zoneBad, _) = await env.Send(HttpMethod.Put, "/api/sla-routing/configuration", env.Admin,
@@ -489,37 +486,22 @@ public class ConfigurationEndToEndTests
         await using var env = await Env.StartAsync();
         var (_, config) = await env.Send(HttpMethod.Get, "/api/sla-routing/configuration", env.Admin);
 
-        // Edit what the page edits: time zone, a threshold, an inactive level, and a role by exact name.
-        var levels = config.GetProperty("escalationLevels").EnumerateArray().Select(l => new Dictionary<string, object?>
-        {
-            ["levelNumber"] = l.GetProperty("levelNumber").GetInt32(),
-            ["name"] = l.GetProperty("name").GetString(),
-            ["assignmentType"] = l.GetProperty("assignmentType").GetString(),
-            ["targetRole"] = l.GetProperty("targetRole").GetString(),
-            ["targetUserId"] = null,
-            ["triggerType"] = l.GetProperty("triggerType").GetString(),
-            ["triggerValue"] = l.GetProperty("triggerValue").ValueKind == JsonValueKind.Null ? null : (decimal?)l.GetProperty("triggerValue").GetDecimal(),
-            ["actionDescription"] = l.GetProperty("actionDescription").GetString(),
-            ["reassignOwner"] = l.GetProperty("reassignOwner").GetBoolean(),
-            ["isActive"] = l.GetProperty("levelNumber").GetInt32() != 4,    // switch level 4 off
-        }).ToList();
-        levels.Single(l => (int)l["levelNumber"]! == 2)["triggerValue"] = 95m;
-
-        var payload = new
+        // Edit what the page edits: the time zone, and a matrix with an incomplete level (refused as a whole, nothing stored).
+        object Payload(object[] levels) => new
         {
             timeZoneId = "Europe/London",
             priorityRules = config.GetProperty("priorityRules").EnumerateArray().Select(r => JsonSerializer.Deserialize<object>(r.GetRawText())).ToList(),
             businessHours = config.GetProperty("businessHours").EnumerateArray().Select(h => JsonSerializer.Deserialize<object>(h.GetRawText())).ToList(),
             escalationLevels = levels,
         };
-        var (status, saved) = await env.Send(HttpMethod.Put, "/api/sla-routing/configuration", env.Admin, payload);
-        Assert.Equal(HttpStatusCode.OK, status);
+        var (refused, refusedBody) = await env.Send(HttpMethod.Put, "/api/sla-routing/configuration", env.Admin,
+            Payload(new object[] { new { levelNumber = 1, name = "Level 1", targetRole = "", triggerType = "SlaPercentage", triggerValue = 50, actionDescription = "", isActive = true } }));
+        Assert.Equal(HttpStatusCode.BadRequest, refused);
+        Assert.Contains("Level 1 is incomplete", refusedBody.GetProperty("error").GetString());
 
+        var (status, saved) = await env.Send(HttpMethod.Put, "/api/sla-routing/configuration", env.Admin, Payload(Array.Empty<object>()));
+        Assert.Equal(HttpStatusCode.OK, status);
         Assert.Equal("Europe/London", saved.GetProperty("timeZoneId").GetString());
-        var level2 = saved.GetProperty("escalationLevels").EnumerateArray().Single(l => l.GetProperty("levelNumber").GetInt32() == 2);
-        Assert.Equal(95m, level2.GetProperty("triggerValue").GetDecimal());
-        Assert.Equal("SLA consumption reaches 95%", level2.GetProperty("triggerDescription").GetString());   // derived, not typed
-        Assert.False(saved.GetProperty("escalationLevels").EnumerateArray().Single(l => l.GetProperty("levelNumber").GetInt32() == 4).GetProperty("isActive").GetBoolean());
 
         // The time zone is live for the clock straight away (no restart, no stale cache): a new case's due date follows it.
         var (created, body) = await env.Send(HttpMethod.Post, "/api/cases", env.Admin, env.CaseBody());

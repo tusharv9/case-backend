@@ -222,7 +222,7 @@ public class DepartmentsAndTeamRulesTests : IDisposable
 
         var views = await db.CaseEvents.Where(e => e.EventType == EventType.View).ToListAsync();
         Assert.Equal(2, views.Count);
-        Assert.Equal(new[] { ann, cy }.OrderBy(x => x), views.Select(v => v.UserId).OrderBy(x => x));
+        Assert.Equal(new[] { ann, cy }.OrderBy(x => x), views.Select(v => v.UserId!.Value).OrderBy(x => x));
     }
 
     // ------------------------------------------------------------------------------------------------ multi-select

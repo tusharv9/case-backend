@@ -1,6 +1,7 @@
 namespace CaseManagement.Api.Services;
 
 using CaseManagement.Api.Data;
+using CaseManagement.Api.HostIntegration;
 using CaseManagement.Api.DTOs;
 using CaseManagement.Api.Models;
 using Microsoft.EntityFrameworkCore;
@@ -16,46 +17,70 @@ public class SlaRoutingService : ISlaRoutingService
     private readonly AppDbContext _context;
     private readonly ILogger<SlaRoutingService> _logger;
     private readonly IEscalationService _escalation;
+    private readonly IConfigCache? _cache;
+    private readonly IOrgDirectory? _directory;
 
-    public SlaRoutingService(AppDbContext context, ILogger<SlaRoutingService> logger, IEscalationService escalation)
+    public SlaRoutingService(AppDbContext context, ILogger<SlaRoutingService> logger, IEscalationService escalation,
+        IConfigCache? cache = null, IOrgDirectory? directory = null)
     {
         _context = context;
         _logger = logger;
         _escalation = escalation;
+        _cache = cache;
+        _directory = directory;
     }
 
     // ===================================================================================== escalation validation
 
+    private static EscalationLevelRules.Input InputOf(EscalationLevelConfigDto l) =>
+        new(l.LevelNumber, l.TargetRole, l.TriggerType, l.TriggerValue, l.ActionDescription,
+            l.NotifyRoleHolders, l.NotifyCaseOwner, l.NotifyTeamLead, l.NotificationPriority);
+
+    private static EscalationLevelRules.Input InputOf(EscalationLevelConfig l) =>
+        new(l.LevelNumber, l.TargetRole, l.TriggerType, l.TriggerValue, l.ActionDescription,
+            l.NotifyRoleHolders, l.NotifyCaseOwner, l.NotifyTeamLead, l.NotificationPriority);
+
     /// <summary>
-    /// Checks a level's structured trigger and assignment before it is stored. A level is never saved in a state the
-    /// engine cannot execute, and its description is always derived from the structure so text and behaviour cannot drift.
+    /// Checks the whole matrix as it would be after the change: every level complete, no role on two levels, every role
+    /// one the Host grants Case Management access to (a role a level already had stays allowed, so revoking access never
+    /// blocks an unrelated save), and thresholds rising with the level. Refuses with every problem at once.
     /// </summary>
-    private async Task ValidateLevelAsync(string name, string triggerType, decimal? triggerValue, string assignmentType, string? targetRole, Guid? targetUserId, CancellationToken ct)
+    private async Task ValidateMatrixAsync(IReadOnlyList<EscalationLevelRules.Input> levels, CancellationToken ct)
     {
-        var triggerError = EscalationTriggers.Validate(triggerType, triggerValue);
-        if (triggerError != null) throw new InvalidOperationException($"{name}: {triggerError}");
+        var stored = await _context.EscalationLevelConfigs.AsNoTracking()
+            .Select(l => new { l.LevelNumber, l.TargetRole }).ToListAsync(ct);
+        var unchanged = stored.GroupBy(l => l.LevelNumber).ToDictionary(g => g.Key, g => g.First().TargetRole);
+        var allowed = _directory == null ? null : await _directory.CaseRolesAsync(ct);
 
-        if (!EscalationService.AssignmentTypes.Contains(assignmentType, StringComparer.OrdinalIgnoreCase))
-            throw new InvalidOperationException($"{name}: '{assignmentType}' is not an assignment type. Choose one of: {string.Join(", ", EscalationService.AssignmentTypes)}.");
-
-        if (string.Equals(assignmentType, EscalationService.AssignmentRole, StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(targetRole))
-            throw new InvalidOperationException($"{name}: choose the role that receives the escalation.");
-
-        if (string.Equals(assignmentType, EscalationService.AssignmentUser, StringComparison.OrdinalIgnoreCase))
-        {
-            if (!targetUserId.HasValue) throw new InvalidOperationException($"{name}: choose the person who receives the escalation.");
-            if (!await _context.Users.AnyAsync(u => u.Id == targetUserId.Value && u.IsActive, ct))
-                throw new InvalidOperationException($"{name}: the chosen person is not an active user.");
-        }
+        var errors = EscalationLevelRules.Validate(levels, allowed, unchanged);
+        if (errors.Count > 0) throw new FieldValidationException(errors);
     }
 
-    private static string CanonicalAssignment(string value) =>
-        EscalationService.AssignmentTypes.First(a => string.Equals(a, value, StringComparison.OrdinalIgnoreCase));
+    private static void Apply(EscalationLevelConfig target, EscalationLevelConfigDto input)
+    {
+        target.Name = string.IsNullOrWhiteSpace(input.Name) ? $"Level {input.LevelNumber}" : input.Name.Trim();
+        target.AssignmentType = EscalationService.AssignmentRole;
+        target.TargetRole = input.TargetRole?.Trim() ?? string.Empty;
+        target.TargetUserId = null;
+        target.TriggerType = EscalationTriggers.SlaPercentage;
+        target.TriggerValue = input.TriggerValue;
+        target.TriggerDescription = EscalationTriggers.Describe(EscalationTriggers.SlaPercentage, input.TriggerValue);
+        target.ActionDescription = input.ActionDescription?.Trim() ?? string.Empty;
+        target.ReassignOwner = false;   // automatic escalation only notifies
+        target.NotifyRoleHolders = input.NotifyRoleHolders;
+        target.NotifyCaseOwner = input.NotifyCaseOwner;
+        target.NotifyTeamLead = input.NotifyTeamLead;
+        target.NotificationPriority = EscalationNotificationPriorities.Canonical(input.NotificationPriority) ?? "High";
+        target.DisplayOrder = input.LevelNumber;
+        target.IsActive = input.IsActive;
+    }
+
+    private void InvalidatePolicy() => _cache?.InvalidateAll();
 
     /// <summary>Keeps every case on a level that exists after the matrix changed.</summary>
     private async Task ClampCaseLevelsAsync(CancellationToken ct)
     {
-        var max = await _context.EscalationLevelConfigs.Select(l => (int?)l.LevelNumber).MaxAsync(ct) ?? 1;
+        var max = await _context.EscalationLevelConfigs.Select(l => (int?)l.LevelNumber).MaxAsync(ct) ?? 0;
         await _context.Cases.Where(c => c.EscalationLevel > max).ExecuteUpdateAsync(u => u.SetProperty(c => c.EscalationLevel, max), ct);
     }
 
@@ -137,50 +162,23 @@ public class SlaRoutingService : ISlaRoutingService
             .ToListAsync(ct);
 
         // 5. Escalation Levels
-        var levels = await _context.EscalationLevelConfigs
-            .Include(l => l.TargetUser)
-            .AsNoTracking()
-            .OrderBy(l => l.LevelNumber)
-            .Select(l => new EscalationLevelConfigDto
-            {
-                Id = l.Id,
-                LevelNumber = l.LevelNumber,
-                Name = l.Name,
-                AssignmentType = l.AssignmentType,
-                TargetRole = l.TargetRole,
-                TargetUserId = l.TargetUserId,
-                TargetUserName = l.TargetUser != null ? l.TargetUser.Name : null,
-                TriggerType = l.TriggerType,
-                TriggerValue = l.TriggerValue,
-                TriggerDescription = l.TriggerDescription,
-                ActionDescription = l.ActionDescription,
-                ReassignOwner = l.ReassignOwner,
-                IsActive = l.IsActive
-            })
-            .ToListAsync(ct);
-        foreach (var l in levels) l.TriggerDescription = EscalationTriggers.Describe(l.TriggerType, l.TriggerValue);
+        var levelRows = await _context.EscalationLevelConfigs.AsNoTracking().OrderBy(l => l.LevelNumber).ToListAsync(ct);
 
-        // 6. Available Users and Roles for UI assignment selector
-        var users = await _context.Users
-            .AsNoTracking()
-            .OrderBy(u => u.Name)
-            .Select(u => new UserOptionDto
-            {
-                Id = u.Id,
-                Name = u.Name,
-                Role = u.Role,
-                Team = string.Join(", ", _context.TeamMembers.Where(m => m.UserId == u.Id && m.IsActive).OrderBy(m => m.Department.Name).Select(m => m.Department.Name))
-            })
-            .ToListAsync(ct);
-
-        // Roles come from the Host's users (plus any a level already points at, so the editor can still show it).
-        var roles = users
-            .Select(u => u.Role)
-            .Concat(levels.Where(l => string.Equals(l.AssignmentType, EscalationService.AssignmentRole, StringComparison.OrdinalIgnoreCase)).Select(l => l.TargetRole))
-            .Where(r => !string.IsNullOrWhiteSpace(r))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(r => r)
-            .ToList();
+        // 6. Roles a level may be given: the Host roles granted Case Management access (read live from the Host).
+        List<string> roles = new();
+        string? rolesUnavailable = null;
+        if (_directory != null)
+        {
+            try { roles = (await _directory.CaseRolesAsync(ct)).ToList(); }
+            catch (HostUsersException ex) { rolesUnavailable = ex.Message; }
+        }
+        var roleSet = new HashSet<string>(roles, StringComparer.OrdinalIgnoreCase);
+        var levels = levelRows.Select(l =>
+        {
+            var dto = ToDto(l);
+            dto.RoleUnavailable = rolesUnavailable == null && !string.IsNullOrWhiteSpace(l.TargetRole) && !roleSet.Contains(l.TargetRole.Trim());
+            return dto;
+        }).ToList();
 
         var timeZoneId = await _context.BusinessCalendarSettings.AsNoTracking().Select(t => t.TimeZoneId).FirstOrDefaultAsync(ct) ?? string.Empty;
 
@@ -192,14 +190,15 @@ public class SlaRoutingService : ISlaRoutingService
             PublicHolidays = holidays,
             EscalationLevels = levels,
             AvailableRoles = roles,
-            AvailableUsers = users,
+            RolesUnavailableMessage = rolesUnavailable,
+            NotificationPriorities = EscalationNotificationPriorities.All.ToList(),
             TimeZoneId = timeZoneId,
             AvailableTimeZones = TimeZoneInfo.GetSystemTimeZones().Select(z => z.Id).Where(id => id.Contains('/')).OrderBy(id => id).ToList(),
             TriggerTypes = EscalationTriggers.All.Select(t => new EscalationTriggerOptionDto
             {
                 Type = t.Type, Label = t.Label, NeedsValue = t.NeedsValue, Unit = t.Unit, Min = t.Min, Max = t.Max,
             }).ToList(),
-            AssignmentTypes = EscalationService.AssignmentTypes.ToList(),
+            AssignmentTypes = new List<string> { EscalationService.AssignmentRole },
         };
     }
 
@@ -379,17 +378,9 @@ public class SlaRoutingService : ISlaRoutingService
                     }
                 }
 
-                // 3. Update Escalation Level Configs (validated; descriptions derived from the structured trigger)
+                // 3. Update Escalation Level Configs (the whole matrix is checked first; an incomplete level is never stored)
                 var inputLevels = request.EscalationLevels.OrderBy(l => l.LevelNumber).ToList();
-                if (inputLevels.GroupBy(l => l.LevelNumber).Any(g => g.Count() > 1))
-                    throw new InvalidOperationException("Escalation level numbers must be unique.");
-                if (inputLevels.Any(l => l.LevelNumber < 1))
-                    throw new InvalidOperationException("Escalation level numbers start at 1.");
-                foreach (var l in inputLevels)
-                {
-                    var label = string.IsNullOrWhiteSpace(l.Name) ? $"Level {l.LevelNumber}" : l.Name;
-                    await ValidateLevelAsync(label, l.TriggerType, l.TriggerValue, l.AssignmentType ?? EscalationService.AssignmentRole, l.TargetRole, l.TargetUserId, ct);
-                }
+                await ValidateMatrixAsync(inputLevels.Select(InputOf).ToList(), ct);
 
                 var existingLevels = await _context.EscalationLevelConfigs.ToListAsync(ct);
                 _context.EscalationLevelConfigs.RemoveRange(existingLevels);
@@ -397,26 +388,9 @@ public class SlaRoutingService : ISlaRoutingService
 
                 foreach (var inputLvl in inputLevels)
                 {
-                    var triggerType = EscalationTriggers.Canonical(inputLvl.TriggerType)!;
-                    var assignment = CanonicalAssignment(inputLvl.AssignmentType ?? EscalationService.AssignmentRole);
-                    var needsValue = EscalationTriggers.Find(triggerType)!.NeedsValue;
-                    _context.EscalationLevelConfigs.Add(new EscalationLevelConfig
-                    {
-                        Id = Guid.NewGuid(),
-                        LevelNumber = inputLvl.LevelNumber,
-                        Name = string.IsNullOrWhiteSpace(inputLvl.Name) ? $"Level {inputLvl.LevelNumber}" : inputLvl.Name.Trim(),
-                        AssignmentType = assignment,
-                        TargetRole = inputLvl.TargetRole?.Trim() ?? string.Empty,
-                        TargetUserId = assignment == EscalationService.AssignmentUser ? inputLvl.TargetUserId : null,
-                        TriggerType = triggerType,
-                        TriggerValue = needsValue ? inputLvl.TriggerValue : null,
-                        TriggerDescription = EscalationTriggers.Describe(triggerType, needsValue ? inputLvl.TriggerValue : null),
-                        ActionDescription = inputLvl.ActionDescription ?? string.Empty,
-                        ReassignOwner = inputLvl.ReassignOwner,
-                        DisplayOrder = inputLvl.LevelNumber,
-                        IsActive = inputLvl.IsActive,
-                        CreatedAt = now
-                    });
+                    var level = new EscalationLevelConfig { Id = Guid.NewGuid(), LevelNumber = inputLvl.LevelNumber, CreatedAt = now };
+                    Apply(level, inputLvl);
+                    _context.EscalationLevelConfigs.Add(level);
                 }
                 await _context.SaveChangesAsync(ct);
                 await ClampCaseLevelsAsync(ct);
@@ -438,6 +412,7 @@ public class SlaRoutingService : ISlaRoutingService
 
                 await _context.SaveChangesAsync(ct);
                 await transaction.CommitAsync(ct);
+                InvalidatePolicy();
                 return true;
             }
             catch (Exception ex)
@@ -559,21 +534,24 @@ public class SlaRoutingService : ISlaRoutingService
         return true;
     }
 
-    private static EscalationLevelConfigDto ToDto(EscalationLevelConfig l, string? targetUserName = null) => new()
+    private static EscalationLevelConfigDto ToDto(EscalationLevelConfig l) => new()
     {
         Id = l.Id,
         LevelNumber = l.LevelNumber,
         Name = l.Name,
-        AssignmentType = l.AssignmentType,
+        AssignmentType = EscalationService.AssignmentRole,
         TargetRole = l.TargetRole,
-        TargetUserId = l.TargetUserId,
-        TargetUserName = targetUserName,
-        TriggerType = l.TriggerType,
+        TriggerType = EscalationTriggers.Canonical(l.TriggerType) ?? l.TriggerType,
         TriggerValue = l.TriggerValue,
         TriggerDescription = EscalationTriggers.Describe(l.TriggerType, l.TriggerValue),
         ActionDescription = l.ActionDescription,
-        ReassignOwner = l.ReassignOwner,
-        IsActive = l.IsActive
+        ReassignOwner = false,
+        IsActive = l.IsActive,
+        NotifyRoleHolders = l.NotifyRoleHolders,
+        NotifyCaseOwner = l.NotifyCaseOwner,
+        NotifyTeamLead = l.NotifyTeamLead,
+        NotificationPriority = l.NotificationPriority,
+        MissingFields = EscalationLevelRules.MissingFields(l).ToList(),
     };
 
     private void AuditLevel(string action, string message, Guid actingUserId) =>
@@ -593,40 +571,28 @@ public class SlaRoutingService : ISlaRoutingService
 
     public async Task<EscalationLevelConfigDto> AddEscalationLevelAsync(CreateEscalationLevelDto dto, Guid actingUserId, CancellationToken ct = default)
     {
-        var existing = await _context.EscalationLevelConfigs.OrderBy(l => l.LevelNumber).ToListAsync(ct);
+        var existing = await _context.EscalationLevelConfigs.AsNoTracking().OrderBy(l => l.LevelNumber).ToListAsync(ct);
         int levelNumber = dto.LevelNumber.HasValue && dto.LevelNumber.Value > 0
             ? dto.LevelNumber.Value
             : (existing.Count > 0 ? existing.Max(l => l.LevelNumber) + 1 : 1);
         if (existing.Any(l => l.LevelNumber == levelNumber))
             throw new InvalidOperationException($"Level {levelNumber} already exists.");
 
-        string name = string.IsNullOrWhiteSpace(dto.Name) ? $"Level {levelNumber}" : dto.Name.Trim();
-        var assignmentType = string.IsNullOrWhiteSpace(dto.AssignmentType) ? EscalationService.AssignmentRole : dto.AssignmentType;
-        await ValidateLevelAsync(name, dto.TriggerType, dto.TriggerValue, assignmentType, dto.TargetRole, dto.TargetUserId, ct);
-
-        var triggerType = EscalationTriggers.Canonical(dto.TriggerType)!;
-        var needsValue = EscalationTriggers.Find(triggerType)!.NeedsValue;
-        var level = new EscalationLevelConfig
+        var input = new EscalationLevelConfigDto
         {
-            Id = Guid.NewGuid(),
-            LevelNumber = levelNumber,
-            Name = name,
-            AssignmentType = CanonicalAssignment(assignmentType),
-            TargetRole = dto.TargetRole?.Trim() ?? string.Empty,
-            TargetUserId = string.Equals(assignmentType, EscalationService.AssignmentUser, StringComparison.OrdinalIgnoreCase) ? dto.TargetUserId : null,
-            TriggerType = triggerType,
-            TriggerValue = needsValue ? dto.TriggerValue : null,
-            ActionDescription = string.IsNullOrWhiteSpace(dto.ActionDescription) ? $"Escalate to {dto.TargetRole}" : dto.ActionDescription.Trim(),
-            ReassignOwner = dto.ReassignOwner,
-            DisplayOrder = levelNumber,
-            IsActive = true,
-            CreatedAt = DateTime.UtcNow
+            LevelNumber = levelNumber, Name = dto.Name ?? string.Empty, TargetRole = dto.TargetRole, TriggerType = dto.TriggerType,
+            TriggerValue = dto.TriggerValue, ActionDescription = dto.ActionDescription ?? string.Empty, IsActive = true,
+            NotifyRoleHolders = dto.NotifyRoleHolders, NotifyCaseOwner = dto.NotifyCaseOwner, NotifyTeamLead = dto.NotifyTeamLead,
+            NotificationPriority = dto.NotificationPriority,
         };
-        level.TriggerDescription = EscalationTriggers.Describe(level.TriggerType, level.TriggerValue);
+        await ValidateMatrixAsync(existing.Select(InputOf).Append(InputOf(input)).ToList(), ct);
 
+        var level = new EscalationLevelConfig { Id = Guid.NewGuid(), LevelNumber = levelNumber, CreatedAt = DateTime.UtcNow };
+        Apply(level, input);
         _context.EscalationLevelConfigs.Add(level);
-        AuditLevel("CREATE", $"Created escalation level '{level.Name}' (target: {level.AssignmentType} {level.TargetRole}, trigger: {level.TriggerDescription}).", actingUserId);
+        AuditLevel("CREATE", $"Created escalation level '{level.Name}' (role: {level.TargetRole}, trigger: {level.TriggerDescription}).", actingUserId);
         await _context.SaveChangesAsync(ct);
+        InvalidatePolicy();
 
         return ToDto(level);
     }
@@ -636,31 +602,26 @@ public class SlaRoutingService : ISlaRoutingService
         var level = await _context.EscalationLevelConfigs.FirstOrDefaultAsync(l => l.Id == id, ct);
         if (level == null) return null;
 
-        var name = string.IsNullOrWhiteSpace(dto.Name) ? level.Name : dto.Name.Trim();
-        var triggerType = dto.TriggerType ?? level.TriggerType;
-        var triggerValue = dto.TriggerType != null || dto.TriggerValue.HasValue ? dto.TriggerValue : level.TriggerValue;
-        var assignment = dto.AssignmentType ?? level.AssignmentType;
-        var targetRole = dto.TargetRole ?? level.TargetRole;
-        var targetUserId = dto.TargetUserId ?? level.TargetUserId;
+        var input = ToDto(level);
+        if (!string.IsNullOrWhiteSpace(dto.Name)) input.Name = dto.Name;
+        if (dto.TargetRole != null) input.TargetRole = dto.TargetRole;
+        if (dto.TriggerType != null) input.TriggerType = dto.TriggerType;
+        if (dto.TriggerValue.HasValue) input.TriggerValue = dto.TriggerValue;
+        if (dto.ActionDescription != null) input.ActionDescription = dto.ActionDescription;
+        if (dto.IsActive.HasValue) input.IsActive = dto.IsActive.Value;
+        if (dto.NotifyRoleHolders.HasValue) input.NotifyRoleHolders = dto.NotifyRoleHolders.Value;
+        if (dto.NotifyCaseOwner.HasValue) input.NotifyCaseOwner = dto.NotifyCaseOwner.Value;
+        if (dto.NotifyTeamLead.HasValue) input.NotifyTeamLead = dto.NotifyTeamLead.Value;
+        if (dto.NotificationPriority != null) input.NotificationPriority = dto.NotificationPriority;
 
-        await ValidateLevelAsync(name, triggerType, triggerValue, assignment, targetRole, targetUserId, ct);
+        var others = await _context.EscalationLevelConfigs.AsNoTracking().Where(l => l.Id != id).ToListAsync(ct);
+        await ValidateMatrixAsync(others.Select(InputOf).Append(InputOf(input)).ToList(), ct);
 
-        var canonical = EscalationTriggers.Canonical(triggerType)!;
-        var needsValue = EscalationTriggers.Find(canonical)!.NeedsValue;
-        level.Name = name;
-        level.TriggerType = canonical;
-        level.TriggerValue = needsValue ? triggerValue : null;
-        level.AssignmentType = CanonicalAssignment(assignment);
-        level.TargetRole = targetRole.Trim();
-        level.TargetUserId = level.AssignmentType == EscalationService.AssignmentUser ? targetUserId : null;
-        if (dto.ActionDescription != null) level.ActionDescription = dto.ActionDescription.Trim();
-        if (dto.ReassignOwner.HasValue) level.ReassignOwner = dto.ReassignOwner.Value;
-        if (dto.IsActive.HasValue) level.IsActive = dto.IsActive.Value;
-        level.TriggerDescription = EscalationTriggers.Describe(level.TriggerType, level.TriggerValue);
+        Apply(level, input);
         level.UpdatedAt = DateTime.UtcNow;
-
-        AuditLevel("UPDATE", $"Updated escalation level '{level.Name}' (target: {level.AssignmentType} {level.TargetRole}, trigger: {level.TriggerDescription}, {(level.IsActive ? "active" : "inactive")}).", actingUserId);
+        AuditLevel("UPDATE", $"Updated escalation level '{level.Name}' (role: {level.TargetRole}, trigger: {level.TriggerDescription}, {(level.IsActive ? "active" : "inactive")}).", actingUserId);
         await _context.SaveChangesAsync(ct);
+        InvalidatePolicy();
 
         return ToDto(level);
     }
@@ -693,12 +654,13 @@ public class SlaRoutingService : ISlaRoutingService
         // Cases keep pointing at the level they were on: those past the deleted one move down with the renumbering,
         // and one sitting on the deleted level falls back to the level before it.
         // (Order matters: settle the cases ON the deleted level first, or the renumbering would sweep them up too.)
-        await _context.Cases.Where(c => c.EscalationLevel == removedNumber && removedNumber > 1)
+        await _context.Cases.Where(c => c.EscalationLevel == removedNumber)
             .ExecuteUpdateAsync(u => u.SetProperty(c => c.EscalationLevel, removedNumber - 1), ct);
         await _context.Cases.Where(c => c.EscalationLevel > removedNumber)
             .ExecuteUpdateAsync(u => u.SetProperty(c => c.EscalationLevel, c => c.EscalationLevel - 1), ct);
         await ClampCaseLevelsAsync(ct);
 
+        InvalidatePolicy();
         return true;
     }
 
@@ -790,31 +752,28 @@ public class SlaRoutingService : ISlaRoutingService
 
     public async Task<CaseEscalationStatusDto?> GetCaseEscalationStatusAsync(Guid caseId, CancellationToken ct = default)
     {
-        var c = await _context.Cases
-            .AsNoTracking()
-            .FirstOrDefaultAsync(x => x.Id == caseId, ct);
+        var c = await _context.Cases.AsNoTracking().FirstOrDefaultAsync(x => x.Id == caseId, ct);
         if (c == null) return null;
 
         var policy = await _escalation.GetPolicyAsync(ct);
-        int currentLevel = c.EscalationLevel > 0 ? c.EscalationLevel : 1;
-        var currentConfig = policy.ActiveLevels.FirstOrDefault(l => l.LevelNumber == currentLevel);
-        var nextConfig = _escalation.NextLevel(c, policy);
+        var currentConfig = policy.ActiveLevels.FirstOrDefault(l => l.LevelNumber == c.EscalationLevel);
+        var nextConfig = _escalation.LevelsAbove(c, policy).FirstOrDefault();
         bool isMax = nextConfig == null;
-        var nextUser = nextConfig != null ? await _escalation.ResolveTargetAsync(c, nextConfig, ct) : null;
+        var currentName = c.EscalationLevel > 0 ? currentConfig?.Name ?? $"Level {c.EscalationLevel}" : "Not escalated";
 
         return new CaseEscalationStatusDto
         {
             CaseId = c.Id,
             CaseNumber = c.CaseNumber,
-            CurrentLevel = currentLevel,
-            CurrentLevelName = currentConfig?.Name ?? $"Level {currentLevel}",
+            CurrentLevel = c.EscalationLevel,
+            CurrentLevelName = currentName,
             NextLevel = nextConfig?.LevelNumber,
             NextLevelName = nextConfig?.Name,
             NextTargetRole = nextConfig?.TargetRole,
-            NextTargetUserName = nextUser?.Name,
-            NextTargetUserId = nextUser?.Id,
             IsMaxLevel = isMax,
-            MaxLevelNotice = isMax ? $"This case has reached the maximum configured escalation level ({currentConfig?.Name ?? $"Level {currentLevel}"}). Further escalation is not allowed." : null,
+            MaxLevelNotice = isMax ? (policy.ActiveLevels.Count == 0
+                ? "No complete escalation level is configured. An administrator sets them up under SLA & Routing → Escalation Matrix."
+                : $"This case has reached the highest configured escalation level ({currentName}). Further escalation is not allowed.") : null,
             TriggerDescription = nextConfig != null ? EscalationTriggers.Describe(nextConfig.TriggerType, nextConfig.TriggerValue) : string.Empty,
             ActionDescription = nextConfig?.ActionDescription ?? string.Empty
         };

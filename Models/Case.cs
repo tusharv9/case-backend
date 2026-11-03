@@ -43,7 +43,8 @@ public class Case : AuditableEntity
     public string FirstResponseStatus { get; set; } = "Pending"; // Met, Breached, Pending
 
     // Escalation Matrix Tracking
-    public int EscalationLevel { get; set; } = 1; // 1 = Assigned Agent, 2 = Team Lead, 3 = CX Supervisor, 4 = Head of CX
+    /// <summary>The escalation-matrix level the case has reached: 0 = not escalated, n = the matrix's Level n.</summary>
+    public int EscalationLevel { get; set; } = 0;
 
     /// <summary>True once the "approaching SLA" reminder (the first escalation level's trigger) has been sent for this case.</summary>
     public bool SlaReminderSent { get; set; } = false;
