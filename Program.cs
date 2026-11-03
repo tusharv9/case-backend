@@ -249,6 +249,13 @@ if (hostMode == HostIntegrationMode.Standalone)
 }
 else
 {
+    // Host and Hybrid both validate Host-issued tokens. Hybrid may additionally accept the demo user picker's header.
+    if (hostMode == HostIntegrationMode.Hybrid && hostOptions.HybridAllowsDevHeader &&
+        !builder.Environment.IsDevelopment() && !hostOptions.AllowStandaloneInProduction)
+        throw new InvalidOperationException(
+            "HostIntegration:HybridAllowsDevHeader lets callers without a token name themselves with a header (NO real " +
+            "authentication). Outside Development it also needs HostIntegration:AllowStandaloneInProduction=true.");
+
     var jwt = hostOptions.Jwt;
     // The OmniConnect platform's own keys (Jwt__SigningKeyPublic / Jwt__Issuer / Jwt__Audience — the same
     // values every service's .env carries) are used when the HostIntegration ones are not set.
@@ -273,8 +280,18 @@ else
 
     // Permissions are asked of AuthService on every request once AuthService:InternalApiKey is set (HostCapabilities.cs).
     builder.Services.AddHttpClient<HostCapabilitiesClient>();
-    builder.Services.AddScoped<IHostIdentityResolver, JwtIdentityResolver>();
-    builder.Services.AddScoped<IPermissionProvider, ConfiguredPermissionProvider>();
+    if (hostMode == HostIntegrationMode.Hybrid)
+    {
+        builder.Services.AddScoped<JwtIdentityResolver>();
+        builder.Services.AddScoped<StandaloneIdentityResolver>();
+        builder.Services.AddScoped<IHostIdentityResolver, HybridIdentityResolver>();
+        builder.Services.AddScoped<IPermissionProvider, HybridPermissionProvider>();
+    }
+    else
+    {
+        builder.Services.AddScoped<IHostIdentityResolver, JwtIdentityResolver>();
+        builder.Services.AddScoped<IPermissionProvider, ConfiguredPermissionProvider>();
+    }
 
     if (!string.IsNullOrWhiteSpace(hostOptions.Directory.BaseUrl))
     {
@@ -565,7 +582,7 @@ if (!app.Environment.IsDevelopment())
 
 // Before anything that touches the database: API calls get a clean 503 until it is ready.
 app.UseMiddleware<DatabaseReadinessMiddleware>();
-if (hostMode == HostIntegrationMode.Host) app.UseAuthentication();   // validates the Host-issued JWT
+if (HostIntegrationOptions.AcceptsHostTokens(hostMode)) app.UseAuthentication();   // validates the Host-issued JWT
 app.UseMiddleware<HostIdentityMiddleware>();
 app.UseAuthorization();
 

@@ -17,6 +17,9 @@ public sealed class HostIdentityMiddleware
 
     private sealed record CachedUser(Guid LocalId, bool IsActive);
 
+    /// <summary>Anonymous: tells a signed-out UI which ways of signing in this deployment accepts.</summary>
+    public const string SessionOptionsPath = "/api/session/options";
+
     public async Task InvokeAsync(
         HttpContext context,
         IHostIdentityResolver resolver,
@@ -35,8 +38,19 @@ public sealed class HostIdentityMiddleware
         var settings = options.Value;
         var mode = settings.ResolveMode(env.IsDevelopment());
 
-        // Standalone only: the development user picker has to list users before anyone is "signed in".
-        if (mode == HostIntegrationMode.Standalone &&
+        // Before anyone is signed in, the UI must learn how it may sign in.
+        if (HttpMethods.IsGet(context.Request.Method) &&
+            context.Request.Path.Equals(SessionOptionsPath, StringComparison.OrdinalIgnoreCase))
+        {
+            context.Items[PermissionAuthorizationFilter.OpenBeforeSignInKey] = true;
+            await _next(context);
+            return;
+        }
+
+        // Development header accepted: the demo user picker has to list users before anyone is "signed in".
+        // A request that carries a token is identified normally instead.
+        if (settings.AcceptsDevHeader(mode) &&
+            context.Request.Headers.Authorization.Count == 0 &&
             HttpMethods.IsGet(context.Request.Method) &&
             context.Request.Path.Equals("/api/users", StringComparison.OrdinalIgnoreCase))
         {
@@ -58,14 +72,14 @@ public sealed class HostIdentityMiddleware
         if (principal == null)
         {
             await Reject(context, StatusCodes.Status401Unauthorized,
-                mode == HostIntegrationMode.Host ? "Authentication required." : "Missing or invalid X-User-Id header.");
+                mode == HostIntegrationMode.Standalone ? "Missing or invalid X-User-Id header." : "Authentication required.");
             return;
         }
 
         var cacheKey = "host-user:" + principal.ExternalUserId;
         if (!cache.TryGetValue(cacheKey, out CachedUser? user) || user == null)
         {
-            var projected = await projection.EnsureAsync(principal, provisionIfMissing: mode == HostIntegrationMode.Host, context.RequestAborted);
+            var projected = await projection.EnsureAsync(principal, provisionIfMissing: principal.Source == HostIdentitySource.HostToken, context.RequestAborted);
             if (projected == null)
             {
                 await Reject(context, StatusCodes.Status401Unauthorized, "User not found or unauthorized.");

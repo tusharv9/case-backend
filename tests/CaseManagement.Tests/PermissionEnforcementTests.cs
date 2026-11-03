@@ -22,7 +22,7 @@ namespace CaseManagement.Tests;
 public class PermissionEnforcementTests
 {
     [Fact]
-    public void Only_permission_discovery_who_am_I_and_the_Customer_360_handoff_redeem_need_no_Case_Management_permission()
+    public void Only_permission_discovery_who_am_I_sign_in_options_and_the_Customer_360_handoff_redeem_need_no_Case_Management_permission()
     {
         var open = typeof(PermissionsController).Assembly.GetTypes()
             .Where(t => typeof(ControllerBase).IsAssignableFrom(t) && !t.IsAbstract)
@@ -35,7 +35,8 @@ public class PermissionEnforcementTests
 
         // Redeem is called from Customer 360 by people who may hold no Case Management permission at all; it requires
         // the Host permission to open Customer 360 profiles instead (Customer360Controller.MayOpenCustomer360).
-        Assert.Equal(new[] { "Customer360Controller.Redeem", "PermissionsController.Get", "UsersController.GetMe" }, open);
+        // SessionController.GetOptions says only how a signed-out UI may sign in (which identity sources are accepted).
+        Assert.Equal(new[] { "Customer360Controller.Redeem", "PermissionsController.Get", "SessionController.GetOptions", "UsersController.GetMe" }, open);
     }
 
     [Fact]

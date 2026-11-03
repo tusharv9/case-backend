@@ -48,6 +48,19 @@ public sealed class ConfiguredPermissionProvider : IPermissionProvider
     }
 }
 
+/// <summary>HYBRID: Host-token callers get what the Host grants them; demo (development-header) callers get the standalone set.</summary>
+public sealed class HybridPermissionProvider(IOptions<HostIntegrationOptions> options) : IPermissionProvider
+{
+    private readonly ConfiguredPermissionProvider _host = new(options);
+    private readonly StandalonePermissionProvider _devHeader = new(options);
+
+    public IReadOnlySet<string> Resolve(HostPrincipal principal) =>
+        principal.Source == HostIdentitySource.DevelopmentHeader ? _devHeader.Resolve(principal) : _host.Resolve(principal);
+
+    // Real people carry roles here, so "who may do X" follows the role map.
+    public IReadOnlySet<string>? RolesGranting(string permission) => _host.RolesGranting(permission);
+}
+
 /// <summary>The development stand-in has no roles; it simply gets the configured standalone permissions.</summary>
 public sealed class StandalonePermissionProvider : IPermissionProvider
 {

@@ -30,7 +30,22 @@ public sealed class StandaloneIdentityResolver(AppDbContext? db = null) : IHostI
             var external = await db.Users.AsNoTracking().Where(u => u.Id == localId).Select(u => u.ExternalUserId).FirstOrDefaultAsync(ct);
             if (!string.IsNullOrWhiteSpace(external)) id = external;
         }
-        return new HostPrincipal(id, null, null, Array.Empty<string>(), Array.Empty<string>());
+        return new HostPrincipal(id, null, null, Array.Empty<string>(), Array.Empty<string>()) { Source = HostIdentitySource.DevelopmentHeader };
+    }
+}
+
+/// <summary>
+/// HYBRID: a request with a bearer token is judged by the token alone (an invalid token is a 401, never a fall-back to
+/// the header). Only a request with no token may use the development header, and only when that is allowed.
+/// </summary>
+public sealed class HybridIdentityResolver(JwtIdentityResolver jwt, StandaloneIdentityResolver devHeader, IOptions<HostIntegrationOptions> options) : IHostIdentityResolver
+{
+    public Task<HostPrincipal?> ResolveAsync(HttpContext context, CancellationToken ct)
+    {
+        if (context.Request.Headers.Authorization.Count > 0)
+            return jwt.ResolveAsync(context, ct);
+
+        return options.Value.HybridAllowsDevHeader ? devHeader.ResolveAsync(context, ct) : Task.FromResult<HostPrincipal?>(null);
     }
 }
 

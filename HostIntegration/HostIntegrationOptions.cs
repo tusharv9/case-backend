@@ -12,7 +12,14 @@ public enum HostIntegrationMode
     /// The Host App owns identity: callers must present a Host-issued JWT; users are provisioned
     /// from its claims and, optionally, its user directory.
     /// </summary>
-    Host
+    Host,
+
+    /// <summary>
+    /// One backend for both ways the UI runs: inside the Host App (Host token) and as its own test site, where a
+    /// caller that sends no token may pick a demo user with the development header
+    /// (<see cref="HostIntegrationOptions.HybridAllowsDevHeader"/>). A request that carries a token is always judged by it.
+    /// </summary>
+    Hybrid
 }
 
 /// <summary>
@@ -59,12 +66,26 @@ public class HostIntegrationOptions
     /// <summary>Permissions of the standalone dev user. "*" = everything.</summary>
     public string[] StandalonePermissions { get; set; } = { "*" };
 
+    /// <summary>
+    /// Hybrid only: also accept the <c>X-User-Id</c> development header from callers that send no token (the demo user
+    /// picker on the standalone site). It is not authentication, so outside Development it additionally needs
+    /// <see cref="AllowStandaloneInProduction"/>.
+    /// </summary>
+    public bool HybridAllowsDevHeader { get; set; }
+
+    /// <summary>Whether the <c>X-User-Id</c> development header identifies callers in <paramref name="mode"/>.</summary>
+    public bool AcceptsDevHeader(HostIntegrationMode mode) =>
+        mode == HostIntegrationMode.Standalone || (mode == HostIntegrationMode.Hybrid && HybridAllowsDevHeader);
+
+    /// <summary>Whether Host-issued tokens are accepted in <paramref name="mode"/>.</summary>
+    public static bool AcceptsHostTokens(HostIntegrationMode mode) => mode != HostIntegrationMode.Standalone;
+
     /// <summary>How long a resolved user (id, active flag, permissions) is cached per process.</summary>
     public int ProvisionCacheSeconds { get; set; } = 60;
 
     public HostIntegrationMode ResolveMode(bool isDevelopment) =>
         Mode ?? (isDevelopment || AllowStandaloneInProduction ? HostIntegrationMode.Standalone : throw new InvalidOperationException(
-            "HostIntegration:Mode must be set to 'Host' or 'Standalone' outside Development."));
+            "HostIntegration:Mode must be set to 'Host', 'Hybrid' or 'Standalone' outside Development."));
 
     public class JwtSettings
     {
