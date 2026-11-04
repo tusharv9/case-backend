@@ -62,11 +62,27 @@ public sealed class UserProjectionService : IUserProjectionService
 
     private async Task<User> CreateAsync(HostPrincipal principal, HostUserInfo? info, CancellationToken ct)
     {
+        // A row that once belonged to this same Host user but lost its link (it carries the placeholder address made from
+        // this user's own id) is theirs: link it again rather than insert a second row, which the unique email would refuse.
+        var placeholder = PlaceholderEmail(principal.ExternalUserId);
+        var orphan = await _db.Users.FirstOrDefaultAsync(u => u.ExternalUserId == null && u.Email == placeholder, ct);
+        if (orphan != null)
+        {
+            orphan.ExternalUserId = principal.ExternalUserId;
+            orphan.IsActive = info?.IsActive ?? true;
+            Refresh(orphan, principal);
+            orphan.UpdatedAt = DateTime.UtcNow;
+            orphan.LastSyncedAt = DateTime.UtcNow;
+            await _db.SaveChangesAsync(ct);
+            _logger.LogInformation("Relinked local user {UserId} to Host user {ExternalUserId}.", orphan.Id, principal.ExternalUserId);
+            return orphan;
+        }
+
         var email = principal.Email ?? info?.Email;
         // Email is unique locally. NEVER link to an existing local user by email (that would let a
         // matching claim inherit someone else's history); fall back to a synthetic address instead.
         if (string.IsNullOrWhiteSpace(email) || await _db.Users.AnyAsync(u => u.Email == email, ct))
-            email = $"{principal.ExternalUserId}@host-user.invalid";
+            email = placeholder;
 
         var user = new User
         {
@@ -97,6 +113,9 @@ public sealed class UserProjectionService : IUserProjectionService
             throw;
         }
     }
+
+    /// <summary>The address given to a Host user whose own email is missing or already taken locally.</summary>
+    public static string PlaceholderEmail(string externalUserId) => $"{externalUserId}@host-user.invalid";
 
     /// <summary>
     /// The role to show people, from the token. The OmniConnect Host's role claim is a role ID (a GUID), not a
@@ -146,6 +165,9 @@ public sealed class HostUserSynchronizer : IHostUserSynchronizer
         var listed = await _directory.ListAsync(ct);
         var existing = await _db.Users.Where(u => u.ExternalUserId != null).ToDictionaryAsync(u => u.ExternalUserId!, ct);
         var takenEmails = (await _db.Users.Select(u => u.Email).ToListAsync(ct)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        // Rows that lost their link but still carry a Host user's placeholder address: that user's own, relinked below.
+        var orphans = await _db.Users.Where(u => u.ExternalUserId == null && u.Email.EndsWith("@host-user.invalid"))
+            .ToDictionaryAsync(u => u.Email, StringComparer.OrdinalIgnoreCase, ct);
         int created = 0, updated = 0, deactivated = 0;
         var now = DateTime.UtcNow;
 
@@ -162,9 +184,21 @@ public sealed class HostUserSynchronizer : IHostUserSynchronizer
                 continue;
             }
 
+            if (orphans.TryGetValue(UserProjectionService.PlaceholderEmail(info.ExternalUserId), out var orphan))
+            {
+                orphan.ExternalUserId = info.ExternalUserId;
+                orphan.Name = info.Name;
+                if (!string.IsNullOrWhiteSpace(info.Role)) orphan.Role = info.Role!;
+                orphan.IsActive = info.IsActive;
+                orphan.UpdatedAt = now;
+                orphan.LastSyncedAt = now;
+                updated++;
+                continue;
+            }
+
             var email = info.Email;
             if (string.IsNullOrWhiteSpace(email) || takenEmails.Contains(email))
-                email = $"{info.ExternalUserId}@host-user.invalid";
+                email = UserProjectionService.PlaceholderEmail(info.ExternalUserId);
             takenEmails.Add(email);
 
             _db.Users.Add(new Models.User
