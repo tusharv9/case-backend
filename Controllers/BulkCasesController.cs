@@ -19,10 +19,10 @@ public class BulkCasesController(IBulkCaseService bulk) : BaseApiController
     public async Task<IActionResult> Search([FromQuery] BulkCaseQueryDto query, CancellationToken ct)
         => Ok(await bulk.SearchAsync(query, ct));
 
-    /// <summary>The Team Leads and agents of the teams serving a department.</summary>
+    /// <summary>The Team Leads and agents of the team a department is assigned to.</summary>
     [HttpGet("assignees")]
-    public async Task<IActionResult> Assignees([FromQuery] Guid orgDepartmentId, CancellationToken ct)
-        => Ok(await bulk.AssigneesAsync(orgDepartmentId, ct));
+    public async Task<IActionResult> Assignees([FromQuery] Guid departmentId, CancellationToken ct)
+        => Ok(await bulk.AssigneesAsync(departmentId, ct));
 
     [HttpPost("reassign")]
     public async Task<IActionResult> Reassign([FromBody] BulkReassignRequestDto request, CancellationToken ct)

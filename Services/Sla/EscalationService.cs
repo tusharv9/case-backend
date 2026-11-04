@@ -169,7 +169,7 @@ public interface IEscalationService
 
     /// <summary>
     /// Who may receive the case at <paramref name="level"/>: active people holding the level's role, narrowed to the case's
-    /// own team when any of them belong to it, else to the teams serving the case's department, else everyone in the role.
+    /// own team when any of them belong to it, else to the team the case's department is assigned to, else everyone in the role.
     /// The caller and the current holder are never offered.
     /// </summary>
     Task<IReadOnlyList<EscalationRecipient>> RecipientsAsync(Case c, EscalationLevelConfig level, Guid? callerId, CancellationToken ct = default);
@@ -232,15 +232,15 @@ public class EscalationService : IEscalationService
         if (holders.Count == 0) return Array.Empty<EscalationRecipient>();
 
         var ids = holders.Select(u => u.Id).ToList();
-        var caseTeam = await PeopleOfTeamsAsync(new[] { c.DepartmentId }, ids, ct);
+        var caseTeam = await PeopleOfTeamsAsync(new[] { c.TeamId }, ids, ct);
         if (caseTeam.Count > 0)
             return holders.Where(u => caseTeam.Contains(u.Id)).Select(u => new EscalationRecipient(u, true, "CaseTeam")).ToList();
 
         // A team can serve several departments, and a department several teams: the case's own department decides here.
-        if (c.OrgDepartmentId.HasValue)
+        if (c.DepartmentId.HasValue)
         {
             var deptTeams = await _context.TeamDepartments.AsNoTracking()
-                .Where(t => t.OrgDepartmentId == c.OrgDepartmentId.Value && t.Team.IsActive).Select(t => t.TeamId).ToListAsync(ct);
+                .Where(t => t.DepartmentId == c.DepartmentId.Value && t.Team.IsActive).Select(t => t.TeamId).ToListAsync(ct);
             var deptPeople = await PeopleOfTeamsAsync(deptTeams, ids, ct);
             if (deptPeople.Count > 0)
                 return holders.Where(u => deptPeople.Contains(u.Id)).Select(u => new EscalationRecipient(u, false, "Department")).ToList();
@@ -260,7 +260,7 @@ public class EscalationService : IEscalationService
         if (level.NotifyCaseOwner) result.Add(c.OwnerId);
         if (level.NotifyTeamLead)
         {
-            var lead = await _context.Departments.AsNoTracking().Where(d => d.Id == c.DepartmentId).Select(d => d.OwnerId).FirstOrDefaultAsync(ct);
+            var lead = await _context.Teams.AsNoTracking().Where(d => d.Id == c.TeamId).Select(d => d.OwnerId).FirstOrDefaultAsync(ct);
             if (lead.HasValue) result.Add(lead.Value);
         }
         return result.Distinct().ToList();
@@ -271,8 +271,8 @@ public class EscalationService : IEscalationService
     {
         if (teamIds.Count == 0) return new HashSet<Guid>();
         var members = await _context.TeamMembers.AsNoTracking()
-            .Where(m => m.IsActive && teamIds.Contains(m.DepartmentId) && userIds.Contains(m.UserId)).Select(m => m.UserId).ToListAsync(ct);
-        var leads = await _context.Departments.AsNoTracking()
+            .Where(m => m.IsActive && teamIds.Contains(m.TeamId) && userIds.Contains(m.UserId)).Select(m => m.UserId).ToListAsync(ct);
+        var leads = await _context.Teams.AsNoTracking()
             .Where(d => teamIds.Contains(d.Id) && d.OwnerId != null && userIds.Contains(d.OwnerId.Value)).Select(d => d.OwnerId!.Value).ToListAsync(ct);
         return members.Concat(leads).ToHashSet();
     }

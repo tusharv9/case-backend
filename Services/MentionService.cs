@@ -63,7 +63,7 @@ public class MentionService : IMentionService
     {
         var c = await _context.Cases.AsNoTracking()
             .Where(x => x.Id == caseId)
-            .Select(x => new { x.OwnerId, LeadId = x.Department.OwnerId })
+            .Select(x => new { x.OwnerId, LeadId = x.Team.OwnerId })
             .FirstOrDefaultAsync(ct)
             ?? throw new KeyNotFoundException("Case not found");
 

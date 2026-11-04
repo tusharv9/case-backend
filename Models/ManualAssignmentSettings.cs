@@ -42,6 +42,6 @@ public class ManualAssignmentCrossTeam
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid SettingsId { get; set; }
     public ManualAssignmentSettings Settings { get; set; } = null!;
-    public Guid DepartmentId { get; set; }
-    public Department Department { get; set; } = null!;
+    public Guid TeamId { get; set; }
+    public Team Team { get; set; } = null!;
 }

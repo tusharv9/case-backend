@@ -332,10 +332,10 @@ public class Customer360CaseTests
             await using (var ctx = e.Db.NewContext())
             {
                 e.Dept = Guid.NewGuid(); e.LocalCustomer = Guid.NewGuid();
-                ctx.Departments.Add(new Department { Id = e.Dept, Name = "Contact Center", Code = "CC", CreatedAt = DateTime.UtcNow });
+                ctx.Teams.Add(new Team { Id = e.Dept, Name = "Contact Center", Code = "CC", CreatedAt = DateTime.UtcNow });
                 await ctx.SaveChangesAsync();
                 ctx.AddRange(
-                    new DepartmentSubCategory { Id = Guid.NewGuid(), DepartmentId = e.Dept, Name = "Fraud", Code = "F", IsActive = true, CreatedAt = DateTime.UtcNow },
+                    new DepartmentSubCategory { Id = Guid.NewGuid(), DepartmentId = TestDepartments.IdFor(e.Dept), Name = "Fraud", Code = "F", IsActive = true, CreatedAt = DateTime.UtcNow },
                     new Customer { Id = e.LocalCustomer, FullName = "Ahmad Razak", IdType = "Passport Number", Passport = "A98765432", PhoneNumber = "+60 12-345 6789", PreferredLanguage = "English", CreatedAt = DateTime.UtcNow });
                 await ctx.SaveChangesAsync();
                 await TestDepartments.LinkTeamsAsync(ctx);

@@ -254,9 +254,9 @@ public class ConfigurableSettingsRepository : IConfigurableSettingsRepository
 
     public async Task<IEnumerable<DepartmentSubCategory>> GetSubCategoriesAsync(Guid? departmentId = null, bool activeOnly = true, CancellationToken ct = default)
     {
-        // departmentId is the BUSINESS department (OrgDepartment) the sub-categories belong to.
-        var query = _context.DepartmentSubCategories.Include(s => s.OrgDepartment).AsNoTracking();
-        if (departmentId.HasValue && departmentId.Value != Guid.Empty) query = query.Where(s => s.OrgDepartmentId == departmentId.Value);
+        // departmentId is the department the sub-categories belong to.
+        var query = _context.DepartmentSubCategories.Include(s => s.Department).AsNoTracking();
+        if (departmentId.HasValue && departmentId.Value != Guid.Empty) query = query.Where(s => s.DepartmentId == departmentId.Value);
         if (activeOnly) query = query.Where(s => s.IsActive);
         return await query.OrderBy(s => s.DisplayOrder).ThenBy(s => s.Name).ToListAsync(ct);
     }
@@ -291,15 +291,15 @@ public class ConfigurableSettingsRepository : IConfigurableSettingsRepository
     public async Task<bool> SubCategoryExistsAsync(Guid? departmentId, string name, Guid? excludeId = null, CancellationToken ct = default)
     {
         return await _context.DepartmentSubCategories.AnyAsync(s =>
-            s.OrgDepartmentId == departmentId &&
+            s.DepartmentId == departmentId &&
             s.Name.ToLower() == name.ToLower() &&
             (excludeId == null || s.Id != excludeId), ct);
     }
 
-    /// <summary>Whether the business department (OrgDepartment) exists.</summary>
+    /// <summary>Whether the department exists.</summary>
     public async Task<bool> DepartmentExistsAsync(Guid departmentId, CancellationToken ct = default)
     {
-        return await _context.OrgDepartments.AnyAsync(d => d.Id == departmentId, ct);
+        return await _context.Departments.AnyAsync(d => d.Id == departmentId, ct);
     }
 
     public async Task<bool> DeleteSubCategoryAsync(Guid id, CancellationToken ct = default)
@@ -330,7 +330,7 @@ public class ConfigurableSettingsRepository : IConfigurableSettingsRepository
     {
         var lowerName = name.ToLower();
         return await _context.Cases.CountAsync(
-            c => c.OrgDepartmentId == departmentId && c.Subcategory != null && c.Subcategory.ToLower() == lowerName, ct);
+            c => c.DepartmentId == departmentId && c.Subcategory != null && c.Subcategory.ToLower() == lowerName, ct);
     }
 
     /// <summary>

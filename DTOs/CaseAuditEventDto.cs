@@ -24,7 +24,7 @@ public class CaseAuditEventDto
     public string? NewStatus { get; set; }
     public string? PreviousOwner { get; set; }
     public string? NewOwner { get; set; }
-    public string? DepartmentName { get; set; }
+    public string? TeamName { get; set; }
     public string? Severity { get; set; }
     public string? Module { get; set; }
     public string? EntityName { get; set; }

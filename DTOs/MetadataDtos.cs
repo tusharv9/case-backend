@@ -35,6 +35,9 @@ public class DepartmentOptionDto
 
     /// <summary>Active sub-categories. A case needs one, so a department with none cannot receive cases yet.</summary>
     public List<SubCategoryOptionDto> SubCategories { get; set; } = new();
+
+    /// <summary>The team the department is assigned to, which handles its cases; null when it has none (no case can be created).</summary>
+    public DepartmentTeamDto? Team { get; set; }
 }
 
 public class PriorityOptionDto

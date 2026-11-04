@@ -32,14 +32,14 @@ public partial class AssignmentEligibilityTests
             await using var ctx = w.Db.NewContext();
             await ctx.Database.MigrateAsync();
             DbSeeder.Run(ctx, SeedMode.Bootstrap, adoptedLegacyDatabase: false);
-            await ctx.AssignmentConfigurations.Where(c => c.DepartmentId == null)
+            await ctx.AssignmentConfigurations.Where(c => c.TeamId == null)
                 .ExecuteUpdateAsync(u => u.SetProperty(c => c.Algorithm, "LeastOccupancy").SetProperty(c => c.MaxConcurrentCapacity, 2));
 
             w.Loans = Guid.NewGuid(); w.Cards = Guid.NewGuid(); w.Archived = Guid.NewGuid();
-            ctx.Departments.AddRange(
-                new Department { Id = w.Loans, Name = "Loans", Code = "LN", CreatedAt = DateTime.UtcNow, IsActive = true },
-                new Department { Id = w.Cards, Name = "Cards", Code = "CD", CreatedAt = DateTime.UtcNow, IsActive = true },
-                new Department { Id = w.Archived, Name = "Archived", Code = "AR", CreatedAt = DateTime.UtcNow, IsActive = false });
+            ctx.Teams.AddRange(
+                new Team { Id = w.Loans, Name = "Loans", Code = "LN", CreatedAt = DateTime.UtcNow, IsActive = true },
+                new Team { Id = w.Cards, Name = "Cards", Code = "CD", CreatedAt = DateTime.UtcNow, IsActive = true },
+                new Team { Id = w.Archived, Name = "Archived", Code = "AR", CreatedAt = DateTime.UtcNow, IsActive = false });
 
             Guid U(string name, UserStatus status = UserStatus.Available, bool active = true)
             {
@@ -53,11 +53,11 @@ public partial class AssignmentEligibilityTests
             ctx.Customers.Add(new Customer { Id = w.Customer, FullName = "Cust", NRIC = Guid.NewGuid().ToString("N")[..12], PhoneNumber = "+60" + Random.Shared.NextInt64(1000000000, 1999999999), CreatedAt = DateTime.UtcNow });
             await ctx.SaveChangesAsync();
 
-            await ctx.Departments.Where(d => d.Id == w.Loans).ExecuteUpdateAsync(u => u.SetProperty(d => d.OwnerId, w.LoansLead));
-            await ctx.Departments.Where(d => d.Id == w.Cards).ExecuteUpdateAsync(u => u.SetProperty(d => d.OwnerId, w.CardsLead));
+            await ctx.Teams.Where(d => d.Id == w.Loans).ExecuteUpdateAsync(u => u.SetProperty(d => d.OwnerId, w.LoansLead));
+            await ctx.Teams.Where(d => d.Id == w.Cards).ExecuteUpdateAsync(u => u.SetProperty(d => d.OwnerId, w.CardsLead));
 
             void M(Guid team, Guid user, bool assignable = true, string role = "Agent") =>
-                ctx.TeamMembers.Add(new TeamMember { Id = Guid.NewGuid(), DepartmentId = team, UserId = user, MemberRole = role, IsAssignable = assignable, IsActive = true, JoinedAt = DateTime.UtcNow, CreatedAt = DateTime.UtcNow });
+                ctx.TeamMembers.Add(new TeamMember { Id = Guid.NewGuid(), TeamId = team, UserId = user, MemberRole = role, IsAssignable = assignable, IsActive = true, JoinedAt = DateTime.UtcNow, CreatedAt = DateTime.UtcNow });
             M(w.Loans, w.LoansLead, assignable: false, role: "Team Lead");
             M(w.Loans, w.L1); M(w.Loans, w.L2); M(w.Loans, w.L3, assignable: false);   // L3 opted out of AUTOMATIC routing only
             M(w.Cards, w.CardsLead, assignable: false, role: "Team Lead");
@@ -92,7 +92,7 @@ public partial class AssignmentEligibilityTests
             ctx.Cases.Add(new Case
             {
                 Id = id, CaseNumber = "T-" + Guid.NewGuid().ToString("N")[..8], Title = "Loan query", CaseType = "Inquiry", Severity = "High",
-                DepartmentId = team, OwnerId = owner, CustomerId = Customer, Status = status, SlaStartTime = DateTime.UtcNow, CreatedAt = DateTime.UtcNow,
+                TeamId = team, OwnerId = owner, CustomerId = Customer, Status = status, SlaStartTime = DateTime.UtcNow, CreatedAt = DateTime.UtcNow,
                 FirstResponseTargetMinutes = 30, InternalResolutionTargetMinutes = 120, ExternalResolutionTargetMinutes = 240, FirstResponseStatus = "Pending",
             });
             await ctx.SaveChangesAsync();
@@ -122,7 +122,7 @@ public partial class AssignmentEligibilityTests
         await using var ctx = w.Ctx();
         var list = await w.Cases(ctx).GetEligibleAssigneesAsync(caseId);
 
-        Assert.Equal("Loans", list.DepartmentName);
+        Assert.Equal("Loans", list.TeamName);
         Assert.Equal(2, list.Capacity);
         // Members and the lead of Loans — never people from Cards or outside every team.
         Assert.Equal(new[] { w.LoansLead, w.L1, w.L2, w.L3 }.OrderBy(x => x), list.Candidates.Select(c => c.UserId).OrderBy(x => x));
@@ -248,7 +248,7 @@ public partial class AssignmentEligibilityTests
             await w.Cases(ctx).TransferDepartmentAsync(caseId, new TransferDepartmentDto { DepartmentId = w.Cards, Reason = "Incorrect routing" }, w.L1);
 
         var moved = await w.GetAsync(caseId);
-        Assert.Equal(w.Cards, moved.DepartmentId);
+        Assert.Equal(w.Cards, moved.TeamId);
         Assert.Equal(w.CardsLead, moved.OwnerId);
 
         // The team changed, so the old team's people are no longer valid holders; the new team's are.
@@ -265,7 +265,7 @@ public partial class AssignmentEligibilityTests
     {
         await using var w = await World.CreateAsync();
         await using (var ctx = w.Ctx())
-            await ctx.Departments.Where(d => d.Id == w.Cards).ExecuteUpdateAsync(u => u.SetProperty(d => d.OwnerId, (Guid?)null));
+            await ctx.Teams.Where(d => d.Id == w.Cards).ExecuteUpdateAsync(u => u.SetProperty(d => d.OwnerId, (Guid?)null));
 
         var first = await w.NewCaseAsync(w.Loans, w.L1);
         await using (var ctx = w.Ctx())
@@ -281,7 +281,7 @@ public partial class AssignmentEligibilityTests
                 () => w.Cases(ctx).TransferDepartmentAsync(second, new TransferDepartmentDto { DepartmentId = w.Cards, Reason = "Incorrect routing" }, w.L1))).ReasonCode);
 
         var unchanged = await w.GetAsync(second);
-        Assert.Equal(w.Loans, unchanged.DepartmentId);
+        Assert.Equal(w.Loans, unchanged.TeamId);
         Assert.Equal(w.L1, unchanged.OwnerId);
     }
 
@@ -293,7 +293,7 @@ public partial class AssignmentEligibilityTests
         await using var ctx = w.Ctx();
         Assert.Equal("TeamInactive", (await Assert.ThrowsAsync<AssignmentNotAllowedException>(
             () => w.Cases(ctx).TransferDepartmentAsync(caseId, new TransferDepartmentDto { DepartmentId = w.Archived, Reason = "Incorrect routing" }, w.L1))).ReasonCode);
-        Assert.Equal(w.Loans, (await w.GetAsync(caseId)).DepartmentId);
+        Assert.Equal(w.Loans, (await w.GetAsync(caseId)).TeamId);
     }
 
     // ------------------------------------------------------------------------------------------ reasons (CM-06)

@@ -65,7 +65,7 @@ public class TeamSettingsService : ITeamSettingsService
             }
             if (current.AllowTeamsWithoutMembers && !wanted.AllowTeamsWithoutMembers)
             {
-                var teams = await _context.Departments.AsNoTracking()
+                var teams = await _context.Teams.AsNoTracking()
                     .Where(d => d.IsActive && !d.Members.Any(m => m.IsActive && m.UserId != d.OwnerId))
                     .OrderBy(d => d.Name).Select(d => d.Name).ToListAsync(ct);
                 if (teams.Count > 0)
@@ -88,17 +88,17 @@ public class TeamSettingsService : ITeamSettingsService
             }
             if (!current.RequireTeamLead && wanted.RequireTeamLead)
             {
-                var teams = await _context.Departments.AsNoTracking().Where(d => d.IsActive && d.OwnerId == null).OrderBy(d => d.Name).Select(d => d.Name).ToListAsync(ct);
+                var teams = await _context.Teams.AsNoTracking().Where(d => d.IsActive && d.OwnerId == null).OrderBy(d => d.Name).Select(d => d.Name).ToListAsync(ct);
                 if (teams.Count > 0)
                     errors.Add(new FieldError("requireTeamLead",
                         $"{Names(teams)} {(teams.Count == 1 ? "has" : "have")} no lead. Choose a lead for {(teams.Count == 1 ? "it" : "each")} first."));
             }
             if (current.AllowMultipleDepartments && !wanted.AllowMultipleDepartments)
             {
-                var teams = await _context.Departments.AsNoTracking().Where(d => d.OrgDepartments.Count > 1).OrderBy(d => d.Name).Select(d => d.Name).ToListAsync(ct);
+                var teams = await _context.Teams.AsNoTracking().Where(d => d.DepartmentLinks.Count > 1).OrderBy(d => d.Name).Select(d => d.Name).ToListAsync(ct);
                 if (teams.Count > 0)
                     errors.Add(new FieldError("allowMultipleDepartments",
-                        $"{Names(teams)} {(teams.Count == 1 ? "serves" : "serve")} more than one department. Keep one department per team first."));
+                        $"{Names(teams)} {(teams.Count == 1 ? "handles" : "handle")} more than one department. Keep one department per team first."));
             }
             // Turning "deactivate with open cases" off changes nothing that exists: inactive teams stay as they are.
             if (errors.Count > 0) throw new FieldValidationException(errors);
@@ -134,19 +134,19 @@ public class TeamSettingsService : ITeamSettingsService
     /// <summary>People who lead one team and hold a member row in a different team.</summary>
     private Task<List<string>> LeadsInOtherTeamsAsync(CancellationToken ct) =>
         _context.TeamMembers.AsNoTracking()
-            .Where(m => m.IsActive && m.Department.OwnerId != m.UserId && _context.Departments.Any(d => d.OwnerId == m.UserId))
+            .Where(m => m.IsActive && m.Team.OwnerId != m.UserId && _context.Teams.Any(d => d.OwnerId == m.UserId))
             .Select(m => m.User.Name).Distinct().OrderBy(n => n).ToListAsync(ct);
 
     /// <summary>People with an active membership in two or more teams, not counting the member row a lead has in the team they lead.</summary>
     private Task<List<string>> PeopleInSeveralTeamsAsync(CancellationToken ct) =>
         _context.TeamMembers.AsNoTracking()
-            .Where(m => m.IsActive && m.Department.OwnerId != m.UserId)
+            .Where(m => m.IsActive && m.Team.OwnerId != m.UserId)
             .GroupBy(m => new { m.UserId, m.User.Name })
             .Where(g => g.Count() > 1)
             .Select(g => g.Key.Name).OrderBy(n => n).ToListAsync(ct);
 
     private Task<List<string>> PeopleLeadingSeveralTeamsAsync(CancellationToken ct) =>
-        _context.Departments.AsNoTracking()
+        _context.Teams.AsNoTracking()
             .Where(d => d.OwnerId != null)
             .GroupBy(d => new { d.OwnerId, d.Owner!.Name })
             .Where(g => g.Count() > 1)

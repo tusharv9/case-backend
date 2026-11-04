@@ -45,7 +45,7 @@ public class EscalationRecipientDto
     public string Name { get; set; } = string.Empty;
     public string Email { get; set; } = string.Empty;
     public string Role { get; set; } = string.Empty;
-    /// <summary>CaseTeam (of the team handling the case), Department (of a team serving the case's department) or Role (anyone in the role).</summary>
+    /// <summary>CaseTeam (of the team handling the case), Department (of the team the case's department is assigned to) or Role (anyone in the role).</summary>
     public string Scope { get; set; } = string.Empty;
 }
 
@@ -142,7 +142,7 @@ public class BulkCaseQueryDto
     /// <summary>reassign or resolve.</summary>
     public string Operation { get; set; } = "reassign";
     public string? Search { get; set; }
-    public Guid? OrgDepartmentId { get; set; }
+    public Guid? DepartmentId { get; set; }
     public Guid? TeamId { get; set; }
     public string? Status { get; set; }
     public int Page { get; set; } = 1;
@@ -156,7 +156,7 @@ public class BulkCaseRowDto
     public string Title { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
     public string Priority { get; set; } = string.Empty;
-    public Guid? OrgDepartmentId { get; set; }
+    public Guid? DepartmentId { get; set; }
     public string? DepartmentName { get; set; }
     public Guid TeamId { get; set; }
     public string TeamName { get; set; } = string.Empty;
@@ -182,9 +182,9 @@ public class BulkAssigneeDto
 public class BulkReassignRequestDto
 {
     public List<Guid> CaseIds { get; set; } = new();
-    public Guid OrgDepartmentId { get; set; }
+    public Guid DepartmentId { get; set; }
     public Guid AssigneeUserId { get; set; }
-    /// <summary>The team the assignee was chosen in (they may belong to several serving the department).</summary>
+    /// <summary>The team the assignee was chosen in: the team the department is assigned to.</summary>
     public Guid? TeamId { get; set; }
     public string? Reason { get; set; }
     public string? ReasonDetail { get; set; }

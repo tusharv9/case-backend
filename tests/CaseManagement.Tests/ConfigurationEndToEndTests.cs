@@ -39,11 +39,11 @@ public class ConfigurationEndToEndTests
             await using (var ctx = e.Db.NewContext())
             {
                 e.Dept = Guid.NewGuid(); e.FraudSub = Guid.NewGuid(); e.PaymentSub = Guid.NewGuid(); e.Customer = Guid.NewGuid();
-                ctx.Departments.Add(new Department { Id = e.Dept, Name = "Contact Center", Code = "CC", CreatedAt = DateTime.UtcNow });
+                ctx.Teams.Add(new Team { Id = e.Dept, Name = "Contact Center", Code = "CC", CreatedAt = DateTime.UtcNow });
                 await ctx.SaveChangesAsync();
                 ctx.AddRange(
-                    new DepartmentSubCategory { Id = e.FraudSub, DepartmentId = e.Dept, Name = "Fraud", Code = "F", IsActive = true, CreatedAt = DateTime.UtcNow },
-                    new DepartmentSubCategory { Id = e.PaymentSub, DepartmentId = e.Dept, Name = "Payment Issue", Code = "P", IsActive = true, CreatedAt = DateTime.UtcNow },
+                    new DepartmentSubCategory { Id = e.FraudSub, DepartmentId = TestDepartments.IdFor(e.Dept), Name = "Fraud", Code = "F", IsActive = true, CreatedAt = DateTime.UtcNow },
+                    new DepartmentSubCategory { Id = e.PaymentSub, DepartmentId = TestDepartments.IdFor(e.Dept), Name = "Payment Issue", Code = "P", IsActive = true, CreatedAt = DateTime.UtcNow },
                     new Customer { Id = e.Customer, FullName = "Ahmad Razak", IdType = "Passport Number", Passport = "A98765432", PhoneNumber = "+60 12-345 6789", Email = "ahmad@example.test", PreferredLanguage = "English", Branch = "KL HQ", CreatedAt = DateTime.UtcNow });
                 await ctx.SaveChangesAsync();
                 await TestDepartments.LinkTeamsAsync(ctx);
@@ -66,9 +66,9 @@ public class ConfigurationEndToEndTests
             await Send(HttpMethod.Get, "/api/users/me", token);
             await using var ctx = Db.NewContext();
             var userId = await ctx.Users.Where(u => u.ExternalUserId == externalUserId).Select(u => u.Id).SingleAsync();
-            if (!await ctx.TeamMembers.AnyAsync(m => m.UserId == userId && m.DepartmentId == Dept))
+            if (!await ctx.TeamMembers.AnyAsync(m => m.UserId == userId && m.TeamId == Dept))
             {
-                ctx.TeamMembers.Add(new TeamMember { Id = Guid.NewGuid(), DepartmentId = Dept, UserId = userId, MemberRole = "Agent", IsActive = true, IsAssignable = true, JoinedAt = DateTime.UtcNow, CreatedAt = DateTime.UtcNow });
+                ctx.TeamMembers.Add(new TeamMember { Id = Guid.NewGuid(), TeamId = Dept, UserId = userId, MemberRole = "Agent", IsActive = true, IsAssignable = true, JoinedAt = DateTime.UtcNow, CreatedAt = DateTime.UtcNow });
                 await ctx.SaveChangesAsync();
             }
         }
@@ -409,7 +409,7 @@ public class ConfigurationEndToEndTests
         var caseDept = await env.Db.ScalarAsync<Guid>($"SELECT \"DepartmentId\" FROM \"Cases\" WHERE \"Id\" = '{id}'");
         await using (var ctx = env.Db.NewContext())
         {
-            ctx.TeamMembers.Add(new TeamMember { Id = Guid.NewGuid(), DepartmentId = caseDept, UserId = agentId, MemberRole = "Agent", IsActive = true, IsAssignable = true, JoinedAt = DateTime.UtcNow, CreatedAt = DateTime.UtcNow });
+            ctx.TeamMembers.Add(new TeamMember { Id = Guid.NewGuid(), TeamId = caseDept, UserId = agentId, MemberRole = "Agent", IsActive = true, IsAssignable = true, JoinedAt = DateTime.UtcNow, CreatedAt = DateTime.UtcNow });
             await ctx.SaveChangesAsync();
         }
 

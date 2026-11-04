@@ -1,68 +1,48 @@
 namespace CaseManagement.Api.Controllers;
 
+using CaseManagement.Api.DTOs;
 using CaseManagement.Api.HostIntegration;
-using CaseManagement.Api.Models;
-using CaseManagement.Api.Data;
 using CaseManagement.Api.Services;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 
+/// <summary>
+/// The departments and their team assignment. Listing needs any Case Management access (Create Case and filters use it);
+/// changes need config.manage.
+/// </summary>
 [ApiController]
-[Route("api/[controller]")]
+[Route("api/departments")]
 [RequirePermission(null, Permissions.ConfigManage)]
 public class DepartmentsController : BaseApiController
 {
-    private readonly IDepartmentService _departmentService;
+    private readonly IDepartmentService _departments;
 
-    public DepartmentsController(IDepartmentService departmentService)
-    {
-        _departmentService = departmentService;
-    }
+    public DepartmentsController(IDepartmentService departments) => _departments = departments;
 
     [HttpGet]
-    public async Task<IActionResult> GetDepartments(CancellationToken ct)
-    {
-        var departments = await _departmentService.GetDepartmentsAsync(ct);
-        return Ok(departments);
-    }
+    public async Task<IActionResult> List([FromQuery] bool includeInactive = false, CancellationToken ct = default) =>
+        Ok(await _departments.ListAsync(includeInactive, ct));
 
     [HttpPost]
-    public async Task<IActionResult> CreateDepartment([FromBody] CaseManagement.Api.DTOs.CreateDepartmentDto dto)
-    {
-        var department = await _departmentService.CreateDepartmentAsync(dto, CurrentUserId);
-        return CreatedAtAction(nameof(GetDepartments), new { id = department.Id }, department);
-    }
+    public async Task<IActionResult> Create([FromBody] SaveDepartmentDto dto, CancellationToken ct) =>
+        Ok(await _departments.CreateAsync(dto ?? new SaveDepartmentDto(), CurrentUserId, ct));
 
     [HttpPut("{id:guid}")]
-    public async Task<IActionResult> UpdateDepartment(Guid id, [FromBody] CaseManagement.Api.DTOs.UpdateDepartmentDto dto)
-    {
-        if (dto == null || string.IsNullOrWhiteSpace(dto.Name) || string.IsNullOrWhiteSpace(dto.Code))
-        {
-            return BadRequest(new { error = "Department name and code are required." });
-        }
-
-        var department = await _departmentService.UpdateDepartmentAsync(id, dto, CurrentUserId);
-        return Ok(department);
-    }
+    public async Task<IActionResult> Update(Guid id, [FromBody] SaveDepartmentDto dto, CancellationToken ct) =>
+        Ok(await _departments.UpdateAsync(id, dto ?? new SaveDepartmentDto(), CurrentUserId, ct));
 
     [HttpDelete("{id:guid}")]
-    public async Task<IActionResult> DeleteDepartment(Guid id)
+    public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
     {
-        await _departmentService.DeleteDepartmentAsync(id, CurrentUserId);
-        return Ok(new { message = "Department deleted successfully." });
+        await _departments.DeleteAsync(id, CurrentUserId, ct);
+        return Ok(new { message = "Department deleted." });
     }
 
-    [HttpPut("{id:guid}/owner")]
-    public async Task<IActionResult> SetDepartmentOwner(Guid id, [FromBody] CaseManagement.Api.DTOs.SetDepartmentOwnerDto dto)
-    {
-        try
-        {
-            await _departmentService.SetDepartmentOwnerAsync(id, dto, CurrentUserId);
-            return Ok(new { message = "Department owner updated successfully." });
-        }
-        catch (ArgumentException ex)
-        {
-            return NotFound(ex.Message);
-        }
-    }
+    [HttpPut("order")]
+    public async Task<IActionResult> Reorder([FromBody] List<Guid> ids, CancellationToken ct) =>
+        Ok(await _departments.ReorderAsync(ids ?? new List<Guid>(), CurrentUserId, ct));
+
+    /// <summary>Assigns the department to a team (or, with a null team, removes the assignment).</summary>
+    [HttpPut("{id:guid}/team")]
+    public async Task<IActionResult> AssignTeam(Guid id, [FromBody] AssignDepartmentTeamDto dto, CancellationToken ct) =>
+        Ok(await _departments.AssignTeamAsync(id, dto?.TeamId, CurrentUserId, ct));
 }

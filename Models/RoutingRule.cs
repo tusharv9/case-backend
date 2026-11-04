@@ -12,8 +12,8 @@ public class RoutingRule : AuditableEntity
     // { "matchType": "ALL", "caseType": "...", "channel": "...", "priority": "...", "customerSegment": "...", "keywords": [...] }
     public string ConditionsJson { get; set; } = "{}";
     
-    public Guid TargetDepartmentId { get; set; }
-    public Department TargetDepartment { get; set; } = null!;
+    public Guid TargetTeamId { get; set; }
+    public Team TargetTeam { get; set; } = null!;
     
     public string ActionDescription { get; set; } = string.Empty;
 }

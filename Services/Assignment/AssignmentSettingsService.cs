@@ -34,10 +34,10 @@ public class AssignmentSettingsService : IAssignmentSettingsService
         var vocabulary = await _routing.GetVocabularyAsync(ct);
 
         var teamConfigs = await _context.AssignmentConfigurations.AsNoTracking()
-            .Where(c => c.IsActive && c.DepartmentId != null)
-            .ToDictionaryAsync(c => c.DepartmentId!.Value, c => c.MaxConcurrentCapacity, ct);
+            .Where(c => c.IsActive && c.TeamId != null)
+            .ToDictionaryAsync(c => c.TeamId!.Value, c => c.MaxConcurrentCapacity, ct);
 
-        var teams = await _context.Departments.AsNoTracking()
+        var teams = await _context.Teams.AsNoTracking()
             .OrderBy(d => d.Name)
             .Select(d => new AssignmentSettingsTeamDto
             {
@@ -74,7 +74,7 @@ public class AssignmentSettingsService : IAssignmentSettingsService
         return new AssignmentSettingsDto
         {
             CrossTeamMode = settings.CrossTeamMode,
-            CrossTeamDepartmentIds = settings.CrossTeams.Select(c => c.DepartmentId).ToList(),
+            CrossTeamIds = settings.CrossTeams.Select(c => c.TeamId).ToList(),
             CrossTeamModes = CrossTeamModes.All.ToList(),
             IncludeTeamLeads = settings.IncludeTeamLeads,
             RequireAvailable = settings.RequireAvailable,
@@ -95,14 +95,14 @@ public class AssignmentSettingsService : IAssignmentSettingsService
         if (mode == null)
             errors.Add(new FieldError("crossTeamMode", $"'{dto.CrossTeamMode}' is not a cross-team option. Choose one of: {string.Join(", ", CrossTeamModes.All)}."));
 
-        var crossTeamIds = dto.CrossTeamDepartmentIds.Distinct().ToList();
+        var crossTeamIds = dto.CrossTeamIds.Distinct().ToList();
         if (mode == CrossTeamModes.SelectedTeams)
         {
             if (crossTeamIds.Count == 0)
-                errors.Add(new FieldError("crossTeamDepartmentIds", "Choose at least one team whose members may receive other teams' cases, or turn cross-team assignment off."));
-            var activeIds = await _context.Departments.AsNoTracking().Where(d => crossTeamIds.Contains(d.Id) && d.IsActive).Select(d => d.Id).ToListAsync(ct);
+                errors.Add(new FieldError("crossTeamIds", "Choose at least one team whose members may receive other teams' cases, or turn cross-team assignment off."));
+            var activeIds = await _context.Teams.AsNoTracking().Where(d => crossTeamIds.Contains(d.Id) && d.IsActive).Select(d => d.Id).ToListAsync(ct);
             if (activeIds.Count != crossTeamIds.Count)
-                errors.Add(new FieldError("crossTeamDepartmentIds", "Some of the chosen teams no longer exist or are inactive. Reload and choose again."));
+                errors.Add(new FieldError("crossTeamIds", "Some of the chosen teams no longer exist or are inactive. Reload and choose again."));
         }
         else
         {
@@ -111,12 +111,12 @@ public class AssignmentSettingsService : IAssignmentSettingsService
 
         // Member selections must point at current, active membership rows.
         var selections = dto.MemberSelections
-            .GroupBy(s => (s.DepartmentId, s.UserId)).Select(g => g.Last()).ToList();
-        var keys = selections.Select(s => s.DepartmentId).Distinct().ToList();
+            .GroupBy(s => (s.TeamId, s.UserId)).Select(g => g.Last()).ToList();
+        var keys = selections.Select(s => s.TeamId).Distinct().ToList();
         var rows = await _context.TeamMembers
-            .Where(m => keys.Contains(m.DepartmentId) && m.IsActive)
+            .Where(m => keys.Contains(m.TeamId) && m.IsActive)
             .ToListAsync(ct);
-        var unknown = selections.Where(s => !rows.Any(r => r.DepartmentId == s.DepartmentId && r.UserId == s.UserId)).ToList();
+        var unknown = selections.Where(s => !rows.Any(r => r.TeamId == s.TeamId && r.UserId == s.UserId)).ToList();
         if (unknown.Count > 0)
             errors.Add(new FieldError("memberSelections", $"{unknown.Count} selected member(s) are no longer in that team. Reload and choose again."));
 
@@ -148,14 +148,14 @@ public class AssignmentSettingsService : IAssignmentSettingsService
             settings.CrossTeamMode = mode!;
             settings.UpdatedAt = DateTime.UtcNow;
 
-            _context.ManualAssignmentCrossTeams.RemoveRange(settings.CrossTeams.Where(c => !crossTeamIds.Contains(c.DepartmentId)));
-            foreach (var id in crossTeamIds.Where(id => settings.CrossTeams.All(c => c.DepartmentId != id)))
-                _context.ManualAssignmentCrossTeams.Add(new ManualAssignmentCrossTeam { SettingsId = settings.Id, DepartmentId = id });
+            _context.ManualAssignmentCrossTeams.RemoveRange(settings.CrossTeams.Where(c => !crossTeamIds.Contains(c.TeamId)));
+            foreach (var id in crossTeamIds.Where(id => settings.CrossTeams.All(c => c.TeamId != id)))
+                _context.ManualAssignmentCrossTeams.Add(new ManualAssignmentCrossTeam { SettingsId = settings.Id, TeamId = id });
 
             var changedMembers = 0;
             foreach (var s in selections)
             {
-                var row = rows.First(r => r.DepartmentId == s.DepartmentId && r.UserId == s.UserId);
+                var row = rows.First(r => r.TeamId == s.TeamId && r.UserId == s.UserId);
                 if (row.CanBeManuallyAssigned == s.CanBeManuallyAssigned) continue;
                 row.CanBeManuallyAssigned = s.CanBeManuallyAssigned;
                 row.UpdatedAt = DateTime.UtcNow;

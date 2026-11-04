@@ -63,7 +63,7 @@ public class TeamMonitoringService : ITeamMonitoringService
     {
         if (SeesAll || Me == null) return null;
         var me = Me.Value;
-        return (await _context.Departments.AsNoTracking()
+        return (await _context.Teams.AsNoTracking()
             .Where(d => d.OwnerId == me || d.Members.Any(m => m.UserId == me && m.IsActive))
             .Select(d => d.Id).ToListAsync(ct)).ToHashSet();
     }
@@ -73,7 +73,7 @@ public class TeamMonitoringService : ITeamMonitoringService
         var scope = await MonitoredTeamIdsAsync(ct);
         var visible = scope == null
             ? await _context.Users.AsNoTracking().AnyAsync(u => u.Id == agentId, ct)
-            : await _context.Departments.AsNoTracking().AnyAsync(d => scope.Contains(d.Id)
+            : await _context.Teams.AsNoTracking().AnyAsync(d => scope.Contains(d.Id)
                 && (d.OwnerId == agentId || d.Members.Any(m => m.UserId == agentId && m.IsActive)), ct);
         // The same answer as for someone who does not exist: an id cannot be used to learn about people outside one's teams.
         if (!visible) throw new KeyNotFoundException("Agent not found.");
@@ -88,7 +88,7 @@ public class TeamMonitoringService : ITeamMonitoringService
         var scope = await MonitoredTeamIdsAsync(ct);
 
         // ---- the teams in scope, and what was asked for (one team, or all of them) --------------------------------------------
-        var teams = await _context.Departments.AsNoTracking()
+        var teams = await _context.Teams.AsNoTracking()
             .Where(d => d.IsActive && (scope == null || scope.Contains(d.Id)))
             .OrderBy(d => d.Name)
             .Select(d => new { d.Id, d.Name, d.OwnerId })
@@ -102,7 +102,7 @@ public class TeamMonitoringService : ITeamMonitoringService
             var team = teams.FirstOrDefault(t => t.Id == query.TeamId);
             if (team == null)
             {
-                var inactive = await _context.Departments.AsNoTracking()
+                var inactive = await _context.Teams.AsNoTracking()
                     .Where(d => d.Id == query.TeamId && (scope == null || scope.Contains(d.Id)))
                     .Select(d => new { d.Id, d.Name, d.OwnerId })
                     .FirstOrDefaultAsync(ct) ?? throw new KeyNotFoundException("Team not found.");
@@ -129,17 +129,17 @@ public class TeamMonitoringService : ITeamMonitoringService
 
         await ParallelReads.RunAsync(_contexts, _context, ct,
             async db => memberRows = await db.TeamMembers.AsNoTracking()
-                .Where(m => m.IsActive && m.User.IsActive && teamIds.Contains(m.DepartmentId))
-                .Select(m => new MemberRow(m.DepartmentId, m.Department.Name, m.Department.OwnerId == m.UserId, m.IsAssignable, m.UserId, m.User.Name, m.User.Email,
+                .Where(m => m.IsActive && m.User.IsActive && teamIds.Contains(m.TeamId))
+                .Select(m => new MemberRow(m.TeamId, m.Team.Name, m.Team.OwnerId == m.UserId, m.IsAssignable, m.UserId, m.User.Name, m.User.Email,
                     m.User.Role, m.User.Status, m.User.StatusUpdatedAt))
                 .ToListAsync(ct),
             async db => teamCapacity = await db.AssignmentConfigurations.AsNoTracking()
-                .Where(c => c.DepartmentId != null && c.IsActive).ToDictionaryAsync(c => c.DepartmentId!.Value, c => c.MaxConcurrentCapacity, ct),
+                .Where(c => c.TeamId != null && c.IsActive).ToDictionaryAsync(c => c.TeamId!.Value, c => c.MaxConcurrentCapacity, ct),
             async db => open = (await db.Cases.AsNoTracking()
-                    .Where(c => teamIds.Contains(c.DepartmentId) && !Finished.Contains(c.Status))
+                    .Where(c => teamIds.Contains(c.TeamId) && !Finished.Contains(c.Status))
                     .Select(c => new
                     {
-                        c.Id, c.CaseNumber, c.DepartmentId, c.SourceChannel, c.CommunicationChannel, c.OwnerId, c.CreatedAt, WaitingSince = c.SlaStartTime, c.Status,
+                        c.Id, c.CaseNumber, c.TeamId, c.SourceChannel, c.CommunicationChannel, c.OwnerId, c.CreatedAt, WaitingSince = c.SlaStartTime, c.Status,
                         Inputs = new SlaInputs
                         {
                             Status = c.Status, StartUtc = c.SlaStartTime, ResolvedAt = c.ResolvedAt, PausedAt = c.SlaPausedAt, PausedMinutes = c.SlaTotalPausedMinutes,
@@ -147,19 +147,19 @@ public class TeamMonitoringService : ITeamMonitoringService
                             ExternalTargetMinutes = c.ExternalResolutionTargetMinutes, FirstResponseActualAt = c.FirstResponseActualAt, FirstResponseStatus = c.FirstResponseStatus,
                         }
                     }).ToListAsync(ct))
-                .Select(c => new OpenCase(c.Id, c.CaseNumber, c.DepartmentId, string.IsNullOrWhiteSpace(c.SourceChannel) ? c.CommunicationChannel : c.SourceChannel,
+                .Select(c => new OpenCase(c.Id, c.CaseNumber, c.TeamId, string.IsNullOrWhiteSpace(c.SourceChannel) ? c.CommunicationChannel : c.SourceChannel,
                     c.OwnerId, c.CreatedAt, c.WaitingSince, c.Status, c.Inputs))
                 .ToList(),
             async db => resolved = (await db.Cases.AsNoTracking()
-                    .Where(c => teamIds.Contains(c.DepartmentId) && c.ResolvedAt != null && c.ResolvedAt >= periodStart && c.ResolvedAt < tomorrowStart)
+                    .Where(c => teamIds.Contains(c.TeamId) && c.ResolvedAt != null && c.ResolvedAt >= periodStart && c.ResolvedAt < tomorrowStart)
                     .Select(c => new { c.OwnerId, ResolvedAt = c.ResolvedAt!.Value, c.CreatedAt }).ToListAsync(ct))
                 .Select(r => new ResolvedRow(r.OwnerId, r.ResolvedAt, (r.ResolvedAt - r.CreatedAt).TotalMinutes)).ToList(),
             async db => yesterdayMinutes = (await db.Cases.AsNoTracking()
-                    .Where(c => teamIds.Contains(c.DepartmentId) && c.ResolvedAt >= yesterdayStart && c.ResolvedAt < todayStart)
+                    .Where(c => teamIds.Contains(c.TeamId) && c.ResolvedAt >= yesterdayStart && c.ResolvedAt < todayStart)
                     .Select(c => new { ResolvedAt = c.ResolvedAt!.Value, c.CreatedAt }).ToListAsync(ct))
                 .Select(r => (r.ResolvedAt - r.CreatedAt).TotalMinutes).ToList(),
             async db => lastActivity = await db.CaseEvents.AsNoTracking()
-                .Where(e => db.TeamMembers.Any(m => m.UserId == e.UserId && m.IsActive && teamIds.Contains(m.DepartmentId)))
+                .Where(e => db.TeamMembers.Any(m => m.UserId == e.UserId && m.IsActive && teamIds.Contains(m.TeamId)))
                 .Where(AutomaticEvents.IsPersonal)
                 .Where(e => e.UserId != null)
                 .GroupBy(e => e.UserId!.Value).Select(g => new { g.Key, At = g.Max(e => e.CreatedAt) })
@@ -410,7 +410,7 @@ public class TeamMonitoringService : ITeamMonitoringService
             async db => user = await db.Users.AsNoTracking().FirstAsync(u => u.Id == agentId, ct),
             async db =>
             {
-                var rows = await db.Departments.AsNoTracking()
+                var rows = await db.Teams.AsNoTracking()
                     .Where(d => (scope == null || scope.Contains(d.Id)) && (d.OwnerId == agentId || d.Members.Any(m => m.UserId == agentId && m.IsActive)))
                     .OrderBy(d => d.Name)
                     .Select(d => new { d.Id, d.Name, IsLead = d.OwnerId == agentId, Assignable = d.Members.Any(m => m.UserId == agentId && m.IsActive && m.IsAssignable), IsMember = d.Members.Any(m => m.UserId == agentId && m.IsActive) })
@@ -419,7 +419,7 @@ public class TeamMonitoringService : ITeamMonitoringService
                 memberships = rows.Where(r => r.IsMember).Select(r => (r.Id, r.Assignable)).ToList();
             },
             async db => teamCapacity = await db.AssignmentConfigurations.AsNoTracking()
-                .Where(c => c.DepartmentId != null && c.IsActive).ToDictionaryAsync(c => c.DepartmentId!.Value, c => c.MaxConcurrentCapacity, ct),
+                .Where(c => c.TeamId != null && c.IsActive).ToDictionaryAsync(c => c.TeamId!.Value, c => c.MaxConcurrentCapacity, ct),
             async db => openInputs = await Visible(db.Cases.AsNoTracking(), db)
                 .Where(c => c.OwnerId == agentId && !Finished.Contains(c.Status))
                 .Select(c => new SlaInputs
@@ -469,7 +469,7 @@ public class TeamMonitoringService : ITeamMonitoringService
         var rows = await ordered.Skip((page - 1) * pageSize).Take(pageSize)
             .Select(c => new
             {
-                c.Id, c.CaseNumber, c.Title, c.Status, c.Severity, TeamName = c.Department.Name, c.CreatedAt, c.ResolvedAt, c.SlaOutcome,
+                c.Id, c.CaseNumber, c.Title, c.Status, c.Severity, TeamName = c.Team.Name, c.CreatedAt, c.ResolvedAt, c.SlaOutcome,
                 Inputs = new SlaInputs
                 {
                     Status = c.Status, StartUtc = c.SlaStartTime, ResolvedAt = c.ResolvedAt, PausedAt = c.SlaPausedAt, PausedMinutes = c.SlaTotalPausedMinutes,

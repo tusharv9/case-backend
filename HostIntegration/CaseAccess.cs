@@ -44,8 +44,8 @@ public sealed class CaseAccessScope(AppDbContext context, ICurrentUserAccessor? 
         return cases.Where(c =>
             c.OwnerId == me
             || c.Participants.Any(p => p.UserId == me)
-            || c.Department.OwnerId == me
-            || members.Any(m => m.UserId == me && m.IsActive && m.DepartmentId == c.DepartmentId));
+            || c.Team.OwnerId == me
+            || members.Any(m => m.UserId == me && m.IsActive && m.TeamId == c.TeamId));
     }
 
     public Task<bool> CanSeeAsync(Guid caseId, CancellationToken ct = default) =>

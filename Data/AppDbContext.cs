@@ -10,7 +10,7 @@ public class AppDbContext : DbContext
     public DbSet<Case> Cases { get; set; } = null!;
     public DbSet<Customer> Customers { get; set; } = null!;
     public DbSet<User> Users { get; set; } = null!;
-    public DbSet<Department> Departments { get; set; } = null!;
+    public DbSet<Team> Teams { get; set; } = null!;
     public DbSet<TeamMember> TeamMembers { get; set; } = null!;
     public DbSet<CaseEvent> CaseEvents { get; set; } = null!;
     public DbSet<CaseParticipant> CaseParticipants { get; set; } = null!;
@@ -44,7 +44,7 @@ public class AppDbContext : DbContext
     public DbSet<AssignmentConfiguration> AssignmentConfigurations { get; set; } = null!;
     public DbSet<ManualAssignmentSettings> ManualAssignmentSettings { get; set; } = null!;
     public DbSet<ManualAssignmentCrossTeam> ManualAssignmentCrossTeams { get; set; } = null!;
-    public DbSet<OrgDepartment> OrgDepartments { get; set; } = null!;
+    public DbSet<Department> Departments { get; set; } = null!;
     public DbSet<TeamDepartment> TeamDepartments { get; set; } = null!;
     public DbSet<TeamSettings> TeamSettings { get; set; } = null!;
     public DbSet<TeamCustomAttribute> TeamCustomAttributes { get; set; } = null!;
@@ -230,7 +230,7 @@ public class AppDbContext : DbContext
             .IsDescending();
 
         modelBuilder.Entity<Case>()
-            .HasIndex(c => new { c.DepartmentId, c.CreatedAt })
+            .HasIndex(c => new { c.TeamId, c.CreatedAt })
             .IsDescending(false, true);
 
         // List View / Board columns filter by status and page newest first.
@@ -320,7 +320,7 @@ public class AppDbContext : DbContext
             .HasForeignKey(c => c.OwnerId)
             .OnDelete(DeleteBehavior.Restrict);
 
-        modelBuilder.Entity<Department>()
+        modelBuilder.Entity<Team>()
             .HasOne(d => d.Owner)
             .WithMany()
             .HasForeignKey(d => d.OwnerId)
@@ -432,15 +432,15 @@ public class AppDbContext : DbContext
             .IsRequired(false)
             .OnDelete(DeleteBehavior.SetNull);
 
-        // Teams (Departments) and Team Members
+        // Teams and their members
         modelBuilder.Entity<TeamMember>()
-            .HasIndex(tm => new { tm.DepartmentId, tm.UserId })
+            .HasIndex(tm => new { tm.TeamId, tm.UserId })
             .IsUnique();
 
         modelBuilder.Entity<TeamMember>()
-            .HasOne(tm => tm.Department)
+            .HasOne(tm => tm.Team)
             .WithMany(d => d.Members)
-            .HasForeignKey(tm => tm.DepartmentId)
+            .HasForeignKey(tm => tm.TeamId)
             .OnDelete(DeleteBehavior.Cascade);
 
         modelBuilder.Entity<TeamMember>()
@@ -453,7 +453,7 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<ManualAssignmentSettings>()
             .Property(m => m.CrossTeamMode).HasMaxLength(32);
         modelBuilder.Entity<ManualAssignmentCrossTeam>()
-            .HasIndex(c => new { c.SettingsId, c.DepartmentId })
+            .HasIndex(c => new { c.SettingsId, c.TeamId })
             .IsUnique();
         modelBuilder.Entity<ManualAssignmentCrossTeam>()
             .HasOne(c => c.Settings)
@@ -461,13 +461,13 @@ public class AppDbContext : DbContext
             .HasForeignKey(c => c.SettingsId)
             .OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<ManualAssignmentCrossTeam>()
-            .HasOne(c => c.Department)
+            .HasOne(c => c.Team)
             .WithMany()
-            .HasForeignKey(c => c.DepartmentId)
+            .HasForeignKey(c => c.TeamId)
             .OnDelete(DeleteBehavior.Cascade);
 
-        // Business departments and the teams that serve them (many-to-many; a Department row is a team)
-        modelBuilder.Entity<OrgDepartment>(e =>
+        // Departments and teams are independent; TeamDepartments maps them: one team → many departments, one department → one team.
+        modelBuilder.Entity<Department>(e =>
         {
             e.Property(d => d.Name).HasMaxLength(120);
             e.Property(d => d.Code).HasMaxLength(20);
@@ -475,29 +475,25 @@ public class AppDbContext : DbContext
         });
         modelBuilder.Entity<TeamDepartment>(e =>
         {
-            e.HasKey(l => new { l.TeamId, l.OrgDepartmentId });
-            e.HasIndex(l => l.OrgDepartmentId);
-            // Deleting a team drops its links; a department that teams still serve cannot be deleted (deactivate it instead).
-            e.HasOne(l => l.Team).WithMany(t => t.OrgDepartments).HasForeignKey(l => l.TeamId).OnDelete(DeleteBehavior.Cascade);
-            e.HasOne(l => l.OrgDepartment).WithMany(d => d.Teams).HasForeignKey(l => l.OrgDepartmentId).OnDelete(DeleteBehavior.Restrict);
-            // At most one default team per department (where its cases go when no routing rule matches).
-            e.HasIndex(new[] { nameof(TeamDepartment.OrgDepartmentId) }, "IX_TeamDepartments_OneDefaultPerDepartment").IsUnique().HasFilter("\"IsDefault\"");
+            e.HasKey(l => new { l.TeamId, l.DepartmentId });
+            // A department belongs to at most one team. Enforced here, not only in code, so two concurrent saves cannot both win.
+            e.HasIndex(l => l.DepartmentId).IsUnique().HasDatabaseName("UX_TeamDepartments_Department");
+            // Deleting a team drops its mappings; a department that is still mapped cannot be deleted (unmap or deactivate it).
+            e.HasOne(l => l.Team).WithMany(t => t.DepartmentLinks).HasForeignKey(l => l.TeamId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(l => l.Department).WithMany(d => d.TeamLinks).HasForeignKey(l => l.DepartmentId).OnDelete(DeleteBehavior.Restrict);
         });
 
         // A case's business department; a department that cases belong to cannot be deleted (deactivate it instead).
         modelBuilder.Entity<Case>()
-            .HasOne(c => c.OrgDepartment).WithMany().HasForeignKey(c => c.OrgDepartmentId)
+            .HasOne(c => c.Department).WithMany().HasForeignKey(c => c.DepartmentId)
             .IsRequired(false).OnDelete(DeleteBehavior.Restrict);
-        modelBuilder.Entity<Case>().HasIndex(c => c.OrgDepartmentId);
+        modelBuilder.Entity<Case>().HasIndex(c => c.DepartmentId);
 
-        // Sub-categories belong to a business department; the old team link is kept (nullable) for older code.
-        modelBuilder.Entity<DepartmentSubCategory>()
-            .HasOne(s => s.OrgDepartment).WithMany().HasForeignKey(s => s.OrgDepartmentId)
-            .IsRequired(false).OnDelete(DeleteBehavior.Restrict);
-        modelBuilder.Entity<DepartmentSubCategory>().HasIndex(s => s.OrgDepartmentId);
+        // Sub-categories belong to a department.
         modelBuilder.Entity<DepartmentSubCategory>()
             .HasOne(s => s.Department).WithMany().HasForeignKey(s => s.DepartmentId)
-            .IsRequired(false).OnDelete(DeleteBehavior.SetNull);
+            .IsRequired(false).OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<DepartmentSubCategory>().HasIndex(s => s.DepartmentId);
 
         // Values of the administrator-defined Create/Edit Team fields: one per team and field, removed with the team.
         modelBuilder.Entity<TeamCustomAttribute>(e =>
@@ -524,15 +520,15 @@ public class AppDbContext : DbContext
             .HasIndex(r => r.EvaluationOrder);
 
         modelBuilder.Entity<RoutingRule>()
-            .HasOne(r => r.TargetDepartment)
+            .HasOne(r => r.TargetTeam)
             .WithMany()
-            .HasForeignKey(r => r.TargetDepartmentId)
+            .HasForeignKey(r => r.TargetTeamId)
             .OnDelete(DeleteBehavior.Restrict);
 
         modelBuilder.Entity<AssignmentConfiguration>()
-            .HasOne(ac => ac.Department)
+            .HasOne(ac => ac.Team)
             .WithMany()
-            .HasForeignKey(ac => ac.DepartmentId)
+            .HasForeignKey(ac => ac.TeamId)
             .IsRequired(false)
             .OnDelete(DeleteBehavior.Cascade);
 
@@ -540,7 +536,7 @@ public class AppDbContext : DbContext
         // a small, bounded slice of a table that grows forever. Indexing just that slice keeps those reads flat as history piles up.
         const string openOnly = "\"Status\" NOT IN ('Resolved', 'Closed', 'Cancelled')";
         modelBuilder.Entity<Case>().HasIndex(c => new { c.OwnerId, c.Status }).HasFilter(openOnly).HasDatabaseName("IX_Cases_Open_Owner");
-        modelBuilder.Entity<Case>().HasIndex(c => new { c.DepartmentId, c.Status }).HasFilter(openOnly).HasDatabaseName("IX_Cases_Open_Department");
+        modelBuilder.Entity<Case>().HasIndex(c => new { c.TeamId, c.Status }).HasFilter(openOnly).HasDatabaseName("IX_Cases_Open_Team");
         modelBuilder.Entity<Case>().HasIndex(c => c.SlaStartTime).HasFilter(openOnly).HasDatabaseName("IX_Cases_Open_SlaStart");
 
         // The dashboard counts breached outcomes; they are few, so a partial index keeps that count instant.
@@ -551,9 +547,9 @@ public class AppDbContext : DbContext
 
         // At most one settings row per team (the row without a team is the global default).
         modelBuilder.Entity<AssignmentConfiguration>()
-            .HasIndex(ac => ac.DepartmentId)
+            .HasIndex(ac => ac.TeamId)
             .IsUnique()
-            .HasFilter("\"DepartmentId\" IS NOT NULL");
+            .HasFilter("\"TeamId\" IS NOT NULL");
 
         modelBuilder.Entity<AgentSkill>()
             .HasIndex(s => new { s.UserId, s.SkillName })
@@ -566,12 +562,12 @@ public class AppDbContext : DbContext
             .OnDelete(DeleteBehavior.Cascade);
 
         modelBuilder.Entity<TeamAssignmentPointer>()
-            .HasKey(p => p.DepartmentId);
+            .HasKey(p => p.TeamId);
 
         modelBuilder.Entity<TeamAssignmentPointer>()
-            .HasOne(p => p.Department)
+            .HasOne(p => p.Team)
             .WithMany()
-            .HasForeignKey(p => p.DepartmentId)
+            .HasForeignKey(p => p.TeamId)
             .OnDelete(DeleteBehavior.Cascade);
 
         modelBuilder.Entity<TeamAssignmentPointer>()

@@ -39,21 +39,21 @@ public class TeamVisibilityTests
             await using (var ctx = e.Db.NewContext())
             {
                 e.Loans = Guid.NewGuid(); e.Cards = Guid.NewGuid(); e.Customer = Guid.NewGuid();
-                ctx.Departments.AddRange(
-                    new Department { Id = e.Loans, Name = "Loans", Code = "LN", CreatedAt = DateTime.UtcNow },
-                    new Department { Id = e.Cards, Name = "Cards", Code = "CD", CreatedAt = DateTime.UtcNow });
+                ctx.Teams.AddRange(
+                    new Team { Id = e.Loans, Name = "Loans", Code = "LN", CreatedAt = DateTime.UtcNow },
+                    new Team { Id = e.Cards, Name = "Cards", Code = "CD", CreatedAt = DateTime.UtcNow });
                 // Each team serves its own business department (cases are created for the team, as older callers do).
                 var lending = Guid.NewGuid(); var cardServices = Guid.NewGuid();
-                ctx.OrgDepartments.AddRange(
-                    new OrgDepartment { Id = lending, Name = "Lending", Code = "LEN", IsActive = true, CreatedAt = DateTime.UtcNow },
-                    new OrgDepartment { Id = cardServices, Name = "Card Services", Code = "CRD", IsActive = true, CreatedAt = DateTime.UtcNow });
+                ctx.Departments.AddRange(
+                    new Department { Id = lending, Name = "Lending", Code = "LEN", IsActive = true, CreatedAt = DateTime.UtcNow },
+                    new Department { Id = cardServices, Name = "Card Services", Code = "CRD", IsActive = true, CreatedAt = DateTime.UtcNow });
                 await ctx.SaveChangesAsync();
                 ctx.TeamDepartments.AddRange(
-                    new TeamDepartment { TeamId = e.Loans, OrgDepartmentId = lending, IsDefault = true },
-                    new TeamDepartment { TeamId = e.Cards, OrgDepartmentId = cardServices, IsDefault = true });
+                    new TeamDepartment { TeamId = e.Loans, DepartmentId = lending },
+                    new TeamDepartment { TeamId = e.Cards, DepartmentId = cardServices });
                 ctx.AddRange(
-                    new DepartmentSubCategory { Id = Guid.NewGuid(), DepartmentId = e.Loans, OrgDepartmentId = lending, Name = "Repayment", Code = "R", IsActive = true, CreatedAt = DateTime.UtcNow },
-                    new DepartmentSubCategory { Id = Guid.NewGuid(), DepartmentId = e.Cards, OrgDepartmentId = cardServices, Name = "Fraud", Code = "F", IsActive = true, CreatedAt = DateTime.UtcNow },
+                    new DepartmentSubCategory { Id = Guid.NewGuid(), DepartmentId = lending, Name = "Repayment", Code = "R", IsActive = true, CreatedAt = DateTime.UtcNow },
+                    new DepartmentSubCategory { Id = Guid.NewGuid(), DepartmentId = cardServices, Name = "Fraud", Code = "F", IsActive = true, CreatedAt = DateTime.UtcNow },
                     new Customer { Id = e.Customer, FullName = "Siti Aminah", IdType = "Passport Number", Passport = "B12345678", PhoneNumber = "+60 12-111 2222", PreferredLanguage = "English", CreatedAt = DateTime.UtcNow });
                 await ctx.SaveChangesAsync();
             }
@@ -94,8 +94,8 @@ public class TeamVisibilityTests
         {
             var user = await LocalIdAsync(externalId);
             await using var ctx = Db.NewContext();
-            var row = await ctx.TeamMembers.FirstOrDefaultAsync(m => m.UserId == user && m.DepartmentId == team);
-            if (row == null) ctx.TeamMembers.Add(new TeamMember { Id = Guid.NewGuid(), DepartmentId = team, UserId = user, IsActive = active, CreatedAt = DateTime.UtcNow });
+            var row = await ctx.TeamMembers.FirstOrDefaultAsync(m => m.UserId == user && m.TeamId == team);
+            if (row == null) ctx.TeamMembers.Add(new TeamMember { Id = Guid.NewGuid(), TeamId = team, UserId = user, IsActive = active, CreatedAt = DateTime.UtcNow });
             else row.IsActive = active;
             await ctx.SaveChangesAsync();
         }

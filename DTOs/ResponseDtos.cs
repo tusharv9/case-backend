@@ -25,11 +25,11 @@ public class CaseSummaryDto
     /// <summary>How the case stands against its SLA right now, computed by the one SLA clock. Null only for cases not yet evaluated.</summary>
     public CaseSlaDto? Sla { get; set; }
     public bool IsSlaPaused => Sla?.IsPaused ?? false;
-    public Guid DepartmentId { get; set; }
-    public string DepartmentName { get; set; } = string.Empty;
+    public Guid TeamId { get; set; }
+    public string TeamName { get; set; } = string.Empty;
     /// <summary>The business department the case belongs to (DepartmentId/Name above are its TEAM). Null for cases from before departments.</summary>
-    public Guid? BusinessDepartmentId { get; set; }
-    public string? BusinessDepartmentName { get; set; }
+    public Guid? DepartmentId { get; set; }
+    public string? DepartmentName { get; set; }
     public string OwnerName { get; set; } = string.Empty;
     public Guid OwnerId { get; set; }
     public string? OwnerRole { get; set; }
@@ -177,24 +177,12 @@ public class UserDto
     public string Email { get; set; } = string.Empty;
     public string Role { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
-    public Guid? DepartmentId { get; set; }
-    public string DepartmentName { get; set; } = string.Empty;
     /// <summary>The teams the person is an active member of (comma-separated), from team membership.</summary>
     public string? Team { get; set; }
     public string? ExternalUserId { get; set; }
     public bool IsActive { get; set; } = true;
 }
 
-
-public class DepartmentDto
-{
-    public Guid Id { get; set; }
-    public string Name { get; set; } = string.Empty;
-    public string Code { get; set; } = string.Empty;
-    public Guid? OwnerId { get; set; }
-    public string OwnerName { get; set; } = string.Empty;
-    public bool IsActive { get; set; } = true;
-}
 
 public class CaseTypeConfigDto
 {
@@ -211,9 +199,6 @@ public class DepartmentSubCategoryDto
     public Guid Id { get; set; }
     public Guid DepartmentId { get; set; }
     public string DepartmentName { get; set; } = string.Empty;
-    /// <summary>The business department the case belongs to (DepartmentId/Name above are its TEAM). Null for cases from before departments.</summary>
-    public Guid? BusinessDepartmentId { get; set; }
-    public string? BusinessDepartmentName { get; set; }
     public string Name { get; set; } = string.Empty;
     public string Code { get; set; } = string.Empty;
     public string? Description { get; set; }

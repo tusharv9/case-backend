@@ -198,8 +198,8 @@ public class CaseService : ICaseService
             Description = dto.Description?.Trim() ?? string.Empty,
             // The team comes from routing. Before routing it is the team an older caller named, or the department's fallback
             // team (empty when there is none: routing then needs a rule to match, or the case is refused).
-            DepartmentId = validated.StartingTeamId ?? Guid.Empty,
-            OrgDepartmentId = validated.Department.Id,
+            TeamId = validated.TeamId,
+            DepartmentId = validated.Department.Id,
             OwnerId = createdByUserId,
             Severity = effectivePriority,
             Status = CaseStatus.Open,
@@ -262,9 +262,6 @@ public class CaseService : ICaseService
                 // Decided under the team lock, so an agent freed up since the creator was asked is still preferred.
                 if (routingDecision.HeldReason != null) ApplyUnstaffedTeamChoice(routingDecision, dto.UnstaffedTeamAction);
             }
-
-            if (newCase.DepartmentId == Guid.Empty)
-                throw new FieldValidationException(new[] { new FieldError("departmentId", NoTeamMessage(validated.Department.Name)) });
 
             await _caseRepository.AddAsync(newCase);
             await _caseRepository.AddEventAsync(new CaseEvent
@@ -336,20 +333,20 @@ public class CaseService : ICaseService
     /// </summary>
     private static void ApplyUnstaffedTeamChoice(RoutingDecisionResult decision, string? action)
     {
-        var team = string.IsNullOrWhiteSpace(decision.TargetDepartmentName) ? "The team" : decision.TargetDepartmentName;
+        var team = string.IsNullOrWhiteSpace(decision.TargetTeamName) ? "The team" : decision.TargetTeamName;
         var supervisorId = decision.HeldByUserId;
         var supervisorName = supervisorId.HasValue ? decision.AssignedUserName : null;
 
         if (!UnstaffedTeamActions.IsAssignToSupervisor(action))
         {
-            throw new TeamUnavailableException(decision.TargetDepartmentId, team, decision.HeldReason!, supervisorId, supervisorName,
+            throw new TeamUnavailableException(decision.TargetTeamId, team, decision.HeldReason!, supervisorId, supervisorName,
                 supervisorId.HasValue
                     ? $"'{team}' has no available member to take this case. The case was not created: cancel, or assign it to the team's supervisor, {supervisorName}."
                     : $"'{team}' has no available member to take this case and no active supervisor to hold it. The case was not created.");
         }
         if (!supervisorId.HasValue)
         {
-            throw new TeamUnavailableException(decision.TargetDepartmentId, team, decision.HeldReason!, null, null,
+            throw new TeamUnavailableException(decision.TargetTeamId, team, decision.HeldReason!, null, null,
                 $"'{team}' has no active supervisor, so the case cannot be assigned to one. The case was not created.");
         }
         decision.RoutingLogMessage += " Assigned to the supervisor at the creator's explicit choice.";
@@ -541,9 +538,9 @@ public class CaseService : ICaseService
         await ExecuteInTransactionAsync(async () =>
         {
             // Same lock as automatic routing, so the capacity verdict below cannot be raced by a simultaneous assignment.
-            await TeamAssignmentLock.AcquireAsync(_context, existingCase.DepartmentId);
+            await TeamAssignmentLock.AcquireAsync(_context, existingCase.TeamId);
             var policy = await _eligibility.GetManualPolicyAsync();
-            var (team, verdict) = await _eligibility.CheckAsync(existingCase.DepartmentId, dto.OwnerId, policy);
+            var (team, verdict) = await _eligibility.CheckAsync(existingCase.TeamId, dto.OwnerId, policy);
             if (!verdict.IsEligible)
                 throw new AssignmentNotAllowedException(verdict.Reason.ToString(), verdict.Explain(team.Team.Name));
             // Cross-team assignment is allowed by the settings AND needs the caller's permission.
@@ -574,18 +571,18 @@ public class CaseService : ICaseService
     {
         var c = await _context.Cases.AsNoTracking()
             .Where(x => x.Id == caseId)
-            .Select(x => new { x.Id, x.DepartmentId, x.OwnerId })
+            .Select(x => new { x.Id, x.TeamId, x.OwnerId })
             .FirstOrDefaultAsync(ct)
             ?? throw new KeyNotFoundException("Case not found");
 
         var policy = await _eligibility.GetManualPolicyAsync(ct);
-        var team = await _eligibility.EvaluateForCaseAsync(c.DepartmentId, policy, ct);
+        var team = await _eligibility.EvaluateForCaseAsync(c.TeamId, policy, ct);
         return new EligibleAssigneesDto
         {
             CaseId = c.Id,
-            DepartmentId = team.Team.Id,
-            DepartmentName = team.Team.Name,
-            DepartmentIsActive = team.Team.IsActive,
+            TeamId = team.Team.Id,
+            TeamName = team.Team.Name,
+            TeamIsActive = team.Team.IsActive,
             CurrentOwnerId = c.OwnerId,
             Capacity = team.Capacity,
             CrossTeamMode = policy.CrossTeamMode,
@@ -703,7 +700,7 @@ public class CaseService : ICaseService
         // "Open" = not resolved. "Breached" = open cases the SLA clock reads as breached — the same verdict every other
         // screen, the worker and the notifications use.
         var cases = Visible(_context.Cases.AsNoTracking()).Where(c => c.Status != CaseStatus.Resolved && c.Status != CaseStatus.Closed && c.Status != CaseStatus.Cancelled);
-        if (departmentId.HasValue) cases = cases.Where(c => c.DepartmentId == departmentId.Value);
+        if (departmentId.HasValue) cases = cases.Where(c => c.TeamId == departmentId.Value);
 
         var health = await EvaluateHealthAsync(cases, ct);
         return new CaseStatsDto
@@ -746,30 +743,30 @@ public class CaseService : ICaseService
         await EnsureNotLockedAsync(existingCase, transferredByUserId);
         await _eligibility.EnsureMayReassignAsync(existingCase, transferredByUserId, callerMayAssignAnyCase);
 
-        // A transfer moves the case to another team; a team IS the queue, so there is nothing else to transfer to.
+        // A transfer moves the case to another DEPARTMENT; it goes to the one team that department is assigned to. A case is
+        // never handed to a team that does not handle its department, and there is no default team to fall back on.
         if (dto.DepartmentId == Guid.Empty)
-            throw new FieldValidationException(new[] { new FieldError("departmentId", "Choose the team to transfer the case to.") });
+            throw new FieldValidationException(new[] { new FieldError("departmentId", "Choose the department to transfer the case to.") });
         if (dto.DepartmentId == existingCase.DepartmentId)
-            throw new FieldValidationException(new[] { new FieldError("departmentId", "The case already belongs to this team. Choose a different team, or reassign it within the team instead.") });
+            throw new FieldValidationException(new[] { new FieldError("departmentId", "The case already belongs to this department. Choose a different department, or reassign it within its team instead.") });
 
         User? newOwner = null;
-        var targetDept = await _context.Departments.FindAsync(dto.DepartmentId)
-                         ?? throw new KeyNotFoundException("Target department not found.");
-        if (!targetDept.IsActive)
-            throw new AssignmentNotAllowedException(nameof(IneligibilityReason.TeamInactive), $"'{targetDept.Name}' is inactive and cannot receive cases.");
-        // A case stays in its department; only a team that serves that department can take it.
-        if (!await DepartmentTeams.ServesAsync(_context, targetDept.Id, existingCase.OrgDepartmentId))
-        {
-            var departmentName = await _context.OrgDepartments.Where(d => d.Id == existingCase.OrgDepartmentId).Select(d => d.Name).FirstOrDefaultAsync();
-            throw new FieldValidationException(new[] { new FieldError("departmentId", $"'{targetDept.Name}' does not serve {departmentName}, the department of this case. Choose a team that serves it.") });
-        }
-        const bool changesTeam = true;
+        var targetDepartment = await _context.Departments.AsNoTracking().FirstOrDefaultAsync(d => d.Id == dto.DepartmentId)
+                               ?? throw new FieldValidationException(new[] { new FieldError("departmentId", "That department no longer exists. Reload and choose again.") });
+        if (!targetDepartment.IsActive)
+            throw new FieldValidationException(new[] { new FieldError("departmentId", $"{targetDepartment.Name} is inactive and cannot receive cases.") });
+        var mapped = await DepartmentTeams.TeamOfAsync(_context, targetDepartment.Id)
+                     ?? throw new FieldValidationException(new[] { new FieldError("departmentId", DepartmentTeams.NoTeamMessage(targetDepartment.Name)) });
+        if (!mapped.IsActive)
+            throw new FieldValidationException(new[] { new FieldError("departmentId", DepartmentTeams.InactiveTeamMessage(targetDepartment.Name, mapped.Name)) });
+        var targetDept = await _context.Teams.FirstAsync(t => t.Id == mapped.Id);
+        var changesTeam = targetDept.Id != existingCase.TeamId;
 
         var reason = await CaseReasons.ResolveAsync(_context, CaseReasons.Transfer, dto.Reason, dto.ReasonDetail);
 
         // SLA TARGETS DO NOT RESET: Transfer keeps SLA clock running continuously without interruption
         var noteDesc = !string.IsNullOrWhiteSpace(dto.HandoverNote) ? $" Note: {dto.HandoverNote.Trim()}" : "";
-        string BuildTransferMessage() => $"Transferred to {targetDept.Name}{(newOwner != null ? $" (Owner: {newOwner.Name})" : "")}. Reason: {reason.Text}.{noteDesc}";
+        string BuildTransferMessage() => $"Transferred to {targetDepartment.Name} (team {targetDept.Name}){(newOwner != null ? $", owner {newOwner.Name}" : "")}. Reason: {reason.Text}.{noteDesc}";
 
         var caseEvent = new CaseEvent
         {
@@ -782,9 +779,10 @@ public class CaseService : ICaseService
 
         await ExecuteInTransactionAsync(async () =>
         {
+            existingCase.DepartmentId = targetDepartment.Id;
             if (changesTeam)
             {
-                existingCase.DepartmentId = targetDept.Id;
+                existingCase.TeamId = targetDept.Id;
 
                 // The receiving team's lead takes the case (as before). Without an active lead the team's own algorithm picks an
                 // eligible agent — the same rules as routing at creation. Nobody at all: the transfer is refused rather than
@@ -870,7 +868,7 @@ public class CaseService : ICaseService
                 Description = $"Linked Subcase under Parent Case {existingCase.CaseNumber} referencing Case {targetCase.CaseNumber}. Reason: {dto.RelationshipType}",
                 Status = CaseStatus.Open,
                 Severity = existingCase.Severity,
-                DepartmentId = existingCase.DepartmentId,
+                TeamId = existingCase.TeamId,
                 // The same customer as the parent, whichever kind: the whole reference, never just the local id.
                 CustomerSource = existingCase.CustomerSource,
                 CustomerId = existingCase.CustomerId,
@@ -1310,7 +1308,7 @@ public class CaseService : ICaseService
     public async Task EscalateCaseAsync(Guid caseId, EscalateCaseDto dto, Guid userId)
     {
         var existingCase = await _context.Cases
-            .Include(c => c.Department)
+            .Include(c => c.Team)
             .Include(c => c.Owner)
             .FirstOrDefaultAsync(c => c.Id == caseId);
 
@@ -1474,12 +1472,9 @@ public class CaseService : ICaseService
         => await ValidateCreateCaseAsync(dto, ct, confirmCustomer360: false);
 
     /// <summary>A create-case request after validation: resolved records and canonical values.</summary>
-    internal static string NoTeamMessage(string department) =>
-        $"No routing rule sends this case to a team, and '{department}' has no default team. Ask an administrator to set one under Case Settings → Teams → Team Rules → Departments, or add a routing rule.";
-
     private sealed record ValidatedCase(
-        OrgDepartment Department,
-        Guid? StartingTeamId,
+        Department Department,
+        Guid TeamId,
         CaseTypeConfig CaseType,
         DepartmentSubCategory SubCategory,
         IReadOnlyDictionary<string, string> Values,
@@ -1532,42 +1527,29 @@ public class CaseService : ICaseService
         else if (await _context.Customers.AnyAsync(c => c.Id == dto.CustomerId, ct)) { customerId = dto.CustomerId; selectedCustomer = customerId.ToString(); }
         else errors.Add(new FieldError("selectCustomer", "Selected customer does not exist."));
 
-        // The department: a business department, or (older callers) a team, whose department is then the one it serves.
-        OrgDepartment? department = null;
-        Guid? startingTeamId = null;
+        // The department, and the one team it is assigned to. There is no default or fallback team: a department with no team,
+        // or whose team is inactive, cannot take a case, and the person is told so.
+        Department? department = null;
+        Guid? teamId = null;
         if (dto.DepartmentId == Guid.Empty)
         {
             errors.Add(new FieldError("departmentId", "Department is required."));
         }
         else
         {
-            var departments = await CachedAsync("validation:org-departments", () => _context.OrgDepartments.AsNoTracking().ToListAsync(ct));
+            var departments = await CachedAsync("validation:org-departments", () => _context.Departments.AsNoTracking().ToListAsync(ct));
             department = departments.FirstOrDefault(d => d.Id == dto.DepartmentId);
-            if (department == null)
-            {
-                var team = (await CachedAsync("validation:departments", () => _context.Departments.AsNoTracking().ToListAsync(ct)))
-                    .FirstOrDefault(d => d.Id == dto.DepartmentId);
-                if (team is { IsActive: true })
-                {
-                    var served = await _context.TeamDepartments.AsNoTracking().Where(l => l.TeamId == team.Id)
-                        .OrderByDescending(l => l.IsDefault).Select(l => l.OrgDepartmentId).ToListAsync(ct);
-                    if (served.Count > 0)
-                    {
-                        department = departments.FirstOrDefault(d => d.Id == served[0]);
-                        startingTeamId = team.Id;
-                    }
-                }
-            }
             if (department == null || !department.IsActive)
             {
                 errors.Add(new FieldError("departmentId", "Selected department is invalid or inactive."));
                 department = null;
-                startingTeamId = null;
             }
-            else if (startingTeamId == null)
-            {
-                startingTeamId = (await DepartmentTeams.ResolveFallbackAsync(_context, department.Id, ct)).TeamId;
-            }
+            else if (await DepartmentTeams.TeamOfAsync(_context, department.Id, ct) is not { } team)
+                errors.Add(new FieldError("departmentId", DepartmentTeams.NoTeamMessage(department.Name)));
+            else if (!team.IsActive)
+                errors.Add(new FieldError("departmentId", DepartmentTeams.InactiveTeamMessage(department.Name, team.Name)));
+            else
+                teamId = team.Id;
         }
 
         CaseTypeConfig? caseType = null;
@@ -1595,7 +1577,7 @@ public class CaseService : ICaseService
         {
             var lowered = subCategoryInput.ToLowerInvariant();
             subCategory = (await CachedAsync("validation:sub-categories", () => _context.DepartmentSubCategories.AsNoTracking().ToListAsync(ct)))
-                .FirstOrDefault(s => s.OrgDepartmentId == department.Id && s.IsActive && s.Name.ToLowerInvariant() == lowered);
+                .FirstOrDefault(s => s.DepartmentId == department.Id && s.IsActive && s.Name.ToLowerInvariant() == lowered);
             if (subCategory == null)
                 errors.Add(new FieldError("subCategory", $"Sub-category '{subCategoryInput}' is invalid for department '{department.Name}'."));
         }
@@ -1636,6 +1618,6 @@ public class CaseService : ICaseService
             .Where(kv => (dto.CustomAttributes?.ContainsKey(kv.Key) ?? false) && kv.Value.Length > 0)
             .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase);
 
-        return new ValidatedCase(department!, startingTeamId, caseType!, subCategory!, result.Normalized, custom, customerId, customer360);
+        return new ValidatedCase(department!, teamId!.Value, caseType!, subCategory!, result.Normalized, custom, customerId, customer360);
     }
 }

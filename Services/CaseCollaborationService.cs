@@ -58,9 +58,9 @@ public class CaseCollaborationService : ICaseCollaborationService
 
     public async Task<IReadOnlyList<TeamOptionDto>> GetCollaboratorTeamsAsync(Guid caseId, CancellationToken ct = default)
     {
-        var caseTeamId = await _context.Cases.AsNoTracking().Where(c => c.Id == caseId).Select(c => (Guid?)c.DepartmentId).FirstOrDefaultAsync(ct)
+        var caseTeamId = await _context.Cases.AsNoTracking().Where(c => c.Id == caseId).Select(c => (Guid?)c.TeamId).FirstOrDefaultAsync(ct)
             ?? throw new KeyNotFoundException("Case not found");
-        var teams = await _context.Departments.AsNoTracking().Where(d => d.IsActive)
+        var teams = await _context.Teams.AsNoTracking().Where(d => d.IsActive)
             .Select(d => new TeamOptionDto { Id = d.Id, Name = d.Name, IsCaseTeam = d.Id == caseTeamId }).ToListAsync(ct);
         return teams.OrderByDescending(t => t.IsCaseTeam).ThenBy(t => t.Name, StringComparer.OrdinalIgnoreCase).ToList();
     }
@@ -90,12 +90,12 @@ public class CaseCollaborationService : ICaseCollaborationService
     /// <summary>A team's active members and its lead, active users only. Refuses an unknown or inactive team.</summary>
     private async Task<List<TeamPerson>> TeamPeopleAsync(Guid teamId, CancellationToken ct)
     {
-        var team = await _context.Departments.AsNoTracking().FirstOrDefaultAsync(d => d.Id == teamId, ct)
+        var team = await _context.Teams.AsNoTracking().FirstOrDefaultAsync(d => d.Id == teamId, ct)
             ?? throw new KeyNotFoundException("Team not found.");
         if (!team.IsActive) throw new InvalidOperationException($"'{team.Name}' is inactive.");
 
         var members = await _context.TeamMembers.AsNoTracking().Include(m => m.User)
-            .Where(m => m.DepartmentId == teamId && m.IsActive && m.User.IsActive).ToListAsync(ct);
+            .Where(m => m.TeamId == teamId && m.IsActive && m.User.IsActive).ToListAsync(ct);
         var result = members.Select(m => new TeamPerson(m.User, m.MemberRole, m.UserId == team.OwnerId)).ToList();
         if (team.OwnerId.HasValue && result.All(p => p.User.Id != team.OwnerId.Value)
             && await _context.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == team.OwnerId.Value && u.IsActive, ct) is { } lead)
@@ -129,7 +129,7 @@ public class CaseCollaborationService : ICaseCollaborationService
 
         var now = DateTime.UtcNow;
         var actorName = await _context.Users.AsNoTracking().Where(u => u.Id == addedByUserId).Select(u => u.Name).FirstOrDefaultAsync() ?? "A user";
-        var teamName = await _context.Departments.AsNoTracking().Where(d => d.Id == dto.TeamId.Value).Select(d => d.Name).FirstAsync();
+        var teamName = await _context.Teams.AsNoTracking().Where(d => d.Id == dto.TeamId.Value).Select(d => d.Name).FirstAsync();
         var addedNames = new List<string>();
 
         foreach (var id in ids)
@@ -324,24 +324,24 @@ public class CaseCollaborationService : ICaseCollaborationService
     public async Task<SwarmCandidatesDto> GetSwarmCandidatesAsync(Guid caseId, Guid callerId, CancellationToken ct = default)
     {
         var c = await _context.Cases.AsNoTracking().Where(x => x.Id == caseId)
-            .Select(x => new { x.OwnerId, x.DepartmentId, TeamName = x.Department.Name }).FirstOrDefaultAsync(ct)
+            .Select(x => new { x.OwnerId, x.TeamId, TeamName = x.Team.Name }).FirstOrDefaultAsync(ct)
             ?? throw new KeyNotFoundException("Case not found");
         var pending = await _context.CaseSwarmRequests.AsNoTracking()
             .Where(r => r.CaseId == caseId && r.Status == SwarmRequestStatuses.Pending).Select(r => r.RecipientUserId).ToListAsync(ct);
 
         // Every active team's lead — another team's lead may be asked too — the case's own team first.
-        var leads = await _context.Departments.AsNoTracking()
+        var leads = await _context.Teams.AsNoTracking()
             .Where(d => d.IsActive && d.OwnerId != null && d.Owner!.IsActive && d.OwnerId != callerId && d.OwnerId != c.OwnerId)
             .Select(d => new SwarmRecipientDto
             {
                 UserId = d.OwnerId!.Value, Name = d.Owner!.Name, Email = d.Owner.Email, Kind = SwarmRecipientKinds.TeamLead,
-                TeamId = d.Id, TeamName = d.Name, IsCaseTeam = d.Id == c.DepartmentId,
+                TeamId = d.Id, TeamName = d.Name, IsCaseTeam = d.Id == c.TeamId,
             }).ToListAsync(ct);
         foreach (var l in leads) l.HasPendingRequest = pending.Contains(l.UserId);
 
         var result = new SwarmCandidatesDto
         {
-            CaseTeamId = c.DepartmentId,
+            CaseTeamId = c.TeamId,
             CaseTeamName = c.TeamName,
             TeamLeads = leads.OrderByDescending(l => l.IsCaseTeam).ThenBy(l => l.TeamName, StringComparer.OrdinalIgnoreCase).ToList(),
         };
@@ -378,7 +378,7 @@ public class CaseCollaborationService : ICaseCollaborationService
         if (string.Equals(dto.RecipientKind, SwarmRecipientKinds.TeamLead, StringComparison.OrdinalIgnoreCase))
         {
             if (!dto.TeamId.HasValue) throw new ArgumentException("Choose the team whose lead you are asking.");
-            var team = await _context.Departments.AsNoTracking().FirstOrDefaultAsync(d => d.Id == dto.TeamId.Value)
+            var team = await _context.Teams.AsNoTracking().FirstOrDefaultAsync(d => d.Id == dto.TeamId.Value)
                 ?? throw new KeyNotFoundException("Team not found.");
             if (!team.IsActive) throw new InvalidOperationException($"'{team.Name}' is inactive.");
             if (team.OwnerId != dto.RecipientUserId) throw new ArgumentException($"The chosen person is not the lead of {team.Name}.");

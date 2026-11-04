@@ -24,9 +24,9 @@ namespace CaseManagement.Tests;
 public class CaseLifecycleTests : IDisposable
 {
     private readonly AppDbContext db;
-    private readonly Department team;
-    private readonly Department otherTeam;
-    private readonly OrgDepartment retail;
+    private readonly Team team;
+    private readonly Team otherTeam;
+    private readonly Department retail;
     private readonly User agent, holder, lead, otherLead, supervisor, outsider;
 
     public CaseLifecycleTests()
@@ -42,17 +42,17 @@ public class CaseLifecycleTests : IDisposable
         otherLead = U("Other Omar", "Team Lead");
         supervisor = U("Super Sam", "Supervisor");
         outsider = U("Outside Ola", "Agent");
-        team = new Department { Id = Guid.NewGuid(), Name = "Cards", Code = "CRD", OwnerId = lead.Id, IsActive = true };
-        otherTeam = new Department { Id = Guid.NewGuid(), Name = "Loans", Code = "LNS", OwnerId = otherLead.Id, IsActive = true };
-        retail = new OrgDepartment { Id = Guid.NewGuid(), Name = "Retail", Code = "RTL", IsActive = true };
+        team = new Team { Id = Guid.NewGuid(), Name = "Cards", Code = "CRD", OwnerId = lead.Id, IsActive = true };
+        otherTeam = new Team { Id = Guid.NewGuid(), Name = "Loans", Code = "LNS", OwnerId = otherLead.Id, IsActive = true };
+        retail = new Department { Id = Guid.NewGuid(), Name = "Retail", Code = "RTL", IsActive = true };
         db.AddRange(agent, holder, lead, otherLead, supervisor, outsider, team, otherTeam, retail);
         db.TeamMembers.AddRange(
-            new TeamMember { DepartmentId = team.Id, UserId = agent.Id, MemberRole = "Agent" },
-            new TeamMember { DepartmentId = team.Id, UserId = holder.Id, MemberRole = "Agent" },
-            new TeamMember { DepartmentId = otherTeam.Id, UserId = outsider.Id, MemberRole = "Agent" });
-        db.TeamDepartments.Add(new TeamDepartment { TeamId = otherTeam.Id, OrgDepartmentId = retail.Id });
+            new TeamMember { TeamId = team.Id, UserId = agent.Id, MemberRole = "Agent" },
+            new TeamMember { TeamId = team.Id, UserId = holder.Id, MemberRole = "Agent" },
+            new TeamMember { TeamId = otherTeam.Id, UserId = outsider.Id, MemberRole = "Agent" });
+        db.TeamDepartments.Add(new TeamDepartment { TeamId = otherTeam.Id, DepartmentId = retail.Id });
         db.ManualAssignmentSettings.Add(new ManualAssignmentSettings { EnforceCapacity = false, RequireAvailable = false });
-        db.AssignmentConfigurations.Add(new AssignmentConfiguration { DepartmentId = null, MaxConcurrentCapacity = 10 });
+        db.AssignmentConfigurations.Add(new AssignmentConfiguration { TeamId = null, MaxConcurrentCapacity = 10 });
         var reasons = new LookupType { Id = Guid.NewGuid(), Code = "ESCALATION_REASON", Name = "Escalation Reason" };
         var assignReasons = new LookupType { Id = Guid.NewGuid(), Code = "ASSIGNMENT_REASON", Name = "Assignment Reason" };
         db.LookupTypes.AddRange(reasons, assignReasons);
@@ -85,7 +85,7 @@ public class CaseLifecycleTests : IDisposable
         var c = new Case
         {
             Id = Guid.NewGuid(), CaseNumber = "C-" + Guid.NewGuid().ToString("N")[..6], Title = "t", CustomerId = customer.Id,
-            DepartmentId = teamId ?? team.Id, OwnerId = ownerId, Status = status, Severity = "High", EscalationLevel = level,
+            TeamId = teamId ?? team.Id, OwnerId = ownerId, Status = status, Severity = "High", EscalationLevel = level,
             SlaStartTime = DateTime.UtcNow.AddHours(-1), InternalResolutionTargetMinutes = 600, ExternalResolutionTargetMinutes = 1200,
             CreatedAt = DateTime.UtcNow.AddHours(-1),
         };
@@ -328,14 +328,14 @@ public class CaseLifecycleTests : IDisposable
 
         var result = await Bulk(supervisor.Id).ReassignAsync(new BulkReassignRequestDto
         {
-            CaseIds = { open.Id, resolved.Id }, OrgDepartmentId = retail.Id, AssigneeUserId = outsider.Id, Reason = "Workload",
+            CaseIds = { open.Id, resolved.Id }, DepartmentId = retail.Id, AssigneeUserId = outsider.Id, Reason = "Workload",
         }, supervisor.Id);
 
         Assert.Equal(1, result.Succeeded);
         Assert.Equal(1, result.Failed);
         Assert.Contains("cannot be reassigned", result.Items.Single(i => i.CaseId == resolved.Id).Error);
         var moved = await db.Cases.AsNoTracking().FirstAsync(x => x.Id == open.Id);
-        Assert.Equal((outsider.Id, otherTeam.Id, (Guid?)retail.Id), (moved.OwnerId, moved.DepartmentId, moved.OrgDepartmentId));
+        Assert.Equal((outsider.Id, otherTeam.Id, (Guid?)retail.Id), (moved.OwnerId, moved.TeamId, moved.DepartmentId));
         Assert.True(await db.CaseEvents.AnyAsync(e => e.CaseId == open.Id && e.ActionType == "BULK_REASSIGN"));
     }
 
@@ -346,7 +346,7 @@ public class CaseLifecycleTests : IDisposable
 
         await Assert.ThrowsAsync<ArgumentException>(() => Bulk(supervisor.Id).ReassignAsync(new BulkReassignRequestDto
         {
-            CaseIds = { c.Id }, OrgDepartmentId = retail.Id, AssigneeUserId = agent.Id, Reason = "Workload",
+            CaseIds = { c.Id }, DepartmentId = retail.Id, AssigneeUserId = agent.Id, Reason = "Workload",
         }, supervisor.Id));
     }
 

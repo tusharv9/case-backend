@@ -18,7 +18,7 @@ public class AssignmentSettingsTests
     {
         var dto = new UpdateAssignmentSettingsDto
         {
-            CrossTeamMode = s.CrossTeamMode, CrossTeamDepartmentIds = s.CrossTeamDepartmentIds.ToList(), IncludeTeamLeads = s.IncludeTeamLeads,
+            CrossTeamMode = s.CrossTeamMode, CrossTeamIds = s.CrossTeamIds.ToList(), IncludeTeamLeads = s.IncludeTeamLeads,
             RequireAvailable = s.RequireAvailable, EnforceCapacity = s.EnforceCapacity, DefaultAlgorithm = s.DefaultAlgorithm,
             DefaultCapacity = s.DefaultCapacity, ExpectedVersion = s.Version,
         };
@@ -52,16 +52,16 @@ public class AssignmentSettingsTests
             Assert.Equal(2, initial.Teams.Single(t => t.Id == w.Loans).Capacity);
         }
 
-        await SaveAsync(w, d => { d.CrossTeamMode = CrossTeamModes.SelectedTeams; d.CrossTeamDepartmentIds = new() { w.Cards }; d.IncludeTeamLeads = false; d.DefaultCapacity = 7; });
+        await SaveAsync(w, d => { d.CrossTeamMode = CrossTeamModes.SelectedTeams; d.CrossTeamIds = new() { w.Cards }; d.IncludeTeamLeads = false; d.DefaultCapacity = 7; });
 
         await using var reload = w.Ctx();
         var saved = await Settings(w, reload).GetAsync();
         Assert.Equal(CrossTeamModes.SelectedTeams, saved.CrossTeamMode);
-        Assert.Equal(new[] { w.Cards }, saved.CrossTeamDepartmentIds);
+        Assert.Equal(new[] { w.Cards }, saved.CrossTeamIds);
         Assert.False(saved.IncludeTeamLeads);
         Assert.Equal(7, saved.DefaultCapacity);
         // The default routing strategy is the SAME global row automatic routing uses (no second store).
-        Assert.Equal(7, await reload.AssignmentConfigurations.Where(c => c.DepartmentId == null).Select(c => c.MaxConcurrentCapacity).SingleAsync());
+        Assert.Equal(7, await reload.AssignmentConfigurations.Where(c => c.TeamId == null).Select(c => c.MaxConcurrentCapacity).SingleAsync());
         Assert.True(await reload.CaseEvents.AnyAsync(e => e.EntityName == "Assign & Reassign settings"));
     }
 
@@ -87,7 +87,7 @@ public class AssignmentSettingsTests
         await using var w = await AssignmentEligibilityTests.World.CreateAsync();
         var caseId = await w.NewCaseAsync(w.Loans, w.L3);
 
-        await SaveAsync(w, d => { d.IncludeTeamLeads = false; d.MemberSelections = new() { new() { DepartmentId = w.Loans, UserId = w.L1, CanBeManuallyAssigned = false } }; });
+        await SaveAsync(w, d => { d.IncludeTeamLeads = false; d.MemberSelections = new() { new() { TeamId = w.Loans, UserId = w.L1, CanBeManuallyAssigned = false } }; });
 
         var list = (await ListAsync(w, caseId)).Candidates.ToDictionary(c => c.UserId);
         Assert.Equal("NotSelected", list[w.L1].IneligibleReason);
@@ -116,7 +116,7 @@ public class AssignmentSettingsTests
             Assert.Equal("NotTeamMember", (await Assert.ThrowsAsync<AssignmentNotAllowedException>(() => w.Cases(ctx).AssignCaseAsync(caseId, ToC1(), true))).ReasonCode);
 
         // Selected teams = Cards: offered as cross-team; without cases.assign the server refuses and the list says why.
-        await SaveAsync(w, d => { d.CrossTeamMode = CrossTeamModes.SelectedTeams; d.CrossTeamDepartmentIds = new() { w.Cards }; });
+        await SaveAsync(w, d => { d.CrossTeamMode = CrossTeamModes.SelectedTeams; d.CrossTeamIds = new() { w.Cards }; });
         var offered = (await ListAsync(w, caseId)).Candidates.Single(c => c.UserId == w.C1);
         Assert.True(offered.IsCrossTeam);
         Assert.Equal("Cards", offered.HomeTeamName);
@@ -128,7 +128,7 @@ public class AssignmentSettingsTests
             await w.Cases(ctx).AssignCaseAsync(caseId, ToC1(), callerMayAssignAnyCase: true);
         var assigned = await w.GetAsync(caseId);
         Assert.Equal(w.C1, assigned.OwnerId);
-        Assert.Equal(w.Loans, assigned.DepartmentId);   // cross-team assignment does not move the case (that is a transfer)
+        Assert.Equal(w.Loans, assigned.TeamId);   // cross-team assignment does not move the case (that is a transfer)
     }
 
     [PostgresFact]
@@ -155,11 +155,11 @@ public class AssignmentSettingsTests
     {
         await using var w = await AssignmentEligibilityTests.World.CreateAsync();
 
-        var none = await Assert.ThrowsAsync<FieldValidationException>(() => SaveAsync(w, d => { d.CrossTeamMode = CrossTeamModes.SelectedTeams; d.CrossTeamDepartmentIds = new(); }));
-        Assert.Equal("crossTeamDepartmentIds", none.Errors[0].Field);
-        await Assert.ThrowsAsync<FieldValidationException>(() => SaveAsync(w, d => { d.CrossTeamMode = CrossTeamModes.SelectedTeams; d.CrossTeamDepartmentIds = new() { w.Archived }; }));
+        var none = await Assert.ThrowsAsync<FieldValidationException>(() => SaveAsync(w, d => { d.CrossTeamMode = CrossTeamModes.SelectedTeams; d.CrossTeamIds = new(); }));
+        Assert.Equal("crossTeamIds", none.Errors[0].Field);
+        await Assert.ThrowsAsync<FieldValidationException>(() => SaveAsync(w, d => { d.CrossTeamMode = CrossTeamModes.SelectedTeams; d.CrossTeamIds = new() { w.Archived }; }));
         await Assert.ThrowsAsync<FieldValidationException>(() => SaveAsync(w, d => d.CrossTeamMode = "Everyone"));
-        await Assert.ThrowsAsync<FieldValidationException>(() => SaveAsync(w, d => d.MemberSelections = new() { new() { DepartmentId = w.Cards, UserId = w.L1, CanBeManuallyAssigned = false } }));
+        await Assert.ThrowsAsync<FieldValidationException>(() => SaveAsync(w, d => d.MemberSelections = new() { new() { TeamId = w.Cards, UserId = w.L1, CanBeManuallyAssigned = false } }));
 
         // An invalid routing strategy rolls back the whole save (the policy change with it).
         await Assert.ThrowsAsync<InvalidOperationException>(() => SaveAsync(w, d => { d.IncludeTeamLeads = false; d.DefaultAlgorithm = "Lottery"; }));

@@ -25,7 +25,7 @@ public class TeamDto
     /// <summary>True when the team has its own settings; false when it follows the global default.</summary>
     public bool HasOwnAssignmentSettings { get; set; }
 
-    /// <summary>The business departments this team serves (Configurable Settings → Teams → Departments).</summary>
+    /// <summary>The departments this team handles (each belongs to this team only).</summary>
     public List<TeamDepartmentDto> Departments { get; set; } = new();
 
     /// <summary>Values of the administrator-defined Create/Edit Team fields, by field key.</summary>
@@ -76,7 +76,7 @@ public class CreateTeamDto
     public List<TeamMemberInputDto>? Members { get; set; }
     public List<Guid>? MemberUserIds { get; set; }
 
-    /// <summary>The business departments the team serves; omit (null) for none.</summary>
+    /// <summary>The departments the team handles; omit (null) for none. A department already assigned to another team is refused.</summary>
     public List<Guid>? DepartmentIds { get; set; }
 
     /// <summary>Values of the administrator-defined form fields (Case Settings → Teams → Create Team Form), by field key.</summary>
@@ -97,7 +97,7 @@ public class UpdateTeamDto
     public List<TeamMemberInputDto>? Members { get; set; }
     public List<Guid>? MemberUserIds { get; set; }
 
-    /// <summary>The business departments the team serves. Null leaves them as they are (a hidden field never clears them).</summary>
+    /// <summary>The departments the team handles. Null leaves them as they are (a hidden field never clears them). A department assigned to another team is refused.</summary>
     public List<Guid>? DepartmentIds { get; set; }
 
     /// <summary>Custom field values to change, by key; a blank value clears one. Null (or a key left out) keeps what is stored.</summary>

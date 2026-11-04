@@ -9,8 +9,8 @@ public class RoutingRuleDto
     public bool IsActive { get; set; }
     public string ConditionsJson { get; set; } = "{}";
     public RuleConditionsDto Conditions { get; set; } = new();
-    public Guid TargetDepartmentId { get; set; }
-    public string TargetDepartmentName { get; set; } = string.Empty;
+    public Guid TargetTeamId { get; set; }
+    public string TargetTeamName { get; set; } = string.Empty;
     public string ActionDescription { get; set; } = string.Empty;
     public DateTime CreatedAt { get; set; }
 }
@@ -34,7 +34,7 @@ public class CreateRoutingRuleDto
     public int? EvaluationOrder { get; set; }
     public bool IsActive { get; set; } = true;
     public RuleConditionsDto? Conditions { get; set; }
-    public Guid TargetDepartmentId { get; set; }
+    public Guid TargetTeamId { get; set; }
     public string? ActionDescription { get; set; }
 }
 
@@ -45,13 +45,13 @@ public class UpdateRoutingRuleDto
     public int? EvaluationOrder { get; set; }
     public bool? IsActive { get; set; }
     public RuleConditionsDto? Conditions { get; set; }
-    public Guid? TargetDepartmentId { get; set; }
+    public Guid? TargetTeamId { get; set; }
     public string? ActionDescription { get; set; }
 }
 
 public class AssignmentConfigDto
 {
-    public Guid? DepartmentId { get; set; }                // null = the global default
+    public Guid? TeamId { get; set; }                // null = the global default
     public string Algorithm { get; set; } = string.Empty;  // RoundRobin | SkillBased | LeastOccupancy
     public int MaxConcurrentCapacity { get; set; }
 
@@ -73,8 +73,8 @@ public class ReorderRulesDto
 
 public class RoutingDecisionResult
 {
-    public Guid TargetDepartmentId { get; set; }
-    public string TargetDepartmentName { get; set; } = string.Empty;
+    public Guid TargetTeamId { get; set; }
+    public string TargetTeamName { get; set; } = string.Empty;
     public Guid? AssignedUserId { get; set; }
     public string? AssignedUserName { get; set; }
     public Guid? MatchedRuleId { get; set; }

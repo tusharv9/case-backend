@@ -436,12 +436,12 @@ public class EscalationRecipientTests
         var owner = U("Owner", "Agent");
         var ourLead = U("Ours", "Team Lead");
         var theirLead = U("Theirs", "Team Lead");
-        var team = new Department { Id = Guid.NewGuid(), Name = "Cards", Code = "CRD", OwnerId = ourLead.Id };
-        var other = new Department { Id = Guid.NewGuid(), Name = "Loans", Code = "LNS", OwnerId = theirLead.Id };
+        var team = new Team { Id = Guid.NewGuid(), Name = "Cards", Code = "CRD", OwnerId = ourLead.Id };
+        var other = new Team { Id = Guid.NewGuid(), Name = "Loans", Code = "LNS", OwnerId = theirLead.Id };
         db.AddRange(owner, ourLead, theirLead, team, other);
         await db.SaveChangesAsync();
 
-        var c = new Case { OwnerId = owner.Id, DepartmentId = team.Id };
+        var c = new Case { OwnerId = owner.Id, TeamId = team.Id };
         var people = await Service(db).RecipientsAsync(c, Level("team lead"), owner.Id);
 
         Assert.Equal(new[] { ourLead.Id }, people.Select(p => p.User.Id));
@@ -455,16 +455,16 @@ public class EscalationRecipientTests
         var owner = U("Owner", "Agent");
         var deptSupervisor = U("Dept", "Supervisor");
         var elsewhere = U("Elsewhere", "Supervisor");
-        var caseTeam = new Department { Id = Guid.NewGuid(), Name = "Cards", Code = "CRD" };
-        var servingTeam = new Department { Id = Guid.NewGuid(), Name = "Disputes", Code = "DSP", IsActive = true };
-        var department = new OrgDepartment { Id = Guid.NewGuid(), Name = "Retail", Code = "RTL" };
+        var caseTeam = new Team { Id = Guid.NewGuid(), Name = "Cards", Code = "CRD" };
+        var servingTeam = new Team { Id = Guid.NewGuid(), Name = "Disputes", Code = "DSP", IsActive = true };
+        var department = new Department { Id = Guid.NewGuid(), Name = "Retail", Code = "RTL" };
         db.AddRange(owner, deptSupervisor, elsewhere, caseTeam, servingTeam, department);
-        db.TeamDepartments.Add(new TeamDepartment { TeamId = servingTeam.Id, OrgDepartmentId = department.Id });
-        db.TeamMembers.Add(new TeamMember { DepartmentId = servingTeam.Id, UserId = deptSupervisor.Id });
+        db.TeamDepartments.Add(new TeamDepartment { TeamId = servingTeam.Id, DepartmentId = department.Id });
+        db.TeamMembers.Add(new TeamMember { TeamId = servingTeam.Id, UserId = deptSupervisor.Id });
         await db.SaveChangesAsync();
 
-        var inDepartment = await Service(db).RecipientsAsync(new Case { OwnerId = owner.Id, DepartmentId = caseTeam.Id, OrgDepartmentId = department.Id }, Level("Supervisor"), owner.Id);
-        var anywhere = await Service(db).RecipientsAsync(new Case { OwnerId = owner.Id, DepartmentId = caseTeam.Id }, Level("Supervisor"), owner.Id);
+        var inDepartment = await Service(db).RecipientsAsync(new Case { OwnerId = owner.Id, TeamId = caseTeam.Id, DepartmentId = department.Id }, Level("Supervisor"), owner.Id);
+        var anywhere = await Service(db).RecipientsAsync(new Case { OwnerId = owner.Id, TeamId = caseTeam.Id }, Level("Supervisor"), owner.Id);
 
         Assert.Equal(new[] { deptSupervisor.Id }, inDepartment.Select(p => p.User.Id));
         Assert.Equal(new[] { deptSupervisor.Id, elsewhere.Id }.OrderBy(x => x), anywhere.Select(p => p.User.Id).OrderBy(x => x));
@@ -481,7 +481,7 @@ public class EscalationRecipientTests
         db.Users.AddRange(owner, me, gone, other);
         await db.SaveChangesAsync();
 
-        var people = await Service(db).RecipientsAsync(new Case { OwnerId = owner.Id, DepartmentId = Guid.NewGuid() }, Level("Manager"), me.Id);
+        var people = await Service(db).RecipientsAsync(new Case { OwnerId = owner.Id, TeamId = Guid.NewGuid() }, Level("Manager"), me.Id);
 
         Assert.Equal(new[] { other.Id }, people.Select(p => p.User.Id));
     }
@@ -512,12 +512,12 @@ public class SlaMonitorTests
                 setup.BusinessCalendarSettings.ExecuteUpdate(s => s.SetProperty(x => x.TimeZoneId, "UTC"));
 
                 w.Dept = Guid.NewGuid(); w.Owner = Guid.NewGuid(); w.Lead = Guid.NewGuid(); w.Supervisor = Guid.NewGuid();
-                setup.Departments.Add(new Department { Id = w.Dept, Name = "Support", Code = "SUP", CreatedAt = DateTime.UtcNow });
+                setup.Teams.Add(new Team { Id = w.Dept, Name = "Support", Code = "SUP", CreatedAt = DateTime.UtcNow });
                 await setup.SaveChangesAsync();
                 setup.Users.AddRange(
-                    new User { Id = w.Owner, Name = "Owner", Email = "o@x.test", Role = "Agent", DepartmentId = w.Dept, CreatedAt = DateTime.UtcNow },
-                    new User { Id = w.Lead, Name = "Lead", Email = "l@x.test", Role = "Team Lead", DepartmentId = w.Dept, CreatedAt = DateTime.UtcNow },
-                    new User { Id = w.Supervisor, Name = "Sup", Email = "s@x.test", Role = "CX Supervisor", DepartmentId = w.Dept, CreatedAt = DateTime.UtcNow });
+                    new User { Id = w.Owner, Name = "Owner", Email = "o@x.test", Role = "Agent", CreatedAt = DateTime.UtcNow },
+                    new User { Id = w.Lead, Name = "Lead", Email = "l@x.test", Role = "Team Lead", CreatedAt = DateTime.UtcNow },
+                    new User { Id = w.Supervisor, Name = "Sup", Email = "s@x.test", Role = "CX Supervisor", CreatedAt = DateTime.UtcNow });
                 await setup.SaveChangesAsync();
 
                 // Escalation levels are never seeded (each names a Host role an administrator chooses).
@@ -550,7 +550,7 @@ public class SlaMonitorTests
             var start = DateTime.UtcNow.AddMinutes(-ageMinutes);
             var c = new Case
             {
-                Id = Guid.NewGuid(), CaseNumber = "T-" + Guid.NewGuid().ToString("N")[..8], Title = "t", CustomerId = customer.Id, DepartmentId = Dept, OwnerId = Owner,
+                Id = Guid.NewGuid(), CaseNumber = "T-" + Guid.NewGuid().ToString("N")[..8], Title = "t", CustomerId = customer.Id, TeamId = Dept, OwnerId = Owner,
                 Status = status, Severity = "High", SlaStartTime = start, SlaPausedAt = pausedAt,
                 FirstResponseTargetMinutes = 30, InternalResolutionTargetMinutes = 100, ExternalResolutionTargetMinutes = 200,
                 FirstResponseActualAt = start.AddMinutes(1), FirstResponseStatus = "Met", EscalationLevel = 0, CreatedAt = start,

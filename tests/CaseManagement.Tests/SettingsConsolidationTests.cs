@@ -32,7 +32,7 @@ public class SettingsConsolidationTests
         var c = new Case
         {
             Id = Guid.NewGuid(), CaseNumber = "T-" + Guid.NewGuid().ToString("N")[..8], Title = "t", CaseType = caseType, Severity = "High",
-            Subcategory = subcategory, DepartmentId = department, OwnerId = w.Actor, CustomerId = customer.Id, Status = CaseStatus.Open,
+            Subcategory = subcategory, TeamId = department, OwnerId = w.Actor, CustomerId = customer.Id, Status = CaseStatus.Open,
             SlaStartTime = DateTime.UtcNow, CreatedAt = DateTime.UtcNow, FirstResponseStatus = "Pending",
         };
         await using var ctx = w.Db.NewContext();
@@ -103,7 +103,7 @@ public class SettingsConsolidationTests
         var caseId = await CaseAsync(w, w.DeptA, "Complaint", "Fraud");
         await using (var ctx = w.Db.NewContext())
         {
-            ctx.RoutingRules.Add(new RoutingRule { Id = Guid.NewGuid(), Name = "Complaints", ConditionsJson = "{\"matchType\":\"ALL\",\"caseType\":\"Complaint\"}", TargetDepartmentId = w.DeptA, CreatedAt = DateTime.UtcNow });
+            ctx.RoutingRules.Add(new RoutingRule { Id = Guid.NewGuid(), Name = "Complaints", ConditionsJson = "{\"matchType\":\"ALL\",\"caseType\":\"Complaint\"}", TargetTeamId = w.DeptA, CreatedAt = DateTime.UtcNow });
             ctx.SkillRules.Add(new SkillRule { Id = Guid.NewGuid(), SkillName = "Care", MatchField = "CaseType", MatchType = "Equals", MatchValue = "Complaint", IsActive = true, CreatedAt = DateTime.UtcNow });
             await ctx.SaveChangesAsync();
         }
@@ -123,8 +123,8 @@ public class SettingsConsolidationTests
         var caseB = await CaseAsync(w, w.DeptB, "Complaint", "Fraud");
         await using (var ctx = w.Db.NewContext())
         {
-            ctx.RoutingRules.Add(new RoutingRule { Id = Guid.NewGuid(), Name = "Fraud cases", ConditionsJson = "{\"matchType\":\"ALL\",\"category\":\"Fraud\"}", TargetDepartmentId = w.DeptB, CreatedAt = DateTime.UtcNow });
-            ctx.RoutingRules.Add(new RoutingRule { Id = Guid.NewGuid(), Name = "Payments", ConditionsJson = "{\"matchType\":\"ALL\",\"category\":\"Payment Issue\"}", TargetDepartmentId = w.DeptA, CreatedAt = DateTime.UtcNow });
+            ctx.RoutingRules.Add(new RoutingRule { Id = Guid.NewGuid(), Name = "Fraud cases", ConditionsJson = "{\"matchType\":\"ALL\",\"category\":\"Fraud\"}", TargetTeamId = w.DeptB, CreatedAt = DateTime.UtcNow });
+            ctx.RoutingRules.Add(new RoutingRule { Id = Guid.NewGuid(), Name = "Payments", ConditionsJson = "{\"matchType\":\"ALL\",\"category\":\"Payment Issue\"}", TargetTeamId = w.DeptA, CreatedAt = DateTime.UtcNow });
             await ctx.SaveChangesAsync();
         }
 

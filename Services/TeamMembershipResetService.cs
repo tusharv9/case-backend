@@ -57,12 +57,12 @@ public sealed class TeamMembershipResetService(AppDbContext context)
             var names = users.ToDictionary(u => u.Id, u => u.Name);
 
             var memberships = await context.TeamMembers.Where(m => nonHostIds.Contains(m.UserId)).ToListAsync(ct);
-            var teams = await context.Departments.OrderBy(d => d.Name).ToListAsync(ct);
+            var teams = await context.Teams.OrderBy(d => d.Name).ToListAsync(ct);
             var pointers = await context.TeamAssignmentPointers.Where(p => nonHostIds.Contains(p.LastAssignedUserId)).ToListAsync(ct);
 
             foreach (var team in teams)
             {
-                var removed = memberships.Where(m => m.DepartmentId == team.Id).Select(m => names[m.UserId]).OrderBy(n => n).ToList();
+                var removed = memberships.Where(m => m.TeamId == team.Id).Select(m => names[m.UserId]).OrderBy(n => n).ToList();
                 var lead = team.OwnerId is { } ownerId && nonHostIds.Contains(ownerId) ? names[ownerId] : null;
                 if (removed.Count == 0 && lead == null) continue;
                 report.Teams.Add(new TeamChange(team.Name, removed, lead));

@@ -31,7 +31,7 @@ public class RoutingEngineService : IRoutingEngineService
     {
         var rules = await _context.RoutingRules
             .AsNoTracking()
-            .Include(r => r.TargetDepartment)
+            .Include(r => r.TargetTeam)
             .OrderBy(r => r.EvaluationOrder)
             .ToListAsync(ct);
 
@@ -56,8 +56,8 @@ public class RoutingEngineService : IRoutingEngineService
                 IsActive = r.IsActive,
                 ConditionsJson = r.ConditionsJson,
                 Conditions = conds,
-                TargetDepartmentId = r.TargetDepartmentId,
-                TargetDepartmentName = r.TargetDepartment?.Name ?? "Unassigned Team",
+                TargetTeamId = r.TargetTeamId,
+                TargetTeamName = r.TargetTeam?.Name ?? "Unassigned Team",
                 ActionDescription = r.ActionDescription,
                 CreatedAt = r.CreatedAt
             };
@@ -75,7 +75,7 @@ public class RoutingEngineService : IRoutingEngineService
         if (string.IsNullOrWhiteSpace(dto.Name))
             throw new InvalidOperationException("Rule name is required.");
 
-        await ValidateRuleAsync(dto.Conditions, dto.TargetDepartmentId, ct);
+        await ValidateRuleAsync(dto.Conditions, dto.TargetTeamId, ct);
         var count = await _context.RoutingRules.CountAsync(ct);
         var order = dto.EvaluationOrder.HasValue && dto.EvaluationOrder.Value > 0 ? dto.EvaluationOrder.Value : count + 1;
 
@@ -89,7 +89,7 @@ public class RoutingEngineService : IRoutingEngineService
             EvaluationOrder = order,
             IsActive = dto.IsActive,
             ConditionsJson = condsJson,
-            TargetDepartmentId = dto.TargetDepartmentId,
+            TargetTeamId = dto.TargetTeamId,
             ActionDescription = dto.ActionDescription?.Trim() ?? $"Route to team",
             CreatedAt = DateTime.UtcNow
         };
@@ -107,13 +107,13 @@ public class RoutingEngineService : IRoutingEngineService
         if (rule == null) throw new KeyNotFoundException("Routing rule not found.");
 
         var oldState = JsonSerializer.Serialize(new { rule.Name, rule.IsActive, rule.EvaluationOrder, rule.ConditionsJson });
-        await ValidateRuleAsync(dto.Conditions, dto.TargetDepartmentId, ct);
+        await ValidateRuleAsync(dto.Conditions, dto.TargetTeamId, ct);
 
         if (!string.IsNullOrWhiteSpace(dto.Name)) rule.Name = dto.Name.Trim();
         if (dto.Description != null) rule.Description = dto.Description.Trim();
         if (dto.EvaluationOrder.HasValue) rule.EvaluationOrder = dto.EvaluationOrder.Value;
         if (dto.IsActive.HasValue) rule.IsActive = dto.IsActive.Value;
-        if (dto.TargetDepartmentId.HasValue) rule.TargetDepartmentId = dto.TargetDepartmentId.Value;
+        if (dto.TargetTeamId.HasValue) rule.TargetTeamId = dto.TargetTeamId.Value;
         if (dto.ActionDescription != null) rule.ActionDescription = dto.ActionDescription.Trim();
         if (dto.Conditions != null) rule.ConditionsJson = JsonSerializer.Serialize(dto.Conditions);
 
@@ -178,7 +178,7 @@ public class RoutingEngineService : IRoutingEngineService
 
     private static AssignmentConfigDto ToDto(AssignmentConfiguration c, bool isOverride) => new()
     {
-        DepartmentId = c.DepartmentId,
+        TeamId = c.TeamId,
         Algorithm = c.Algorithm,
         MaxConcurrentCapacity = c.MaxConcurrentCapacity,
         IsTeamOverride = isOverride,
@@ -193,7 +193,7 @@ public class RoutingEngineService : IRoutingEngineService
     public async Task<AssignmentConfigDto> GetAssignmentConfigAsync(Guid? departmentId = null, CancellationToken ct = default)
     {
         var config = await ResolveConfigAsync(departmentId, ct);
-        return ToDto(config, departmentId.HasValue && config.DepartmentId == departmentId);
+        return ToDto(config, departmentId.HasValue && config.TeamId == departmentId);
     }
 
     public async Task<AssignmentConfigDto> UpdateAssignmentConfigAsync(UpdateAssignmentConfigDto dto, Guid actingUserId, Guid? departmentId = null, CancellationToken ct = default)
@@ -206,11 +206,11 @@ public class RoutingEngineService : IRoutingEngineService
         string scope = "all teams";
         if (departmentId.HasValue)
         {
-            scope = (await _context.Departments.AsNoTracking().Where(d => d.Id == departmentId).Select(d => d.Name).FirstOrDefaultAsync(ct))
+            scope = (await _context.Teams.AsNoTracking().Where(d => d.Id == departmentId).Select(d => d.Name).FirstOrDefaultAsync(ct))
                     ?? throw new KeyNotFoundException("Team not found.");
         }
 
-        var config = await _context.AssignmentConfigurations.FirstOrDefaultAsync(c => c.DepartmentId == departmentId, ct);
+        var config = await _context.AssignmentConfigurations.FirstOrDefaultAsync(c => c.TeamId == departmentId, ct);
         if (config == null)
         {
             // A team's first override starts from the current global settings; the global row is never created here.
@@ -218,7 +218,7 @@ public class RoutingEngineService : IRoutingEngineService
             config = new AssignmentConfiguration
             {
                 Id = Guid.NewGuid(),
-                DepartmentId = departmentId,
+                TeamId = departmentId,
                 Algorithm = algo,
                 MaxConcurrentCapacity = dto.MaxConcurrentCapacity ?? basis?.MaxConcurrentCapacity
                     ?? throw new InvalidOperationException("Capacity is required."),
@@ -243,7 +243,7 @@ public class RoutingEngineService : IRoutingEngineService
 
     public async Task ClearTeamAssignmentConfigAsync(Guid departmentId, Guid actingUserId, CancellationToken ct = default)
     {
-        var own = await _context.AssignmentConfigurations.FirstOrDefaultAsync(c => c.DepartmentId == departmentId, ct);
+        var own = await _context.AssignmentConfigurations.FirstOrDefaultAsync(c => c.TeamId == departmentId, ct);
         if (own == null) return;
         _context.AssignmentConfigurations.Remove(own);
         await RecordAuditLogAsync("CONFIG_UPDATED", "AssignmentConfiguration", "A team now follows the global assignment settings.", own.Algorithm, null, actingUserId);
@@ -260,7 +260,7 @@ public class RoutingEngineService : IRoutingEngineService
         return new RoutingVocabularyDto
         {
             // Business departments, for the "Department" condition (the destination is a team, chosen from the team list).
-            Departments = await _context.OrgDepartments.AsNoTracking().Where(d => d.IsActive).OrderBy(d => d.DisplayOrder).ThenBy(d => d.Name)
+            Departments = await _context.Departments.AsNoTracking().Where(d => d.IsActive).OrderBy(d => d.DisplayOrder).ThenBy(d => d.Name)
                 .Select(d => new NamedOptionDto { Id = d.Id, Name = d.Name }).ToListAsync(ct),
             SubCategories = await _context.DepartmentSubCategories.AsNoTracking().Where(s => s.IsActive).Select(s => s.Name).Distinct().OrderBy(n => n).ToListAsync(ct),
             CaseTypes = await _context.CaseTypeConfigs.AsNoTracking().Where(t => t.IsActive).OrderBy(t => t.Name).Select(t => t.Name).ToListAsync(ct),
@@ -277,7 +277,7 @@ public class RoutingEngineService : IRoutingEngineService
     {
         if (targetDepartmentId.HasValue)
         {
-            var target = await _context.Departments.AsNoTracking().FirstOrDefaultAsync(d => d.Id == targetDepartmentId.Value, ct)
+            var target = await _context.Teams.AsNoTracking().FirstOrDefaultAsync(d => d.Id == targetDepartmentId.Value, ct)
                          ?? throw new InvalidOperationException("The destination team does not exist.");
             if (!target.IsActive) throw new InvalidOperationException($"'{target.Name}' is inactive, so a rule cannot route to it.");
         }
@@ -295,19 +295,27 @@ public class RoutingEngineService : IRoutingEngineService
         }
         Check("department", conds.Department, vocab.Departments.Select(d => d.Name));
 
-        // A rule that routes ONE department's cases (the department condition must hold: ALL, or the only condition) may only
-        // send them to a team that serves that department; otherwise it could never apply.
+        // A case only ever goes to the team its department is assigned to, so a rule can only send cases to a team that handles
+        // departments — and, when the rule is about one department (its condition must hold), to that department's team.
         var onlyCondition = new[] { conds.Category, conds.CaseType, conds.Priority, conds.Channel, conds.CustomerSegment }.All(string.IsNullOrWhiteSpace);
         var departmentMustHold = !string.IsNullOrWhiteSpace(conds.Department)
                                  && (onlyCondition || !string.Equals(conds.MatchType, "ANY", StringComparison.OrdinalIgnoreCase));
-        if (departmentMustHold && targetDepartmentId.HasValue)
+        if (targetDepartmentId.HasValue)
         {
-            var dept = vocab.Departments.First(d => string.Equals(d.Name, conds.Department!.Trim(), StringComparison.OrdinalIgnoreCase));
-            if (!await DepartmentTeams.ServesAsync(_context, targetDepartmentId.Value, dept.Id, ct))
+            var teamName = await _context.Teams.AsNoTracking().Where(t => t.Id == targetDepartmentId.Value).Select(t => t.Name).FirstOrDefaultAsync(ct);
+            if (teamName != null && departmentMustHold)
             {
-                var teamName = await _context.Departments.AsNoTracking().Where(t => t.Id == targetDepartmentId.Value).Select(t => t.Name).FirstAsync(ct);
-                throw new InvalidOperationException($"'{teamName}' does not serve {dept.Name}, so this rule could never send a case there. Choose a team that serves {dept.Name}, or link the team to it under Teams.");
+                var dept = vocab.Departments.First(d => string.Equals(d.Name, conds.Department!.Trim(), StringComparison.OrdinalIgnoreCase));
+                if (!await DepartmentTeams.HandlesAsync(_context, targetDepartmentId.Value, dept.Id, ct))
+                {
+                    var owner = await DepartmentTeams.TeamOfAsync(_context, dept.Id, ct);
+                    throw new InvalidOperationException(owner == null
+                        ? $"{dept.Name} is not assigned to any team, so this rule could never send a case anywhere. Assign {dept.Name} to a team first."
+                        : $"{dept.Name} is assigned to '{owner.Name}', so its cases can only go to '{owner.Name}'. Choose '{owner.Name}' as the destination.");
+                }
             }
+            else if (teamName != null && !await _context.TeamDepartments.AnyAsync(l => l.TeamId == targetDepartmentId.Value, ct))
+                throw new InvalidOperationException($"'{teamName}' handles no departments, so no case could ever be sent to it. Assign departments to '{teamName}' first.");
         }
         Check("sub-category", conds.Category, vocab.SubCategories);
         Check("case type", conds.CaseType, vocab.CaseTypes);
@@ -321,48 +329,43 @@ public class RoutingEngineService : IRoutingEngineService
     {
         var result = new RoutingDecisionResult();
 
-        // STAGE 1 — the first active rule (in order) that matches decides the team. Rules match on the case's business
-        // department; a department only says which teams MAY serve it, so the rule (not the link) picks the team.
-        var departments = await Cached("routing:departments", () => _context.Departments.AsNoTracking().ToDictionaryAsync(d => d.Id, ct));
-        var orgDepartments = await Cached("routing:org-departments", () => _context.OrgDepartments.AsNoTracking().ToDictionaryAsync(d => d.Id, ct));
-        var links = await Cached("routing:team-departments", () => _context.TeamDepartments.AsNoTracking().Select(l => new TeamDepartment { TeamId = l.TeamId, OrgDepartmentId = l.OrgDepartmentId, IsDefault = l.IsDefault }).ToListAsync(ct));
+        // STAGE 1 — the team. A case belongs to the team its department is assigned to (set when the case was validated); no rule
+        // can send it to a team that does not handle its department, and there is no default or fallback team. The first active
+        // rule that matches is recorded when it agrees; one that names another team is skipped, and the log says why.
+        var departments = await Cached("routing:departments", () => _context.Teams.AsNoTracking().ToDictionaryAsync(d => d.Id, ct));
+        var allDepartments = await Cached("routing:org-departments", () => _context.Departments.AsNoTracking().ToDictionaryAsync(d => d.Id, ct));
         var activeRules = await Cached("routing:active-rules", () => _context.RoutingRules.AsNoTracking().Where(r => r.IsActive).OrderBy(r => r.EvaluationOrder).ToListAsync(ct));
 
-        OrgDepartment? caseDepartment = newCase.OrgDepartmentId is Guid od && orgDepartments.TryGetValue(od, out var d) ? d : null;
-        bool Serves(Guid teamId) => caseDepartment == null || links.Any(l => l.TeamId == teamId && l.OrgDepartmentId == caseDepartment.Id);
-        // A rule that names a department sends that department's cases only to a team serving it. A rule with no department
-        // condition (a cross-department lane, e.g. "Premier + Critical") may send any case to any active team.
-        bool MayReceive(RoutingRule rule, Guid teamId) => !NamesDepartment(rule) || Serves(teamId);
+        Department? caseDepartment = newCase.DepartmentId is Guid od && allDepartments.TryGetValue(od, out var d) ? d : null;
+        if (caseDepartment != null)
+        {
+            var mapped = await DepartmentTeams.TeamOfAsync(_context, caseDepartment.Id, ct)
+                         ?? throw new FieldValidationException(new[] { new FieldError("departmentId", DepartmentTeams.NoTeamMessage(caseDepartment.Name)) });
+            if (!mapped.IsActive)
+                throw new FieldValidationException(new[] { new FieldError("departmentId", DepartmentTeams.InactiveTeamMessage(caseDepartment.Name, mapped.Name)) });
+            newCase.TeamId = mapped.Id;
+        }
+
+        Team target = departments.TryGetValue(newCase.TeamId, out var own) && own.IsActive
+            ? own
+            : throw new InvalidOperationException("The team this case belongs to is missing or inactive. Assign the case's department to an active team.");
 
         RoutingRule? matchedRule = activeRules.FirstOrDefault(r => EvaluateRuleMatches(r, newCase, customer, departments, caseDepartment));
-
-        Department target;
-        if (matchedRule != null && departments.TryGetValue(matchedRule.TargetDepartmentId, out var ruleTarget) && ruleTarget.IsActive && MayReceive(matchedRule, ruleTarget.Id))
+        if (matchedRule != null && matchedRule.TargetTeamId == target.Id)
         {
-            target = ruleTarget;
             result.MatchedRuleId = matchedRule.Id;
             result.MatchedRuleName = matchedRule.Name;
         }
         else
         {
-            // No (usable) rule: the case goes to the team it started with — the one an older caller named, or its department's
-            // default (or only) team. There is no hidden "default team" beyond that.
-            var why = matchedRule == null ? null
-                : !departments.TryGetValue(matchedRule.TargetDepartmentId, out var t) || !t.IsActive ? "destination team inactive"
-                : $"'{t.Name}' does not serve {caseDepartment?.Name}";
-            if (newCase.DepartmentId == Guid.Empty && caseDepartment != null)
-                newCase.DepartmentId = (await DepartmentTeams.ResolveFallbackAsync(_context, caseDepartment.Id, ct)).TeamId ?? Guid.Empty;
-            if (newCase.DepartmentId == Guid.Empty && caseDepartment != null)
-                throw new FieldValidationException(new[] { new FieldError("departmentId", CaseService.NoTeamMessage(caseDepartment.Name)) });
-            target = departments.TryGetValue(newCase.DepartmentId, out var own) && own.IsActive
-                ? own
-                : throw new InvalidOperationException("The team this case was opened for is missing or inactive, and no routing rule applies. Activate the team or add a routing rule.");
-            result.MatchedRuleName = matchedRule != null ? $"{matchedRule.Name} ({why} — kept with the department's team)" : "No rule matched — kept with the department's team";
+            result.MatchedRuleName = matchedRule != null
+                ? $"{matchedRule.Name} (skipped: it names another team, and {caseDepartment?.Name ?? "this department"} is assigned to '{target.Name}')"
+                : $"No rule matched — {caseDepartment?.Name ?? "the case"} is assigned to '{target.Name}'";
         }
 
-        result.TargetDepartmentId = target.Id;
-        result.TargetDepartmentName = target.Name;
-        newCase.DepartmentId = target.Id;
+        result.TargetTeamId = target.Id;
+        result.TargetTeamName = target.Name;
+        newCase.TeamId = target.Id;
 
         var ruleText = matchedRule != null && result.MatchedRuleId != null ? $"rule '{matchedRule.Name}'" : "no matching rule";
         await AssignWithinTeamAsync(newCase, customer, target, result, ruleText, ct);
@@ -371,12 +374,12 @@ public class RoutingEngineService : IRoutingEngineService
 
     public async Task<RoutingDecisionResult> AssignWithinTeamAsync(Case c, Customer? customer, Guid departmentId, string via, CancellationToken ct = default)
     {
-        var target = await _context.Departments.AsNoTracking().FirstOrDefaultAsync(d => d.Id == departmentId, ct)
+        var target = await _context.Teams.AsNoTracking().FirstOrDefaultAsync(d => d.Id == departmentId, ct)
                      ?? throw new KeyNotFoundException("Target department not found.");
         if (!target.IsActive)
             throw new AssignmentNotAllowedException(nameof(IneligibilityReason.TeamInactive), $"'{target.Name}' is inactive and cannot receive cases.");
 
-        var result = new RoutingDecisionResult { TargetDepartmentId = target.Id, TargetDepartmentName = target.Name };
+        var result = new RoutingDecisionResult { TargetTeamId = target.Id, TargetTeamName = target.Name };
         await AssignWithinTeamAsync(c, customer, target, result, via, ct);
         return result;
     }
@@ -385,7 +388,7 @@ public class RoutingEngineService : IRoutingEngineService
     /// STAGE 2 — pick an agent of <paramref name="target"/> with its configured algorithm, from the eligible pool; if nobody can take
     /// the case its lead holds it (when the team has an active lead), otherwise the owner is left unchanged and <see cref="RoutingDecisionResult.AssignedUserId"/> stays null.
     /// </summary>
-    private async Task AssignWithinTeamAsync(Case newCase, Customer? customer, Department target, RoutingDecisionResult result, string ruleText, CancellationToken ct)
+    private async Task AssignWithinTeamAsync(Case newCase, Customer? customer, Team target, RoutingDecisionResult result, string ruleText, CancellationToken ct)
     {
         // Assignments to one team are serialised so two simultaneous cases cannot both see the same
         // "least loaded" agent or the same round-robin position; the lock lasts until the surrounding transaction commits.
@@ -446,7 +449,7 @@ public class RoutingEngineService : IRoutingEngineService
         }
     }
 
-    private bool EvaluateRuleMatches(RoutingRule rule, Case c, Customer? cust, IReadOnlyDictionary<Guid, Department> departments, OrgDepartment? caseDepartment)
+    private bool EvaluateRuleMatches(RoutingRule rule, Case c, Customer? cust, IReadOnlyDictionary<Guid, Team> departments, Department? caseDepartment)
     {
         RuleConditionsDto conds;
         try
@@ -468,7 +471,7 @@ public class RoutingEngineService : IRoutingEngineService
                 matches.Add(Same(caseDepartment.Name, conds.Department) || Same(caseDepartment.Code, conds.Department));
             else
             {
-                departments.TryGetValue(c.DepartmentId, out var team);
+                departments.TryGetValue(c.TeamId, out var team);
                 matches.Add(team != null && (Same(team.Name, conds.Department) || Same(team.Code, conds.Department)));
             }
         }

@@ -4,6 +4,7 @@ using CaseManagement.Api.Data;
 using CaseManagement.Api.DTOs;
 using CaseManagement.Api.HostIntegration;
 using CaseManagement.Api.Models;
+using CaseManagement.Api.Services.Teams;
 using CaseManagement.Api.Repositories;
 using Microsoft.EntityFrameworkCore;
 
@@ -12,8 +13,8 @@ public interface IBulkCaseService
     /// <summary>One page of the cases the caller may reassign or resolve in bulk.</summary>
     Task<PagedResponseDto<BulkCaseRowDto>> SearchAsync(BulkCaseQueryDto query, CancellationToken ct = default);
 
-    /// <summary>Who can receive cases of <paramref name="orgDepartmentId"/>: the leads and members of the teams serving it.</summary>
-    Task<IReadOnlyList<BulkAssigneeDto>> AssigneesAsync(Guid orgDepartmentId, CancellationToken ct = default);
+    /// <summary>Who can receive cases of <paramref name="departmentId"/>: the lead and members of the team it is assigned to.</summary>
+    Task<IReadOnlyList<BulkAssigneeDto>> AssigneesAsync(Guid departmentId, CancellationToken ct = default);
 
     Task<BulkResultDto> ReassignAsync(BulkReassignRequestDto request, Guid actorId, CancellationToken ct = default);
     Task<BulkResultDto> ResolveAsync(BulkResolveRequestDto request, Guid actorId, CancellationToken ct = default);
@@ -27,7 +28,7 @@ public interface IBulkCaseService
 /// cannot be changed (not visible to the caller, already resolved, assignee at capacity…) is reported with its reason and
 /// never stops — or undoes — the others. Nothing is skipped silently: the result lists every case asked for.</para>
 /// <para><b>Department first.</b> A team can serve several departments and a department several teams, so the target
-/// department is chosen explicitly; the assignee must lead or belong to a team serving it, and the case moves to that
+/// department is chosen explicitly; the assignee must lead or belong to the team it is assigned to, and the case moves to that
 /// team and that department together.</para>
 /// <para><b>No second rule book.</b> Bulk Resolve runs the single-case resolution (<see cref="ICaseService.ResolveCaseAsync(Guid, ResolveCaseDto, bool)"/>)
 /// for each case, and Bulk Reassign the same assignment eligibility (capacity, manual-assignment flags) as Assign.</para>
@@ -49,8 +50,8 @@ public class BulkCaseService(
 
         if (!string.IsNullOrWhiteSpace(query.Status) && Enum.TryParse<CaseStatus>(query.Status.Replace(" ", ""), true, out var status))
             q = q.Where(c => c.Status == status);
-        if (query.OrgDepartmentId.HasValue) q = q.Where(c => c.OrgDepartmentId == query.OrgDepartmentId.Value);
-        if (query.TeamId.HasValue) q = q.Where(c => c.DepartmentId == query.TeamId.Value);
+        if (query.DepartmentId.HasValue) q = q.Where(c => c.DepartmentId == query.DepartmentId.Value);
+        if (query.TeamId.HasValue) q = q.Where(c => c.TeamId == query.TeamId.Value);
         if (!string.IsNullOrWhiteSpace(query.Search))
         {
             var pattern = SqlSearchPattern.Contains(query.Search.Trim());
@@ -65,8 +66,8 @@ public class BulkCaseService(
             .Select(c => new BulkCaseRowDto
             {
                 Id = c.Id, CaseNumber = c.CaseNumber, Title = c.Title, Status = c.Status.ToString(), Priority = c.Severity,
-                OrgDepartmentId = c.OrgDepartmentId, DepartmentName = c.OrgDepartment != null ? c.OrgDepartment.Name : null,
-                TeamId = c.DepartmentId, TeamName = c.Department.Name, OwnerId = c.OwnerId, OwnerName = c.Owner.Name,
+                DepartmentId = c.DepartmentId, DepartmentName = c.Department != null ? c.Department.Name : null,
+                TeamId = c.TeamId, TeamName = c.Team.Name, OwnerId = c.OwnerId, OwnerName = c.Owner.Name,
                 EscalationLevel = c.EscalationLevel, CreatedAt = c.CreatedAt,
             })
             .ToListAsync(ct);
@@ -75,14 +76,14 @@ public class BulkCaseService(
         return new PagedResponseDto<BulkCaseRowDto> { Items = items, TotalCount = total, Page = page, PageSize = pageSize };
     }
 
-    public async Task<IReadOnlyList<BulkAssigneeDto>> AssigneesAsync(Guid orgDepartmentId, CancellationToken ct = default)
+    public async Task<IReadOnlyList<BulkAssigneeDto>> AssigneesAsync(Guid departmentId, CancellationToken ct = default)
     {
-        var teams = await ServingTeamsAsync(orgDepartmentId, ct);
+        var teams = await AssignedTeamAsync(departmentId, ct);
         var teamIds = teams.Select(t => t.Id).ToList();
 
         var members = await context.TeamMembers.AsNoTracking()
-            .Where(m => teamIds.Contains(m.DepartmentId) && m.IsActive && m.CanBeManuallyAssigned && m.User.IsActive)
-            .Select(m => new { m.UserId, m.User.Name, m.User.Email, m.MemberRole, m.DepartmentId })
+            .Where(m => teamIds.Contains(m.TeamId) && m.IsActive && m.CanBeManuallyAssigned && m.User.IsActive)
+            .Select(m => new { m.UserId, m.User.Name, m.User.Email, m.MemberRole, m.TeamId })
             .ToListAsync(ct);
 
         var rows = new List<BulkAssigneeDto>();
@@ -90,7 +91,7 @@ public class BulkCaseService(
         {
             if (team.OwnerId.HasValue && team.Owner is { IsActive: true } lead)
                 rows.Add(new BulkAssigneeDto { UserId = lead.Id, Name = lead.Name, Email = lead.Email, Role = "Team Lead", IsTeamLead = true, TeamId = team.Id, TeamName = team.Name });
-            foreach (var m in members.Where(m => m.DepartmentId == team.Id && m.UserId != team.OwnerId))
+            foreach (var m in members.Where(m => m.TeamId == team.Id && m.UserId != team.OwnerId))
                 rows.Add(new BulkAssigneeDto { UserId = m.UserId, Name = m.Name, Email = m.Email, Role = string.IsNullOrWhiteSpace(m.MemberRole) ? "Agent" : m.MemberRole, TeamId = team.Id, TeamName = team.Name });
         }
 
@@ -104,30 +105,33 @@ public class BulkCaseService(
             .ThenBy(r => r.Name, StringComparer.OrdinalIgnoreCase).ToList();
     }
 
-    private async Task<List<Department>> ServingTeamsAsync(Guid orgDepartmentId, CancellationToken ct)
+    /// <summary>The one active team the department is assigned to (a list of at most one); a department with none is refused.</summary>
+    private async Task<List<Team>> AssignedTeamAsync(Guid departmentId, CancellationToken ct)
     {
-        var department = await context.OrgDepartments.AsNoTracking().FirstOrDefaultAsync(d => d.Id == orgDepartmentId, ct)
+        var department = await context.Departments.AsNoTracking().FirstOrDefaultAsync(d => d.Id == departmentId, ct)
             ?? throw new KeyNotFoundException("Department not found.");
         if (!department.IsActive) throw new InvalidOperationException($"'{department.Name}' is inactive.");
 
-        return await context.Departments.AsNoTracking().Include(t => t.Owner)
-            .Where(t => t.IsActive && t.OrgDepartments.Any(d => d.OrgDepartmentId == orgDepartmentId))
-            .OrderBy(t => t.Name).ToListAsync(ct);
+        var team = await context.Teams.AsNoTracking().Include(t => t.Owner)
+            .Where(t => t.DepartmentLinks.Any(d => d.DepartmentId == departmentId)).FirstOrDefaultAsync(ct)
+            ?? throw new InvalidOperationException(DepartmentTeams.NoTeamMessage(department.Name));
+        if (!team.IsActive) throw new InvalidOperationException(DepartmentTeams.InactiveTeamMessage(department.Name, team.Name));
+        return new List<Team> { team };
     }
 
     public async Task<BulkResultDto> ReassignAsync(BulkReassignRequestDto request, Guid actorId, CancellationToken ct = default)
     {
         var ids = Ids(request.CaseIds);
 
-        // The target is checked once, before any case changes: a department, and an assignee who leads or belongs to a team serving it.
-        var assignees = await AssigneesAsync(request.OrgDepartmentId, ct);
+        // The target is checked once, before any case changes: a department, and an assignee who leads or belongs to its team.
+        var assignees = await AssigneesAsync(request.DepartmentId, ct);
         var choices = assignees.Where(a => a.UserId == request.AssigneeUserId).ToList();
         if (choices.Count == 0)
-            throw new ArgumentException("The chosen person cannot receive this department's cases. Choose a Team Lead or agent of a team serving it.");
+            throw new ArgumentException("The chosen person cannot receive this department's cases. Choose the Team Lead or an agent of the team it is assigned to.");
         var choice = request.TeamId.HasValue
             ? choices.FirstOrDefault(a => a.TeamId == request.TeamId.Value) ?? throw new ArgumentException("The chosen person is not in that team.")
             : choices[0];
-        var departmentName = await context.OrgDepartments.AsNoTracking().Where(d => d.Id == request.OrgDepartmentId).Select(d => d.Name).FirstAsync(ct);
+        var departmentName = await context.Departments.AsNoTracking().Where(d => d.Id == request.DepartmentId).Select(d => d.Name).FirstAsync(ct);
         var reason = await CaseReasons.ResolveAsync(context, CaseReasons.Assignment, request.Reason, request.ReasonDetail, ct);
         var actorName = await context.Users.AsNoTracking().Where(u => u.Id == actorId).Select(u => u.Name).FirstOrDefaultAsync(ct) ?? "A supervisor";
 
@@ -138,7 +142,7 @@ public class BulkCaseService(
             try
             {
                 if (!await access.CanSeeAsync(caseId, ct)) throw new KeyNotFoundException("Case not found.");
-                await ReassignOneAsync(caseId, choice, request.OrgDepartmentId, departmentName, reason.Text, actorId, actorName, item, ct);
+                await ReassignOneAsync(caseId, choice, request.DepartmentId, departmentName, reason.Text, actorId, actorName, item, ct);
                 item.Succeeded = true;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -168,7 +172,7 @@ public class BulkCaseService(
         return result;
     }
 
-    private async Task ReassignOneAsync(Guid caseId, BulkAssigneeDto choice, Guid orgDepartmentId, string departmentName, string reason,
+    private async Task ReassignOneAsync(Guid caseId, BulkAssigneeDto choice, Guid departmentId, string departmentName, string reason,
         Guid actorId, string actorName, BulkResultItemDto item, CancellationToken ct)
     {
         var strategy = context.Database.CreateExecutionStrategy();
@@ -177,12 +181,12 @@ public class BulkCaseService(
             context.ChangeTracker.Clear();
             await using var transaction = await context.Database.BeginTransactionAsync(ct);
 
-            var c = await context.Cases.Include(x => x.Owner).Include(x => x.Department).Include(x => x.OrgDepartment)
+            var c = await context.Cases.Include(x => x.Owner).Include(x => x.Team).Include(x => x.Department)
                 .FirstOrDefaultAsync(x => x.Id == caseId, ct) ?? throw new KeyNotFoundException("Case not found.");
             item.CaseNumber = c.CaseNumber;
             if (CaseWorkflow.IsFinal(c.Status))
                 throw new InvalidOperationException($"The case is {CaseWorkflow.Label(c.Status)} and cannot be reassigned.");
-            if (c.OwnerId == choice.UserId && c.DepartmentId == choice.TeamId && c.OrgDepartmentId == orgDepartmentId)
+            if (c.OwnerId == choice.UserId && c.TeamId == choice.TeamId && c.DepartmentId == departmentId)
                 throw new InvalidOperationException($"{choice.Name} already holds this case in {choice.TeamName}.");
 
             // The same eligibility as Assign (capacity, manual-assignment setting), under the same per-team lock.
@@ -191,10 +195,10 @@ public class BulkCaseService(
             var (team, verdict) = await eligibility.CheckAsync(choice.TeamId, choice.UserId, policy, ct);
             if (!verdict.IsEligible) throw new AssignmentNotAllowedException(verdict.Reason.ToString(), verdict.Explain(team.Team.Name));
 
-            var before = $"{c.Owner.Name} · {c.Department.Name} · {c.OrgDepartment?.Name ?? "no department"}";
+            var before = $"{c.Owner.Name} · {c.Team.Name} · {c.Department?.Name ?? "no department"}";
             c.OwnerId = choice.UserId;
-            c.DepartmentId = choice.TeamId;
-            c.OrgDepartmentId = orgDepartmentId;
+            c.TeamId = choice.TeamId;
+            c.DepartmentId = departmentId;
             var now = DateTime.UtcNow;
             context.CaseEvents.Add(new CaseEvent
             {

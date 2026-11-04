@@ -49,13 +49,13 @@ public class AttachmentValidationTests : IDisposable
 
     private static async Task<(Case Case, User User)> SeedCaseAsync(AppDbContext db)
     {
-        var dept = new Department { Id = Guid.NewGuid(), Name = "Support", Code = "SUP" };
-        var user = new User { Id = Guid.NewGuid(), Name = "Agent 1", Email = "agent1@bank.com", Role = "Agent", DepartmentId = dept.Id };
+        var dept = new Team { Id = Guid.NewGuid(), Name = "Support", Code = "SUP" };
+        var user = new User { Id = Guid.NewGuid(), Name = "Agent 1", Email = "agent1@bank.com", Role = "Agent" };
         var customer = new Customer { Id = Guid.NewGuid(), FullName = "Customer 1", NRIC = "900101-14-1111", PhoneNumber = "+60123456789" };
         var c = new Case
         {
             Id = Guid.NewGuid(), CaseNumber = $"C-{Random.Shared.Next(1000, 9999)}", Title = "Test Case", CustomerId = customer.Id, Customer = customer,
-            DepartmentId = dept.Id, Department = dept, OwnerId = user.Id, Owner = user, Status = CaseStatus.Open, CreatedAt = DateTime.UtcNow
+            TeamId = dept.Id, Team = dept, OwnerId = user.Id, Owner = user, Status = CaseStatus.Open, CreatedAt = DateTime.UtcNow
         };
         db.AddRange(dept, user, customer, c);
         await db.SaveChangesAsync();

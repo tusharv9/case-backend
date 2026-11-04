@@ -93,7 +93,7 @@ public sealed record AssigneeVerdict(
     };
 }
 
-public sealed record TeamEligibility(Department Team, int Capacity, IReadOnlyList<AssigneeVerdict> Candidates)
+public sealed record TeamEligibility(Team Team, int Capacity, IReadOnlyList<AssigneeVerdict> Candidates)
 {
     public IEnumerable<AssigneeVerdict> Eligible => Candidates.Where(c => c.IsEligible);
 }
@@ -138,14 +138,14 @@ public class AssignmentEligibilityService : IAssignmentEligibilityService
         {
             var settings = await _context.ManualAssignmentSettings.AsNoTracking().Include(m => m.CrossTeams).FirstOrDefaultAsync(ct)
                 ?? throw new InvalidOperationException("The Assign & Reassign settings are missing. Apply the database migrations, then review them under Configurable Settings.");
-            return AssignmentPolicy.FromSettings(settings, settings.CrossTeams.Select(c => c.DepartmentId));
+            return AssignmentPolicy.FromSettings(settings, settings.CrossTeams.Select(c => c.TeamId));
         }
         return _cache == null ? await Load() : await _cache.GetOrCreateAsync(ManualPolicyCacheKey, Load);
     }
 
     public async Task<TeamEligibility> EvaluateTeamAsync(Guid departmentId, AssignmentPolicy policy, int? capacity = null, CancellationToken ct = default)
     {
-        var team = await _context.Departments.AsNoTracking().FirstOrDefaultAsync(d => d.Id == departmentId, ct)
+        var team = await _context.Teams.AsNoTracking().FirstOrDefaultAsync(d => d.Id == departmentId, ct)
                    ?? throw new KeyNotFoundException("Team not found.");
         var cap = capacity ?? (await AssignmentSettings.ResolveAsync(_context, _cache, departmentId, ct)).MaxConcurrentCapacity;
 
@@ -167,14 +167,14 @@ public class AssignmentEligibilityService : IAssignmentEligibilityService
 
         // Other active teams the policy draws on. Their people are judged against THEIR team's membership rules and the CASE team's
         // capacity (the case stays the case team's work). Someone already listed for the case's own team is not repeated.
-        var others = await _context.Departments.AsNoTracking()
+        var others = await _context.Teams.AsNoTracking()
             .Where(d => d.IsActive && d.Id != caseDepartmentId
                         && (policy.CrossTeamMode == CrossTeamModes.AllTeams || policy.CrossTeamIds.Contains(d.Id)))
             .OrderBy(d => d.Name)
             .ToListAsync(ct);
 
         var seen = own.Candidates.Select(c => c.User.Id).ToHashSet();
-        var extra = new List<(Department Team, Person P)>();
+        var extra = new List<(Team Team, Person P)>();
         var peopleByTeam = await PeopleOfAsync(others, policy, ct);   // two queries for all teams, not two per team
         foreach (var team in others)
             foreach (var p in peopleByTeam[team.Id])
@@ -207,8 +207,8 @@ public class AssignmentEligibilityService : IAssignmentEligibilityService
     {
         if (hasAssignPermission || c.OwnerId == actorId) return;
 
-        var allowed = await _context.Departments.AsNoTracking().AnyAsync(d => d.Id == c.DepartmentId && d.OwnerId == actorId, ct)
-                      || await _context.TeamMembers.AsNoTracking().AnyAsync(m => m.DepartmentId == c.DepartmentId && m.UserId == actorId && m.IsActive, ct);
+        var allowed = await _context.Teams.AsNoTracking().AnyAsync(d => d.Id == c.TeamId && d.OwnerId == actorId, ct)
+                      || await _context.TeamMembers.AsNoTracking().AnyAsync(m => m.TeamId == c.TeamId && m.UserId == actorId && m.IsActive, ct);
         if (!allowed)
             throw new AssignmentForbiddenException("Only the case owner, members or the lead of the case's team, or someone with the 'cases.assign' permission can change who holds this case.");
     }
@@ -216,18 +216,18 @@ public class AssignmentEligibilityService : IAssignmentEligibilityService
     private sealed record Person(User User, bool IsMember, bool IsAssignable, bool CanManual, string? Role);
 
     /// <summary>A team's active members, plus its lead when the policy includes leads and the lead has no member row.</summary>
-    private async Task<List<Person>> PeopleOfAsync(Department team, AssignmentPolicy policy, CancellationToken ct) =>
+    private async Task<List<Person>> PeopleOfAsync(Team team, AssignmentPolicy policy, CancellationToken ct) =>
         (await PeopleOfAsync(new[] { team }, policy, ct))[team.Id];
 
     /// <summary>Several teams at once (one query for members, one for leads without a member row), keyed by team.</summary>
-    private async Task<Dictionary<Guid, List<Person>>> PeopleOfAsync(IReadOnlyCollection<Department> teams, AssignmentPolicy policy, CancellationToken ct)
+    private async Task<Dictionary<Guid, List<Person>>> PeopleOfAsync(IReadOnlyCollection<Team> teams, AssignmentPolicy policy, CancellationToken ct)
     {
         var ids = teams.Select(t => t.Id).ToList();
         var members = await _context.TeamMembers.AsNoTracking()
-            .Where(m => ids.Contains(m.DepartmentId) && m.IsActive)
-            .Select(m => new { m.DepartmentId, Person = new Person(m.User, true, m.IsAssignable, m.CanBeManuallyAssigned, m.MemberRole) })
+            .Where(m => ids.Contains(m.TeamId) && m.IsActive)
+            .Select(m => new { m.TeamId, Person = new Person(m.User, true, m.IsAssignable, m.CanBeManuallyAssigned, m.MemberRole) })
             .ToListAsync(ct);
-        var result = teams.ToDictionary(t => t.Id, t => members.Where(m => m.DepartmentId == t.Id).Select(m => m.Person).ToList());
+        var result = teams.ToDictionary(t => t.Id, t => members.Where(m => m.TeamId == t.Id).Select(m => m.Person).ToList());
 
         if (policy.Leads == LeadMode.Include)
         {
@@ -243,7 +243,7 @@ public class AssignmentEligibilityService : IAssignmentEligibilityService
         return result;
     }
 
-    private static AssigneeVerdict Judge(Department team, AssignmentPolicy policy, int capacity, User user, bool isMember, bool isAssignable,
+    private static AssigneeVerdict Judge(Team team, AssignmentPolicy policy, int capacity, User user, bool isMember, bool isAssignable,
         bool canManual, string? role, int openCases)
     {
         var isLead = team.OwnerId == user.Id;
@@ -285,11 +285,11 @@ public static class AssignmentSettings
 
         if (departmentId.HasValue)
         {
-            var own = active.FirstOrDefault(c => c.DepartmentId == departmentId);
+            var own = active.FirstOrDefault(c => c.TeamId == departmentId);
             if (own != null) return own;
         }
 
-        return active.FirstOrDefault(c => c.DepartmentId == null)
+        return active.FirstOrDefault(c => c.TeamId == null)
             ?? throw new InvalidOperationException("No assignment settings are configured. Set the assignment algorithm under Cases SLA & Routing.");
     }
 }

@@ -39,17 +39,23 @@ public class MetadataService : IMetadataService
                 .Select(c => new CaseTypeOptionDto { Code = c.Code, Name = c.Name, Prefix = c.Prefix })
                 .ToListAsync(ct);
 
-            // The Department field offers BUSINESS departments (routing then picks the team), each with its sub-categories.
-            var departments = await _context.OrgDepartments.AsNoTracking()
+            // The Department field offers the active departments, each with its sub-categories and the team it is assigned to
+            // (null: none yet, so the form says a case cannot be created for it). Every save of a team, a department or a
+            // mapping clears this cache (ConfigChangeInterceptor), so the form always shows the current assignment.
+            var departments = await _context.Departments.AsNoTracking()
                 .Where(d => d.IsActive).OrderBy(d => d.DisplayOrder).ThenBy(d => d.Name)
-                .Select(d => new DepartmentOptionDto { Id = d.Id, Name = d.Name, Code = d.Code })
+                .Select(d => new DepartmentOptionDto
+                {
+                    Id = d.Id, Name = d.Name, Code = d.Code,
+                    Team = d.TeamLinks.Select(l => new DepartmentTeamDto { Id = l.TeamId, Name = l.Team.Name, IsActive = l.Team.IsActive }).FirstOrDefault(),
+                })
                 .ToListAsync(ct);
             var subCategories = await _context.DepartmentSubCategories.AsNoTracking()
-                .Where(s => s.IsActive && s.OrgDepartmentId != null).OrderBy(s => s.DisplayOrder).ThenBy(s => s.Name)
-                .Select(s => new { s.OrgDepartmentId, Option = new SubCategoryOptionDto { Id = s.Id, Name = s.Name, Code = s.Code, Description = s.Description } })
+                .Where(s => s.IsActive && s.DepartmentId != null).OrderBy(s => s.DisplayOrder).ThenBy(s => s.Name)
+                .Select(s => new { s.DepartmentId, Option = new SubCategoryOptionDto { Id = s.Id, Name = s.Name, Code = s.Code, Description = s.Description } })
                 .ToListAsync(ct);
             foreach (var department in departments)
-                department.SubCategories = subCategories.Where(s => s.OrgDepartmentId == department.Id).Select(s => s.Option).ToList();
+                department.SubCategories = subCategories.Where(s => s.DepartmentId == department.Id).Select(s => s.Option).ToList();
 
             var priorities = await _context.PrioritySlaRules.AsNoTracking()
                 .Where(r => r.IsActive).OrderBy(r => r.DisplayOrder)

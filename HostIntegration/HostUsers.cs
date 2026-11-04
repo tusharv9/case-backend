@@ -141,7 +141,7 @@ public sealed class HostUserService(HostUserDirectoryClient directory, AppDbCont
             .Select(u => new { u.Id, u.ExternalUserId }).ToListAsync(ct);
         var localIds = local.Select(l => l.Id).ToList();
         var teams = await context.TeamMembers.AsNoTracking().Where(m => m.IsActive && localIds.Contains(m.UserId))
-            .Select(m => new { m.UserId, m.DepartmentId, m.Department.Name, IsLead = m.Department.OwnerId == m.UserId }).ToListAsync(ct);
+            .Select(m => new { m.UserId, m.TeamId, m.Team.Name, IsLead = m.Team.OwnerId == m.UserId }).ToListAsync(ct);
 
         return new HostUserPageDto
         {
@@ -152,7 +152,7 @@ public sealed class HostUserService(HostUserDirectoryClient directory, AppDbCont
                 return new HostUserDto
                 {
                     HostUserId = u.HostUserId, LocalUserId = localId, Name = u.Name, Email = u.Email, RoleName = u.RoleName, IsActive = u.IsActive,
-                    Teams = teams.Where(t => t.UserId == localId).OrderBy(t => t.Name).Select(t => new HostUserTeamDto(t.DepartmentId, t.Name, t.IsLead)).ToList(),
+                    Teams = teams.Where(t => t.UserId == localId).OrderBy(t => t.Name).Select(t => new HostUserTeamDto(t.TeamId, t.Name, t.IsLead)).ToList(),
                 };
             }).ToList(),
         };

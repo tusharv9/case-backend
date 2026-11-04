@@ -276,14 +276,14 @@ public class PostgresIntegrationTests
         await using var ctx = db.NewContext();
         var rule = new PrioritySlaRule { Id = Guid.NewGuid(), Priority = "High", DisplayOrder = 1, CreatedAt = DateTime.UtcNow };
         ctx.AddRange(
-            new Department { Id = deptId, Name = "D", Code = "D", CreatedAt = DateTime.UtcNow },
+            new Team { Id = deptId, Name = "D", Code = "D", CreatedAt = DateTime.UtcNow },
             rule);
         await ctx.SaveChangesAsync();
         ctx.AddRange(
-            new User { Id = userId, Name = "U", Email = "u@example.test", Role = "Agent", DepartmentId = deptId, CreatedAt = DateTime.UtcNow },
+            new User { Id = userId, Name = "U", Email = "u@example.test", Role = "Agent", CreatedAt = DateTime.UtcNow },
             new Customer { Id = customerId, FullName = "C", PhoneNumber = "+60 1", PreferredLanguage = "English", CreatedAt = DateTime.UtcNow },
-            new DepartmentSubCategory { Id = usedSub, DepartmentId = deptId, Name = "Used", Code = "U", IsActive = true, CreatedAt = DateTime.UtcNow },
-            new DepartmentSubCategory { Id = freeSub, DepartmentId = deptId, Name = "Free", Code = "F", IsActive = true, CreatedAt = DateTime.UtcNow });
+            new DepartmentSubCategory { Id = usedSub, DepartmentId = TestDepartments.IdFor(deptId), Name = "Used", Code = "U", IsActive = true, CreatedAt = DateTime.UtcNow },
+            new DepartmentSubCategory { Id = freeSub, DepartmentId = TestDepartments.IdFor(deptId), Name = "Free", Code = "F", IsActive = true, CreatedAt = DateTime.UtcNow });
         await ctx.SaveChangesAsync();
         await TestDepartments.LinkTeamsAsync(ctx);
         ctx.AddRange(
@@ -291,7 +291,7 @@ public class PostgresIntegrationTests
             new Case
             {
                 Id = Guid.NewGuid(), CaseNumber = "C-00001", CaseType = "Complaint", Title = "t", Description = "d",
-                Status = CaseStatus.Open, Severity = "High", Subcategory = "Used", DepartmentId = deptId,
+                Status = CaseStatus.Open, Severity = "High", Subcategory = "Used", TeamId = deptId,
                 CustomerId = customerId, OwnerId = userId, CreatedAt = DateTime.UtcNow
             });
         await ctx.SaveChangesAsync();

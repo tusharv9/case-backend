@@ -17,19 +17,19 @@ public class TeamMembershipResetTests
         var db = await TempDatabase.CreateAsync();
         using (var warm = new AppUnderTest(db.ConnectionString)) await warm.ReadyClientAsync();
         await using var ctx = db.NewContext();
-        var team = new Department { Id = Guid.NewGuid(), Name = "Loans", Code = "LN", CreatedAt = DateTime.UtcNow };
+        var team = new Team { Id = Guid.NewGuid(), Name = "Loans", Code = "LN", CreatedAt = DateTime.UtcNow };
         var host = new User { Id = Guid.NewGuid(), Name = "Host Person", Email = "host@bank.test", ExternalUserId = HostUserId, CreatedAt = DateTime.UtcNow };
         var s1 = new User { Id = Guid.NewGuid(), Name = "Sample Lead", Email = "lead@sample.test", ExternalUserId = Guid.NewGuid().ToString(), CreatedAt = DateTime.UtcNow };
         var s2 = new User { Id = Guid.NewGuid(), Name = "Sample Agent", Email = "agent@sample.test", ExternalUserId = Guid.NewGuid().ToString(), CreatedAt = DateTime.UtcNow };
         ctx.Users.AddRange(host, s1, s2);
-        ctx.Departments.Add(team);
+        ctx.Teams.Add(team);
         await ctx.SaveChangesAsync();
         team.OwnerId = s1.Id;
         ctx.TeamMembers.AddRange(
-            new TeamMember { Id = Guid.NewGuid(), DepartmentId = team.Id, UserId = s1.Id, IsActive = true, CreatedAt = DateTime.UtcNow },
-            new TeamMember { Id = Guid.NewGuid(), DepartmentId = team.Id, UserId = s2.Id, IsActive = true, CreatedAt = DateTime.UtcNow },
-            new TeamMember { Id = Guid.NewGuid(), DepartmentId = team.Id, UserId = host.Id, IsActive = true, CreatedAt = DateTime.UtcNow });
-        ctx.TeamAssignmentPointers.Add(new TeamAssignmentPointer { DepartmentId = team.Id, LastAssignedUserId = s2.Id });
+            new TeamMember { Id = Guid.NewGuid(), TeamId = team.Id, UserId = s1.Id, IsActive = true, CreatedAt = DateTime.UtcNow },
+            new TeamMember { Id = Guid.NewGuid(), TeamId = team.Id, UserId = s2.Id, IsActive = true, CreatedAt = DateTime.UtcNow },
+            new TeamMember { Id = Guid.NewGuid(), TeamId = team.Id, UserId = host.Id, IsActive = true, CreatedAt = DateTime.UtcNow });
+        ctx.TeamAssignmentPointers.Add(new TeamAssignmentPointer { TeamId = team.Id, LastAssignedUserId = s2.Id });
         await ctx.SaveChangesAsync();
         return (db, team.Id, host.Id, s1.Id, s2.Id);
     }
@@ -48,7 +48,7 @@ public class TeamMembershipResetTests
         Assert.Equal(2, report.UsersDeactivated.Count);
         await using var check = db.NewContext();
         Assert.Equal(3, await check.TeamMembers.CountAsync());
-        Assert.NotNull((await check.Departments.SingleAsync(d => d.Id == team)).OwnerId);
+        Assert.NotNull((await check.Teams.SingleAsync(d => d.Id == team)).OwnerId);
         Assert.True(await check.Users.AllAsync(u => u.IsActive));
     }
 
@@ -63,13 +63,13 @@ public class TeamMembershipResetTests
 
         await using var check = db.NewContext();
         Assert.Equal(new[] { host }, await check.TeamMembers.Select(m => m.UserId).ToListAsync());   // the Host user's membership kept
-        Assert.Null((await check.Departments.SingleAsync(d => d.Id == team)).OwnerId);
+        Assert.Null((await check.Teams.SingleAsync(d => d.Id == team)).OwnerId);
         Assert.Equal(0, await check.TeamAssignmentPointers.CountAsync());
         Assert.Equal(3, await check.Users.CountAsync());                                              // nobody deleted
         Assert.False((await check.Users.SingleAsync(u => u.Id == sample1)).IsActive);
         Assert.False((await check.Users.SingleAsync(u => u.Id == sample2)).IsActive);
         Assert.True((await check.Users.SingleAsync(u => u.Id == host)).IsActive);
-        Assert.Equal(1, await check.Departments.CountAsync(d => d.Id == team));
+        Assert.Equal(1, await check.Teams.CountAsync(d => d.Id == team));
         Assert.Equal(2, await check.CaseEvents.CountAsync(e => e.Module == "Teams" && (e.ActionType == "MEMBERSHIP_RESET" || e.ActionType == "DEACTIVATE_NON_HOST_USERS")));
 
         // Running it again changes nothing more.

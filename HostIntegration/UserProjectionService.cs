@@ -77,7 +77,6 @@ public sealed class UserProjectionService : IUserProjectionService
             Role = DisplayRole(principal) ?? info?.Role ?? string.Empty,
             Status = UserStatus.Available,
             IsActive = info?.IsActive ?? true,
-            DepartmentId = null,
             CreatedAt = DateTime.UtcNow,
             LastSyncedAt = DateTime.UtcNow
         };

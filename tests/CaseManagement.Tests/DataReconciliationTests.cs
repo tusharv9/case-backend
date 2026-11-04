@@ -102,7 +102,7 @@ public class DataReconciliationTests
         await using var _w = w;
         var second = await w.NewCaseAsync(w.Loans, w.C1);   // another Loans case held by a Cards agent
         await using (var ctx = w.Ctx())
-            await ctx.AssignmentConfigurations.Where(c => c.DepartmentId == null).ExecuteUpdateAsync(u => u.SetProperty(c => c.MaxConcurrentCapacity, 3));
+            await ctx.AssignmentConfigurations.Where(c => c.TeamId == null).ExecuteUpdateAsync(u => u.SetProperty(c => c.MaxConcurrentCapacity, 3));
 
         // L1 is the only available, assignable Loans agent and holds 2 open cases (capacity 3): the oldest case goes to L1,
         // after which L1 is full and the team lead holds the next one.

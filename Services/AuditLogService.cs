@@ -76,21 +76,21 @@ public class AuditLogService : IAuditLogService
                 // People: everyone for someone who sees all; otherwise the people of the teams the caller leads or belongs to.
                 var teamIds = seesAll ? null : MyTeams(db, me!.Value);
                 result.Actors = await db.Users.AsNoTracking()
-                    .Where(u => seesAll ? true : db.TeamMembers.Any(m => m.UserId == u.Id && m.IsActive && teamIds!.Contains(m.DepartmentId)))
+                    .Where(u => seesAll ? true : db.TeamMembers.Any(m => m.UserId == u.Id && m.IsActive && teamIds!.Contains(m.TeamId)))
                     .OrderBy(u => u.Name).Select(u => new NamedOptionDto { Id = u.Id, Name = u.Name }).ToListAsync(ct);
             },
             async db =>
             {
                 var teamIds = seesAll ? null : MyTeams(db, me!.Value);
-                result.Teams = await db.Departments.AsNoTracking()
+                result.Teams = await db.Teams.AsNoTracking()
                     .Where(d => seesAll || teamIds!.Contains(d.Id))
                     .OrderBy(d => d.Name).Select(d => new NamedOptionDto { Id = d.Id, Name = d.Name }).ToListAsync(ct);
             },
             async db =>
             {
                 var teamIds = seesAll ? null : MyTeams(db, me!.Value);
-                result.Departments = await db.OrgDepartments.AsNoTracking()
-                    .Where(o => seesAll || o.Teams.Any(l => teamIds!.Contains(l.TeamId)))
+                result.Departments = await db.Departments.AsNoTracking()
+                    .Where(o => seesAll || o.TeamLinks.Any(l => teamIds!.Contains(l.TeamId)))
                     .OrderBy(o => o.DisplayOrder).ThenBy(o => o.Name).Select(o => new NamedOptionDto { Id = o.Id, Name = o.Name }).ToListAsync(ct);
             });
         return result;
@@ -98,7 +98,7 @@ public class AuditLogService : IAuditLogService
 
     /// <summary>The teams a person leads or is an active member of.</summary>
     private static IQueryable<Guid> MyTeams(AppDbContext db, Guid me) =>
-        db.Departments.Where(d => d.OwnerId == me || db.TeamMembers.Any(m => m.DepartmentId == d.Id && m.UserId == me && m.IsActive)).Select(d => d.Id);
+        db.Teams.Where(d => d.OwnerId == me || db.TeamMembers.Any(m => m.TeamId == d.Id && m.UserId == me && m.IsActive)).Select(d => d.Id);
 
     public async Task<ReportExport> ExportAsync(AuditFilter filter, int limit, CancellationToken ct = default)
     {
@@ -122,7 +122,7 @@ public class AuditLogService : IAuditLogService
             r.ActorRole,
             r.CaseId.HasValue ? r.CaseNumber : string.Empty,
             r.CaseId.HasValue ? r.CaseTitle : string.Empty,
-            r.DepartmentName,
+            r.TeamName,
             r.CustomerName,
             r.Module,
             MentionService.ToPlainText(r.Description),

@@ -3,6 +3,7 @@ namespace CaseManagement.Api.Services;
 using CaseManagement.Api.Data;
 using CaseManagement.Api.DTOs;
 using CaseManagement.Api.Models;
+using CaseManagement.Api.Services.Teams;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -11,7 +12,7 @@ using System.Text.Json;
 /// <summary>
 /// Teams are Departments. A team's people are its ACTIVE TeamMembers — the one and only membership source, which routing,
 /// the team board and monitoring all use. A team may carry its own assignment settings; otherwise it follows the global ones.
-/// A team serves one or more business departments (<see cref="OrgDepartment"/>). Every save is held to the Create/Edit Team form
+/// A team handles any number of departments (<see cref="Department"/>), each of which belongs to at most one team. Every save is held to the Create/Edit Team form
 /// as configured (FieldConfiguration, section <see cref="TeamFormFields.SectionKey"/>: required fields, formats, custom fields)
 /// and to the team rules (<see cref="ITeamSettingsService"/>) — the same checks whatever screen or client sent it.
 /// </summary>
@@ -47,7 +48,7 @@ public class TeamService : ITeamService
     /// </summary>
     private async Task<List<TeamDto>> LoadAsync(Guid? onlyId, CancellationToken ct)
     {
-        List<Department> departments = new();
+        List<Team> departments = new();
         List<MemberRow> members = new();
         Dictionary<Guid, int> openCounts = new();
         Dictionary<Guid, AssignmentConfiguration> ownConfigs = new();
@@ -56,21 +57,21 @@ public class TeamService : ITeamService
         AssignmentConfigDto globalConfig = null!;
 
         await ParallelReads.RunAsync(_contexts, _context, ct,
-            async db => departments = await db.Departments.AsNoTracking().Include(d => d.Owner)
+            async db => departments = await db.Teams.AsNoTracking().Include(d => d.Owner)
                 .Where(d => onlyId == null || d.Id == onlyId).OrderBy(d => d.Name).ToListAsync(ct),
             async db => members = await db.TeamMembers.AsNoTracking()
-                .Where(m => (onlyId == null || m.DepartmentId == onlyId) && m.IsActive)
-                .Select(m => new MemberRow(m.Id, m.DepartmentId, m.UserId, m.User.ExternalUserId, m.User.Name, m.User.Email, m.MemberRole, m.User.Role, m.User.Status, m.IsAssignable))
+                .Where(m => (onlyId == null || m.TeamId == onlyId) && m.IsActive)
+                .Select(m => new MemberRow(m.Id, m.TeamId, m.UserId, m.User.ExternalUserId, m.User.Name, m.User.Email, m.MemberRole, m.User.Role, m.User.Status, m.IsAssignable))
                 .ToListAsync(ct),
             async db => openCounts = await db.Cases.AsNoTracking()
-                .Where(c => (onlyId == null || c.DepartmentId == onlyId) && c.Status != CaseStatus.Resolved && c.Status != CaseStatus.Closed && c.Status != CaseStatus.Cancelled)
-                .GroupBy(c => c.DepartmentId).Select(g => new { g.Key, Count = g.Count() }).ToDictionaryAsync(x => x.Key, x => x.Count, ct),
+                .Where(c => (onlyId == null || c.TeamId == onlyId) && c.Status != CaseStatus.Resolved && c.Status != CaseStatus.Closed && c.Status != CaseStatus.Cancelled)
+                .GroupBy(c => c.TeamId).Select(g => new { g.Key, Count = g.Count() }).ToDictionaryAsync(x => x.Key, x => x.Count, ct),
             async db => ownConfigs = await db.AssignmentConfigurations.AsNoTracking()
-                .Where(c => c.DepartmentId != null && (onlyId == null || c.DepartmentId == onlyId) && c.IsActive).ToDictionaryAsync(c => c.DepartmentId!.Value, ct),
+                .Where(c => c.TeamId != null && (onlyId == null || c.TeamId == onlyId) && c.IsActive).ToDictionaryAsync(c => c.TeamId!.Value, ct),
             async db => links = (await db.TeamDepartments.AsNoTracking()
                     .Where(l => onlyId == null || l.TeamId == onlyId)
-                    .OrderBy(l => l.OrgDepartment.DisplayOrder).ThenBy(l => l.OrgDepartment.Name)
-                    .Select(l => new { l.TeamId, l.OrgDepartment.Id, l.OrgDepartment.Name, l.OrgDepartment.Code, l.OrgDepartment.IsActive })
+                    .OrderBy(l => l.Department.DisplayOrder).ThenBy(l => l.Department.Name)
+                    .Select(l => new { l.TeamId, l.Department.Id, l.Department.Name, l.Department.Code, l.Department.IsActive })
                     .ToListAsync(ct))
                 .Select(l => (l.TeamId, new TeamDepartmentDto { Id = l.Id, Name = l.Name, Code = l.Code, IsActive = l.IsActive })).ToList(),
             async db => custom = await db.TeamCustomAttributes.AsNoTracking().Where(a => onlyId == null || a.TeamId == onlyId).ToListAsync(ct));
@@ -131,7 +132,7 @@ public class TeamService : ITeamService
         var name = dto.Name.Trim();
         var code = !string.IsNullOrWhiteSpace(dto.Code) ? dto.Code.Trim().ToUpperInvariant() : GenerateTeamCode(name);
 
-        if (await _context.Departments.AnyAsync(d => d.Name.ToLower() == name.ToLower() || d.Code.ToLower() == code.ToLower(), ct))
+        if (await _context.Teams.AnyAsync(d => d.Name.ToLower() == name.ToLower() || d.Code.ToLower() == code.ToLower(), ct))
             throw new InvalidOperationException($"A team or department with name '{name}' or code '{code}' already exists.");
 
         await EnsureUserIsActiveAsync(dto.TeamLeadId, "team lead", ct);
@@ -142,7 +143,7 @@ public class TeamService : ITeamService
         var form = await CheckFormAsync(policy, name, dto.Code, dto.Function, departmentIds, dto.TeamLeadId, wanted ?? new(), dto.IsActive,
             dto.CustomAttributes, new Dictionary<string, string>(), ct);
 
-        var department = new Department
+        var department = new Team
         {
             Id = Guid.NewGuid(),
             Name = name,
@@ -153,15 +154,20 @@ public class TeamService : ITeamService
             CreatedAt = DateTime.UtcNow
         };
 
-        await TeamWriteLock.RunAsync(_context, async () =>
+        if (!dto.IsActive && departmentIds.Count > 0)
+            throw new FieldValidationException(new[] { new FieldError(TeamFormFields.Departments,
+                "An inactive team cannot be assigned departments: its departments could not take new cases. Create the team as active, or leave its departments empty.") });
+
+        await RunGuardedAsync(async () =>
         {
             await CheckDepartmentsAsync(departmentIds, new HashSet<Guid>(), ct);
+            await DepartmentTeams.EnsureNotMappedElsewhereAsync(_context, departmentIds, department.Id, TeamFormFields.Departments, ct);
             await CheckPoliciesAsync(policy, department.Id, dto.TeamLeadId, wanted, ct);
 
-            _context.Departments.Add(department);
+            _context.Teams.Add(department);
             await SyncMembersAsync(department, new List<TeamMember>(), wanted, dto.TeamLeadId, ct);
             foreach (var id in departmentIds)
-                _context.TeamDepartments.Add(new TeamDepartment { TeamId = department.Id, OrgDepartmentId = id, LinkedAt = DateTime.UtcNow });
+                _context.TeamDepartments.Add(new TeamDepartment { TeamId = department.Id, DepartmentId = id, LinkedAt = DateTime.UtcNow });
             await SyncCustomAttributesAsync(department.Id, form, ct);
 
             _context.CaseEvents.Add(Audit("CREATE", department.Name, $"Created team '{department.Name}'", null,
@@ -175,16 +181,16 @@ public class TeamService : ITeamService
 
     public async Task<TeamDto> UpdateTeamAsync(Guid id, UpdateTeamDto dto, Guid currentUserId, CancellationToken ct = default)
     {
-        var department = await _context.Departments.Include(d => d.Members).Include(d => d.OrgDepartments).FirstOrDefaultAsync(d => d.Id == id, ct)
+        var department = await _context.Teams.Include(d => d.Members).Include(d => d.DepartmentLinks).FirstOrDefaultAsync(d => d.Id == id, ct)
             ?? throw new KeyNotFoundException($"Team with ID '{id}' was not found.");
 
-        var oldState = JsonSerializer.Serialize(new { department.Name, department.Function, department.OwnerId, department.IsActive, DepartmentIds = department.OrgDepartments.Select(l => l.OrgDepartmentId) });
+        var oldState = JsonSerializer.Serialize(new { department.Name, department.Function, department.OwnerId, department.IsActive, DepartmentIds = department.DepartmentLinks.Select(l => l.DepartmentId) });
         var policy = await _settings.GetPolicyAsync(ct);
 
         if (!string.IsNullOrWhiteSpace(dto.Name) && !string.Equals(dto.Name.Trim(), department.Name, StringComparison.Ordinal))
         {
             var name = dto.Name.Trim();
-            if (await _context.Departments.AnyAsync(d => d.Id != id && d.Name.ToLower() == name.ToLower(), ct))
+            if (await _context.Teams.AnyAsync(d => d.Id != id && d.Name.ToLower() == name.ToLower(), ct))
                 throw new InvalidOperationException($"A team named '{name}' already exists.");
             department.Name = name;
         }
@@ -195,18 +201,29 @@ public class TeamService : ITeamService
         var leadAfter = dto.TeamLeadId ?? department.OwnerId;
         var wanted = WantedMembers(dto.Members, dto.MemberUserIds);
         var membersAfter = wanted ?? current.Where(m => m.IsActive).Select(m => (m.UserId, m.IsAssignable)).ToList();
-        var linkedBefore = department.OrgDepartments.Select(l => l.OrgDepartmentId).ToHashSet();
-        var departmentsAfter = dto.DepartmentIds?.Distinct().ToList() ?? linkedBefore.ToList();
+        var linkedBefore = department.DepartmentLinks.Select(l => l.DepartmentId).ToHashSet();
         var activeAfter = dto.IsActive ?? department.IsActive;
+        // A team being deactivated releases its departments (they become unassigned, never moved to another team): an
+        // inactive team cannot take cases, so a department left on it could not be used. The release is audited below.
+        var deactivating = department.IsActive && !activeAfter;
+        if (!activeAfter && !deactivating && dto.DepartmentIds is { Count: > 0 })
+            throw new FieldValidationException(new[] { new FieldError(TeamFormFields.Departments,
+                "An inactive team cannot be assigned departments. Activate the team first.") });
+        var departmentsAfter = deactivating ? new List<Guid>() : dto.DepartmentIds?.Distinct().ToList() ?? linkedBefore.ToList();
+        var departmentsChange = deactivating ? linkedBefore.Count > 0 : dto.DepartmentIds != null;
         var customBefore = await _context.TeamCustomAttributes.AsNoTracking().Where(a => a.TeamId == id).ToDictionaryAsync(a => a.FieldKey, a => a.FieldValue, StringComparer.OrdinalIgnoreCase, ct);
         var form = await CheckFormAsync(policy, department.Name, dto.Code ?? department.Code, dto.Function ?? department.Function, departmentsAfter, leadAfter, membersAfter,
             activeAfter, dto.CustomAttributes, customBefore, ct);
 
         if (department.IsActive && !activeAfter) await EnsureCanDeactivateAsync(policy, department, ct);
 
-        await TeamWriteLock.RunAsync(_context, async () =>
+        await RunGuardedAsync(async () =>
         {
-            if (dto.DepartmentIds != null) await CheckDepartmentsAsync(departmentsAfter, linkedBefore, ct);
+            if (departmentsChange)
+            {
+                await CheckDepartmentsAsync(departmentsAfter, linkedBefore, ct);
+                await DepartmentTeams.EnsureNotMappedElsewhereAsync(_context, departmentsAfter, department.Id, TeamFormFields.Departments, ct);
+            }
             await CheckPoliciesAsync(policy, department.Id, leadAfter, membersAfter, ct);
 
             if (dto.Function != null) department.Function = dto.Function.Trim();
@@ -221,12 +238,18 @@ public class TeamService : ITeamService
                 await SyncMembersAsync(department, current, keep, department.OwnerId, ct);
             }
 
-            if (dto.DepartmentIds != null)
+            if (departmentsChange)
             {
                 var after = departmentsAfter.ToHashSet();
-                _context.TeamDepartments.RemoveRange(department.OrgDepartments.Where(l => !after.Contains(l.OrgDepartmentId)));
+                if (deactivating && linkedBefore.Count > 0)
+                {
+                    var released = await _context.Departments.AsNoTracking().Where(d => linkedBefore.Contains(d.Id)).OrderBy(d => d.Name).Select(d => d.Name).ToListAsync(ct);
+                    _context.CaseEvents.Add(Audit("UPDATE", department.Name,
+                        $"Deactivated team '{department.Name}': released {string.Join(", ", released)} (now unassigned)", string.Join(", ", released), "Unassigned", currentUserId));
+                }
+                _context.TeamDepartments.RemoveRange(department.DepartmentLinks.Where(l => !after.Contains(l.DepartmentId)));
                 foreach (var add in after.Where(a => !linkedBefore.Contains(a)))
-                    _context.TeamDepartments.Add(new TeamDepartment { TeamId = department.Id, OrgDepartmentId = add, LinkedAt = DateTime.UtcNow });
+                    _context.TeamDepartments.Add(new TeamDepartment { TeamId = department.Id, DepartmentId = add, LinkedAt = DateTime.UtcNow });
             }
             if (dto.CustomAttributes != null) await SyncCustomAttributesAsync(department.Id, form, ct);
 
@@ -237,6 +260,16 @@ public class TeamService : ITeamService
 
         await ApplyAssignmentSettingsAsync(department.Id, dto.AssignmentAlgorithm, dto.MaxConcurrentCapacity, dto.UseGlobalAssignmentSettings, currentUserId, ct);
         return (await GetTeamByIdAsync(department.Id, ct))!;
+    }
+
+    /// <summary>Runs a team save under the team write lock; a department claimed by a concurrent save becomes a field error, not a 500.</summary>
+    private async Task RunGuardedAsync(Func<Task> work, CancellationToken ct)
+    {
+        try { await TeamWriteLock.RunAsync(_context, work, ct); }
+        catch (DbUpdateException ex) when (DepartmentTeams.IsDuplicateMapping(ex))
+        {
+            throw new FieldValidationException(new[] { new FieldError(TeamFormFields.Departments, DepartmentTeams.RaceMessage) });
+        }
     }
 
     private static List<(Guid UserId, bool IsAssignable)>? WantedMembers(List<TeamMemberInputDto>? members, List<Guid>? ids) =>
@@ -289,10 +322,10 @@ public class TeamService : ITeamService
     }
 
     /// <summary>"A team with open cases can be deactivated" switched off: refuse while it holds any.</summary>
-    private async Task EnsureCanDeactivateAsync(TeamSettings policy, Department team, CancellationToken ct)
+    private async Task EnsureCanDeactivateAsync(TeamSettings policy, Team team, CancellationToken ct)
     {
         if (policy.AllowDeactivateWithOpenCases) return;
-        var open = await _context.Cases.CountAsync(c => c.DepartmentId == team.Id && c.Status != CaseStatus.Resolved && c.Status != CaseStatus.Closed && c.Status != CaseStatus.Cancelled, ct);
+        var open = await _context.Cases.CountAsync(c => c.TeamId == team.Id && c.Status != CaseStatus.Resolved && c.Status != CaseStatus.Closed && c.Status != CaseStatus.Cancelled, ct);
         if (open > 0)
             throw new FieldValidationException(new[] { new FieldError("isActive",
                 $"'{team.Name}' still holds {open} open {(open == 1 ? "case" : "cases")}. Move or resolve {(open == 1 ? "it" : "them")} before deactivating the team (Case Settings → Teams → Team Rules).") });
@@ -316,7 +349,7 @@ public class TeamService : ITeamService
     private async Task CheckDepartmentsAsync(IReadOnlyCollection<Guid> ids, IReadOnlySet<Guid> alreadyLinked, CancellationToken ct)
     {
         if (ids.Count == 0) return;
-        var found = await _context.OrgDepartments.AsNoTracking().Where(d => ids.Contains(d.Id)).Select(d => new { d.Id, d.Name, d.IsActive }).ToListAsync(ct);
+        var found = await _context.Departments.AsNoTracking().Where(d => ids.Contains(d.Id)).Select(d => new { d.Id, d.Name, d.IsActive }).ToListAsync(ct);
         if (found.Count != ids.Count)
             throw new FieldValidationException(new[] { new FieldError(TeamFormFields.Departments, "One or more chosen departments no longer exist. Reload and choose again.") });
         var inactive = found.Where(d => !d.IsActive && !alreadyLinked.Contains(d.Id)).Select(d => d.Name).ToList();
@@ -334,7 +367,7 @@ public class TeamService : ITeamService
 
         if (!policy.AllowMultipleTeamLeads && leadId.HasValue)
         {
-            var otherTeam = await _context.Departments.AsNoTracking().Where(d => d.Id != teamId && d.OwnerId == leadId).Select(d => d.Name).FirstOrDefaultAsync(ct);
+            var otherTeam = await _context.Teams.AsNoTracking().Where(d => d.Id != teamId && d.OwnerId == leadId).Select(d => d.Name).FirstOrDefaultAsync(ct);
             if (otherTeam != null)
             {
                 var name = await _context.Users.AsNoTracking().Where(u => u.Id == leadId).Select(u => u.Name).FirstOrDefaultAsync(ct);
@@ -348,15 +381,15 @@ public class TeamService : ITeamService
             if (leadId.HasValue)
             {
                 var memberOf = await _context.TeamMembers.AsNoTracking()
-                    .Where(m => m.IsActive && m.UserId == leadId && m.DepartmentId != teamId && m.Department.OwnerId != m.UserId)
-                    .Select(m => new { m.User.Name, Team = m.Department.Name }).FirstOrDefaultAsync(ct);
+                    .Where(m => m.IsActive && m.UserId == leadId && m.TeamId != teamId && m.Team.OwnerId != m.UserId)
+                    .Select(m => new { m.User.Name, Team = m.Team.Name }).FirstOrDefaultAsync(ct);
                 if (memberOf != null)
                     errors.Add(new FieldError(TeamFormFields.TeamLead, $"{memberOf.Name} is a member of {memberOf.Team}. A team lead cannot also be a member of another team (Case Settings → Teams → Team Rules)."));
             }
             if (members != null)
             {
                 var ids = members.Select(m => m.UserId).Where(u => u != leadId).Distinct().ToList();
-                var leaders = await _context.Departments.AsNoTracking()
+                var leaders = await _context.Teams.AsNoTracking()
                     .Where(d => d.Id != teamId && d.OwnerId != null && ids.Contains(d.OwnerId.Value))
                     .Select(d => new { d.Owner!.Name, Team = d.Name }).OrderBy(x => x.Name).ToListAsync(ct);
                 if (leaders.Count > 0)
@@ -369,8 +402,8 @@ public class TeamService : ITeamService
         {
             var ids = members.Select(m => m.UserId).Where(u => u != leadId).Distinct().ToList();
             var elsewhere = await _context.TeamMembers.AsNoTracking()
-                .Where(m => m.IsActive && m.DepartmentId != teamId && ids.Contains(m.UserId) && m.Department.OwnerId != m.UserId)
-                .Select(m => new { m.User.Name, Team = m.Department.Name })
+                .Where(m => m.IsActive && m.TeamId != teamId && ids.Contains(m.UserId) && m.Team.OwnerId != m.UserId)
+                .Select(m => new { m.User.Name, Team = m.Team.Name })
                 .OrderBy(x => x.Name).ToListAsync(ct);
             if (elsewhere.Count > 0)
             {
@@ -384,7 +417,7 @@ public class TeamService : ITeamService
     }
 
     /// <summary>Makes the team's members exactly <paramref name="wanted"/> (plus the lead). Existing rows are reused so history is kept.</summary>
-    private async Task SyncMembersAsync(Department department, List<TeamMember> current, List<(Guid UserId, bool IsAssignable)>? wanted, Guid? leadId, CancellationToken ct)
+    private async Task SyncMembersAsync(Team department, List<TeamMember> current, List<(Guid UserId, bool IsAssignable)>? wanted, Guid? leadId, CancellationToken ct)
     {
         wanted ??= new List<(Guid, bool)>();
         // A lead is on their team's board, but does not receive cases automatically unless they were chosen as a member too:
@@ -407,7 +440,7 @@ public class TeamService : ITeamService
             {
                 _context.TeamMembers.Add(new TeamMember
                 {
-                    Id = Guid.NewGuid(), DepartmentId = department.Id, UserId = userId,
+                    Id = Guid.NewGuid(), TeamId = department.Id, UserId = userId,
                     MemberRole = userId == leadId ? "Team Lead" : (string.IsNullOrWhiteSpace(user.Role) ? "Service Agent" : user.Role),
                     IsAssignable = assignable, IsActive = true, JoinedAt = DateTime.UtcNow, CreatedAt = DateTime.UtcNow
                 });
@@ -445,22 +478,22 @@ public class TeamService : ITeamService
 
     public async Task DeleteTeamAsync(Guid id, Guid currentUserId, CancellationToken ct = default)
     {
-        var department = await _context.Departments.Include(d => d.Members).FirstOrDefaultAsync(d => d.Id == id, ct)
+        var department = await _context.Teams.Include(d => d.Members).FirstOrDefaultAsync(d => d.Id == id, ct)
             ?? throw new KeyNotFoundException($"Team with ID '{id}' was not found.");
 
-        var active = await _context.Cases.CountAsync(c => c.DepartmentId == id && c.Status != CaseStatus.Resolved && c.Status != CaseStatus.Closed && c.Status != CaseStatus.Cancelled, ct);
+        var active = await _context.Cases.CountAsync(c => c.TeamId == id && c.Status != CaseStatus.Resolved && c.Status != CaseStatus.Closed && c.Status != CaseStatus.Cancelled, ct);
         if (active > 0)
             throw new InvalidOperationException($"Cannot delete team '{department.Name}' because it currently has {active} active cases in queue. Please reassign or close cases before deleting.");
 
-        var rules = await _context.RoutingRules.Where(r => r.TargetDepartmentId == id).Select(r => r.Name).ToListAsync(ct);
+        var rules = await _context.RoutingRules.Where(r => r.TargetTeamId == id).Select(r => r.Name).ToListAsync(ct);
         if (rules.Count > 0)
             throw new InvalidOperationException($"Cannot delete team '{department.Name}' because routing rules send cases to it: {string.Join(", ", rules)}. Change or remove those rules first.");
 
-        if (await _context.Cases.AnyAsync(c => c.DepartmentId == id, ct))
+        if (await _context.Cases.AnyAsync(c => c.TeamId == id, ct))
             throw new InvalidOperationException($"Team '{department.Name}' has case history, so it cannot be deleted. Deactivate it instead.");
 
         _context.TeamMembers.RemoveRange(department.Members);
-        _context.Departments.Remove(department);   // its department links go with it (cascade)
+        _context.Teams.Remove(department);   // its department links go with it (cascade)
         _context.CaseEvents.Add(Audit("DELETE", department.Name, $"Deleted team '{department.Name}'", department.Name, null, currentUserId));
         await _context.SaveChangesAsync(ct);
     }
@@ -469,7 +502,7 @@ public class TeamService : ITeamService
     {
         var user = await _context.Users.FindAsync(new object[] { dto.UserId }, ct) ?? throw new KeyNotFoundException("User not found.");
         if (!user.IsActive) throw new InvalidOperationException($"{user.Name} is deactivated and cannot join a team.");
-        var leadId = await _context.Departments.Where(d => d.Id == teamId).Select(d => new { d.OwnerId }).FirstOrDefaultAsync(ct)
+        var leadId = await _context.Teams.Where(d => d.Id == teamId).Select(d => new { d.OwnerId }).FirstOrDefaultAsync(ct)
             ?? throw new KeyNotFoundException("Team not found.");
         var policy = await _settings.GetPolicyAsync(ct);
 
@@ -477,12 +510,12 @@ public class TeamService : ITeamService
         {
             await CheckPoliciesAsync(policy, teamId, leadId.OwnerId, new[] { (dto.UserId, dto.IsAssignable) }, ct);
 
-            var row = await _context.TeamMembers.FirstOrDefaultAsync(tm => tm.DepartmentId == teamId && tm.UserId == dto.UserId, ct);
+            var row = await _context.TeamMembers.FirstOrDefaultAsync(tm => tm.TeamId == teamId && tm.UserId == dto.UserId, ct);
             if (row == null)
             {
                 _context.TeamMembers.Add(new TeamMember
                 {
-                    Id = Guid.NewGuid(), DepartmentId = teamId, UserId = dto.UserId,
+                    Id = Guid.NewGuid(), TeamId = teamId, UserId = dto.UserId,
                     MemberRole = !string.IsNullOrWhiteSpace(dto.MemberRole) ? dto.MemberRole : (string.IsNullOrWhiteSpace(user.Role) ? "Service Agent" : user.Role),
                     IsAssignable = dto.IsAssignable, IsActive = true, JoinedAt = DateTime.UtcNow, CreatedAt = DateTime.UtcNow
                 });
@@ -500,7 +533,7 @@ public class TeamService : ITeamService
 
     public async Task RemoveMemberAsync(Guid teamId, Guid userId, Guid currentUserId, CancellationToken ct = default)
     {
-        var member = await _context.TeamMembers.Include(m => m.User).FirstOrDefaultAsync(tm => tm.DepartmentId == teamId && tm.UserId == userId, ct);
+        var member = await _context.TeamMembers.Include(m => m.User).FirstOrDefaultAsync(tm => tm.TeamId == teamId && tm.UserId == userId, ct);
         if (member == null) return;
 
         _context.TeamMembers.Remove(member);
@@ -510,7 +543,7 @@ public class TeamService : ITeamService
 
     public async Task<TeamDto> ToggleTeamStatusAsync(Guid id, Guid currentUserId, CancellationToken ct = default)
     {
-        var department = await _context.Departments.FirstOrDefaultAsync(d => d.Id == id, ct)
+        var department = await _context.Teams.FirstOrDefaultAsync(d => d.Id == id, ct)
             ?? throw new KeyNotFoundException($"Team with ID '{id}' was not found.");
 
         // The switch is a save like any other: the lifecycle and leadership rules apply to it too.
@@ -520,10 +553,24 @@ public class TeamService : ITeamService
             throw new FieldValidationException(new[] { new FieldError(TeamFormFields.TeamLead,
                 $"'{department.Name}' has no lead. Every active team needs one (Case Settings → Teams → Team Rules): choose a lead first.") });
 
-        department.IsActive = !department.IsActive;
-        department.UpdatedAt = DateTime.UtcNow;
-        _context.CaseEvents.Add(Audit("TOGGLE_STATUS", department.Name, $"Toggled team '{department.Name}' status to {(department.IsActive ? "ACTIVE" : "INACTIVE")}", (!department.IsActive).ToString(), department.IsActive.ToString(), currentUserId));
-        await _context.SaveChangesAsync(ct);
+        await RunGuardedAsync(async () =>
+        {
+            department.IsActive = !department.IsActive;
+            department.UpdatedAt = DateTime.UtcNow;
+            _context.CaseEvents.Add(Audit("TOGGLE_STATUS", department.Name, $"Toggled team '{department.Name}' status to {(department.IsActive ? "ACTIVE" : "INACTIVE")}", (!department.IsActive).ToString(), department.IsActive.ToString(), currentUserId));
+            if (!department.IsActive)
+            {
+                // An inactive team keeps no departments: they are released (unassigned), never handed to another team.
+                var links = await _context.TeamDepartments.Include(l => l.Department).Where(l => l.TeamId == id).ToListAsync(ct);
+                if (links.Count > 0)
+                {
+                    var released = string.Join(", ", links.Select(l => l.Department.Name).OrderBy(n => n));
+                    _context.TeamDepartments.RemoveRange(links);
+                    _context.CaseEvents.Add(Audit("UPDATE", department.Name, $"Deactivated team '{department.Name}': released {released} (now unassigned)", released, "Unassigned", currentUserId));
+                }
+            }
+            await _context.SaveChangesAsync(ct);
+        }, ct);
 
         return (await GetTeamByIdAsync(department.Id, ct))!;
     }

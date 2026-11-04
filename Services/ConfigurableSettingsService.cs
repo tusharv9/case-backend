@@ -717,8 +717,8 @@ public class ConfigurableSettingsService : IConfigurableSettingsService
         return items.Select(s => new DepartmentSubCategoryDto
         {
             Id = s.Id,
-            DepartmentId = s.OrgDepartmentId ?? Guid.Empty,
-            DepartmentName = s.OrgDepartment?.Name ?? string.Empty,
+            DepartmentId = s.DepartmentId ?? Guid.Empty,
+            DepartmentName = s.Department?.Name ?? string.Empty,
             Name = s.Name,
             Code = s.Code,
             Description = s.Description,
@@ -732,7 +732,7 @@ public class ConfigurableSettingsService : IConfigurableSettingsService
         // dto.DepartmentId is the business department; the legacy team link is left empty.
         var entity = new DepartmentSubCategory
         {
-            OrgDepartmentId = dto.DepartmentId,
+            DepartmentId = dto.DepartmentId,
             Name = dto.Name.Trim(),
             Code = await SubCategoryCodeAsync(dto.Code, dto.Name, null, ct),
             Description = string.IsNullOrWhiteSpace(dto.Description) ? null : dto.Description.Trim(),
@@ -743,15 +743,15 @@ public class ConfigurableSettingsService : IConfigurableSettingsService
         if (!await _repository.DepartmentExistsAsync(dto.DepartmentId, ct))
             throw new InvalidOperationException("The selected department no longer exists.");
 
-        if (await _repository.SubCategoryExistsAsync(entity.OrgDepartmentId, entity.Name, null, ct))
+        if (await _repository.SubCategoryExistsAsync(entity.DepartmentId, entity.Name, null, ct))
             throw new InvalidOperationException($"Sub-category '{entity.Name}' already exists for this department.");
 
         var created = await _repository.AddSubCategoryAsync(entity, ct);
         return new DepartmentSubCategoryDto
         {
             Id = created.Id,
-            DepartmentId = created.OrgDepartmentId ?? Guid.Empty,
-            DepartmentName = await _context.OrgDepartments.Where(d => d.Id == created.OrgDepartmentId).Select(d => d.Name).FirstOrDefaultAsync(ct) ?? string.Empty,
+            DepartmentId = created.DepartmentId ?? Guid.Empty,
+            DepartmentName = await _context.Departments.Where(d => d.Id == created.DepartmentId).Select(d => d.Name).FirstOrDefaultAsync(ct) ?? string.Empty,
             Name = created.Name,
             Code = created.Code,
             Description = created.Description,
@@ -769,7 +769,7 @@ public class ConfigurableSettingsService : IConfigurableSettingsService
 
         // The sub-category keeps its parent department: renaming must never turn it into a
         // free-floating global value.
-        if (await _repository.SubCategoryExistsAsync(existing.OrgDepartmentId, dto.Name.Trim(), id, ct))
+        if (await _repository.SubCategoryExistsAsync(existing.DepartmentId, dto.Name.Trim(), id, ct))
             throw new InvalidOperationException($"Sub-category '{dto.Name.Trim()}' already exists for this department.");
 
         var entity = new DepartmentSubCategory
@@ -787,7 +787,7 @@ public class ConfigurableSettingsService : IConfigurableSettingsService
             if (result != null && !string.Equals(existing.Name, result.Name, StringComparison.Ordinal))
             {
                 // Cases of THIS department keep pointing at the renamed sub-category.
-                await _context.Cases.Where(c => c.OrgDepartmentId == existing.OrgDepartmentId && c.Subcategory != null && c.Subcategory.ToLower() == existing.Name.ToLower())
+                await _context.Cases.Where(c => c.DepartmentId == existing.DepartmentId && c.Subcategory != null && c.Subcategory.ToLower() == existing.Name.ToLower())
                     .ExecuteUpdateAsync(u => u.SetProperty(c => c.Subcategory, result.Name), ct);
                 // Routing and skill rules match a sub-category by NAME across departments: rename them only when no other
                 // sub-category still uses the old name, otherwise they would silently stop applying there.
@@ -806,8 +806,8 @@ public class ConfigurableSettingsService : IConfigurableSettingsService
         return new DepartmentSubCategoryDto
         {
             Id = updated.Id,
-            DepartmentId = updated.OrgDepartmentId ?? Guid.Empty,
-            DepartmentName = existing.OrgDepartment?.Name ?? string.Empty,
+            DepartmentId = updated.DepartmentId ?? Guid.Empty,
+            DepartmentName = existing.Department?.Name ?? string.Empty,
             Name = updated.Name,
             Code = updated.Code,
             Description = updated.Description,
@@ -822,14 +822,14 @@ public class ConfigurableSettingsService : IConfigurableSettingsService
     /// </summary>
     private async Task<string> SubCategoryCodeAsync(string? requested, string name, Guid? excludeId, CancellationToken ct)
     {
-        async Task<DepartmentSubCategory?> HolderAsync(string code) => await _context.DepartmentSubCategories.AsNoTracking().Include(s => s.OrgDepartment)
+        async Task<DepartmentSubCategory?> HolderAsync(string code) => await _context.DepartmentSubCategories.AsNoTracking().Include(s => s.Department)
             .FirstOrDefaultAsync(s => s.Id != excludeId && s.Code.ToLower() == code.ToLower(), ct);
 
         if (!string.IsNullOrWhiteSpace(requested))
         {
             var code = requested.Trim();
             if (await HolderAsync(code) is { } holder)
-                throw new InvalidOperationException($"The code '{code}' is already used by '{holder.OrgDepartment?.Name ?? "another department"} / {holder.Name}'. Each sub-category needs its own code.");
+                throw new InvalidOperationException($"The code '{code}' is already used by '{holder.Department?.Name ?? "another department"} / {holder.Name}'. Each sub-category needs its own code.");
             return code;
         }
 
@@ -844,7 +844,7 @@ public class ConfigurableSettingsService : IConfigurableSettingsService
         var existing = (await _repository.GetSubCategoriesAsync(null, false, ct)).FirstOrDefault(s => s.Id == id);
         if (existing == null) return false;
 
-        var inUse = await _repository.CountCasesBySubCategoryAsync(existing.OrgDepartmentId, existing.Name, ct);
+        var inUse = await _repository.CountCasesBySubCategoryAsync(existing.DepartmentId, existing.Name, ct);
         if (inUse > 0)
             throw new InvalidOperationException(
                 $"Sub-category '{existing.Name}' cannot be deleted because {inUse} case(s) use it. Deactivate it instead.");

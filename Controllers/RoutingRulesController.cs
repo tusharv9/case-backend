@@ -43,7 +43,7 @@ public class RoutingRulesController : BaseApiController
             return BadRequest(new { error = "Rule name is required." });
         }
 
-        if (dto.TargetDepartmentId == Guid.Empty)
+        if (dto.TargetTeamId == Guid.Empty)
         {
             return BadRequest(new { error = "A valid destination team (TargetDepartmentId) is required." });
         }
@@ -90,23 +90,23 @@ public class RoutingRulesController : BaseApiController
         return Ok(new { success = true, message = "Rules reordered successfully." });
     }
 
-    /// <summary>The global assignment settings, or those in force for one team (<c>?departmentId=</c>).</summary>
+    /// <summary>The global assignment settings, or those in force for one team (<c>?teamId=</c>).</summary>
     [HttpGet("assignment-config")]
-    public async Task<IActionResult> GetAssignmentConfig([FromQuery] Guid? departmentId, CancellationToken ct)
+    public async Task<IActionResult> GetAssignmentConfig([FromQuery] Guid? teamId, CancellationToken ct)
     {
-        var config = await _routingEngine.GetAssignmentConfigAsync(departmentId, ct);
+        var config = await _routingEngine.GetAssignmentConfigAsync(teamId, ct);
         return Ok(config);
     }
 
     [HttpPut("assignment-config")]
-    public async Task<IActionResult> UpdateAssignmentConfig([FromBody] UpdateAssignmentConfigDto dto, [FromQuery] Guid? departmentId, CancellationToken ct)
+    public async Task<IActionResult> UpdateAssignmentConfig([FromBody] UpdateAssignmentConfigDto dto, [FromQuery] Guid? teamId, CancellationToken ct)
     {
         if (dto == null || string.IsNullOrWhiteSpace(dto.Algorithm))
         {
             return BadRequest(new { error = "Assignment algorithm is required." });
         }
 
-        var updated = await _routingEngine.UpdateAssignmentConfigAsync(dto, CurrentUserId, departmentId, ct);
+        var updated = await _routingEngine.UpdateAssignmentConfigAsync(dto, CurrentUserId, teamId, ct);
         return Ok(updated);
     }
 

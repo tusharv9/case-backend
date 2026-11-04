@@ -5,8 +5,8 @@ public class AssignmentConfiguration : AuditableEntity
     public Guid Id { get; set; } = Guid.NewGuid();
     
     // If DepartmentId is null, this is the global fallback assignment configuration
-    public Guid? DepartmentId { get; set; }
-    public Department? Department { get; set; }
+    public Guid? TeamId { get; set; }
+    public Team? Team { get; set; }
     
     // "RoundRobin", "SkillBased", "LeastOccupancy"
     public string Algorithm { get; set; } = "RoundRobin";

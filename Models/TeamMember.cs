@@ -4,8 +4,8 @@ public class TeamMember : AuditableEntity
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     
-    public Guid DepartmentId { get; set; }
-    public Department Department { get; set; } = null!;
+    public Guid TeamId { get; set; }
+    public Team Team { get; set; } = null!;
     
     public Guid UserId { get; set; }
     public User User { get; set; } = null!;

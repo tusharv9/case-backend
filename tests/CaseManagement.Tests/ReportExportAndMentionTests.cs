@@ -68,9 +68,9 @@ public class ReportExportAndMentionTests : IDisposable
         var owner = U("Olivia Owner"); var lead = U("Liam Lead"); var cow = U("Cora Worker"); var watcher = U("Wade Watcher");
         var outsider = U("Olive Outsider"); var inactive = U("Ivy Inactive", active: false);
         db.Users.AddRange(owner, lead, cow, watcher, outsider, inactive);
-        var team = new Department { Id = Guid.NewGuid(), Name = "Cards", Code = "CRD", OwnerId = lead.Id, CreatedAt = DateTime.UtcNow };
-        db.Departments.Add(team);
-        var c = new Case { Id = Guid.NewGuid(), CaseNumber = "C-00001", Title = "Lost card", DepartmentId = team.Id, OwnerId = owner.Id, Severity = "High", CreatedAt = DateTime.UtcNow };
+        var team = new Team { Id = Guid.NewGuid(), Name = "Cards", Code = "CRD", OwnerId = lead.Id, CreatedAt = DateTime.UtcNow };
+        db.Teams.Add(team);
+        var c = new Case { Id = Guid.NewGuid(), CaseNumber = "C-00001", Title = "Lost card", TeamId = team.Id, OwnerId = owner.Id, Severity = "High", CreatedAt = DateTime.UtcNow };
         db.Cases.Add(c);
         db.CaseParticipants.AddRange(
             new CaseParticipant { CaseId = c.Id, UserId = cow.Id, Role = ParticipantRole.CoWorker },

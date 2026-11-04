@@ -35,8 +35,8 @@ public class UpdateTeamSettingsDto
     public DateTime? ExpectedVersion { get; set; }
 }
 
-/// <summary>A business department, as the settings list shows it.</summary>
-public class OrgDepartmentDto
+/// <summary>A department, with the team it is assigned to (null: unassigned, so it cannot be used to create cases yet).</summary>
+public class DepartmentDto
 {
     public Guid Id { get; set; }
     public string Name { get; set; } = string.Empty;
@@ -44,10 +44,8 @@ public class OrgDepartmentDto
     public string? Description { get; set; }
     public bool IsActive { get; set; }
     public int DisplayOrder { get; set; }
-    /// <summary>Teams that serve this department (active or not).</summary>
-    public int TeamCount { get; set; }
-    /// <summary>The teams that serve it, the default one marked: where its cases go when no routing rule matches.</summary>
-    public List<DepartmentTeamDto> Teams { get; set; } = new();
+    /// <summary>The one team this department is assigned to, or null.</summary>
+    public DepartmentTeamDto? Team { get; set; }
     /// <summary>Cases that belong to this department.</summary>
     public int CaseCount { get; set; }
 }
@@ -57,16 +55,15 @@ public class DepartmentTeamDto
     public Guid Id { get; set; }
     public string Name { get; set; } = string.Empty;
     public bool IsActive { get; set; }
-    public bool IsDefault { get; set; }
 }
 
-public class SetDefaultTeamDto
+public class AssignDepartmentTeamDto
 {
-    /// <summary>A team that serves the department, or null for no default.</summary>
+    /// <summary>The team to assign the department to, or null to leave it unassigned.</summary>
     public Guid? TeamId { get; set; }
 }
 
-public class SaveOrgDepartmentDto
+public class SaveDepartmentDto
 {
     public string Name { get; set; } = string.Empty;
     public string? Code { get; set; }

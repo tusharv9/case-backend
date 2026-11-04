@@ -61,13 +61,13 @@ public class PermissionEnforcementTests
             await using (var ctx = e.Db.NewContext())
             {
                 e.Team = Guid.NewGuid(); e.Other = Guid.NewGuid(); e.Customer = Guid.NewGuid();
-                ctx.Departments.AddRange(
-                    new Department { Id = e.Team, Name = "Loans", Code = "LN", CreatedAt = DateTime.UtcNow },
-                    new Department { Id = e.Other, Name = "Cards", Code = "CD", CreatedAt = DateTime.UtcNow });
+                ctx.Teams.AddRange(
+                    new Team { Id = e.Team, Name = "Loans", Code = "LN", CreatedAt = DateTime.UtcNow },
+                    new Team { Id = e.Other, Name = "Cards", Code = "CD", CreatedAt = DateTime.UtcNow });
                 await ctx.SaveChangesAsync();
                 ctx.AddRange(
-                    new DepartmentSubCategory { Id = Guid.NewGuid(), DepartmentId = e.Team, Name = "Repayment", Code = "R", IsActive = true, CreatedAt = DateTime.UtcNow },
-                    new DepartmentSubCategory { Id = Guid.NewGuid(), DepartmentId = e.Other, Name = "Fraud", Code = "F", IsActive = true, CreatedAt = DateTime.UtcNow },
+                    new DepartmentSubCategory { Id = Guid.NewGuid(), DepartmentId = TestDepartments.IdFor(e.Team), Name = "Repayment", Code = "R", IsActive = true, CreatedAt = DateTime.UtcNow },
+                    new DepartmentSubCategory { Id = Guid.NewGuid(), DepartmentId = TestDepartments.IdFor(e.Other), Name = "Fraud", Code = "F", IsActive = true, CreatedAt = DateTime.UtcNow },
                     new Customer { Id = e.Customer, FullName = "Siti Aminah", IdType = "Passport Number", Passport = "B12345678", PhoneNumber = "+60 12-111 2222", PreferredLanguage = "English", CreatedAt = DateTime.UtcNow });
                 await ctx.SaveChangesAsync();
                 await TestDepartments.LinkTeamsAsync(ctx);

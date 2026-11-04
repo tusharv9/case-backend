@@ -27,7 +27,7 @@ public class CasesController : BaseApiController
 
     [HttpGet]
     public async Task<IActionResult> GetBoardCases(
-        [FromQuery] Guid? departmentId,
+        [FromQuery] Guid? teamId,
         [FromQuery] string? caseType,
         [FromQuery] string? status,
         [FromQuery] int? page,
@@ -41,15 +41,15 @@ public class CasesController : BaseApiController
         // Always paged. (A call without a page used to return every case in the database — hundreds of MB at scale.)
         var paged = await _caseService.GetPaginatedBoardCasesAsync(
             status, Math.Max(1, page ?? 1), Math.Clamp(pageSize ?? 30, 1, 100),
-            CrossTeamFilter(access, departmentId), caseType, search, priority, channel, ct);
+            CrossTeamFilter(access, teamId), caseType, search, priority, channel, ct);
         return Ok(paged);
     }
 
     /// <summary>Open / SLA-breached counts for the Case Management header.</summary>
     [HttpGet("stats")]
-    public async Task<IActionResult> GetCaseStats([FromQuery] Guid? departmentId, [FromServices] ICaseAccessScope access, CancellationToken ct)
+    public async Task<IActionResult> GetCaseStats([FromQuery] Guid? teamId, [FromServices] ICaseAccessScope access, CancellationToken ct)
     {
-        var stats = await _caseService.GetCaseStatsAsync(CrossTeamFilter(access, departmentId), ct);
+        var stats = await _caseService.GetCaseStatsAsync(CrossTeamFilter(access, teamId), ct);
         return Ok(stats);
     }
 
@@ -58,7 +58,7 @@ public class CasesController : BaseApiController
     /// only their own teams' and assignments' cases, and a team filter is ignored for them — it could only narrow that set in
     /// ways the screen does not offer them.
     /// </summary>
-    internal static Guid? CrossTeamFilter(ICaseAccessScope access, Guid? departmentId) => access.SeesAll ? departmentId : null;
+    internal static Guid? CrossTeamFilter(ICaseAccessScope access, Guid? teamId) => access.SeesAll ? teamId : null;
 
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> GetCaseDetails(Guid id, [FromServices] AppDbContext db, [FromServices] ILogger<CasesController> logger, CancellationToken ct)

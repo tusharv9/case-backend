@@ -96,10 +96,10 @@ public class DataReconciliationService
             .Where(c => c.Status != CaseStatus.Resolved && c.Status != CaseStatus.Closed && c.Status != CaseStatus.Cancelled)
             .Select(c => new
             {
-                c.Id, c.CaseNumber, c.DepartmentId, c.OwnerId,
-                Team = c.Department.Name, TeamActive = c.Department.IsActive, LeadId = c.Department.OwnerId,
+                c.Id, c.CaseNumber, c.TeamId, c.OwnerId,
+                Team = c.Team.Name, TeamActive = c.Team.IsActive, LeadId = c.Team.OwnerId,
                 Holder = c.Owner.Name, HolderActive = c.Owner.IsActive,
-                HolderIsMember = _context.TeamMembers.Any(m => m.DepartmentId == c.DepartmentId && m.UserId == c.OwnerId && m.IsActive),
+                HolderIsMember = _context.TeamMembers.Any(m => m.TeamId == c.TeamId && m.UserId == c.OwnerId && m.IsActive),
             })
             .ToListAsync(ct);
         var activeLeads = await _context.Users.AsNoTracking().Where(u => u.IsActive).Select(u => new { u.Id, u.Name }).ToDictionaryAsync(u => u.Id, u => u.Name, ct);
@@ -121,21 +121,21 @@ public class DataReconciliationService
 
         // 3. Sub-category text on cases that is not a sub-category of the case's (business) department.
         report.BlankSubcategoriesToClear = await _context.Cases.CountAsync(c => c.Subcategory != null && c.Subcategory.Trim() == "", ct);
-        var known = await _context.DepartmentSubCategories.AsNoTracking().Select(s => new { s.OrgDepartmentId, Name = s.Name.ToLower() }).ToListAsync(ct);
-        var knownSet = known.Select(k => (k.OrgDepartmentId, k.Name)).ToHashSet();
+        var known = await _context.DepartmentSubCategories.AsNoTracking().Select(s => new { s.DepartmentId, Name = s.Name.ToLower() }).ToListAsync(ct);
+        var knownSet = known.Select(k => (k.DepartmentId, k.Name)).ToHashSet();
         var used = await _context.Cases.AsNoTracking()
             .Where(c => c.Subcategory != null && c.Subcategory.Trim() != "")
-            .GroupBy(c => new { c.OrgDepartmentId, Team = c.OrgDepartment != null ? c.OrgDepartment.Name : c.Department.Name, c.Subcategory })
-            .Select(g => new { g.Key.OrgDepartmentId, g.Key.Team, g.Key.Subcategory, Cases = g.Count(), Open = g.Count(c => c.Status != CaseStatus.Resolved && c.Status != CaseStatus.Closed && c.Status != CaseStatus.Cancelled) })
+            .GroupBy(c => new { c.DepartmentId, Team = c.Department != null ? c.Department.Name : c.Team.Name, c.Subcategory })
+            .Select(g => new { g.Key.DepartmentId, g.Key.Team, g.Key.Subcategory, Cases = g.Count(), Open = g.Count(c => c.Status != CaseStatus.Resolved && c.Status != CaseStatus.Closed && c.Status != CaseStatus.Cancelled) })
             .ToListAsync(ct);
         report.UnknownSubcategories = used
-            .Where(u => !knownSet.Contains((u.OrgDepartmentId, u.Subcategory!.ToLower())))
+            .Where(u => !knownSet.Contains((u.DepartmentId, u.Subcategory!.ToLower())))
             .Select(u => new UnknownSubcategory(u.Team, u.Subcategory!, u.Cases, u.Open))
             .OrderBy(u => u.Team).ThenBy(u => u.Subcategory)
             .ToList();
 
         // 4. Teams (= departments): what each is used by, so retiring one never loses a reference.
-        var teams = await _context.Departments.AsNoTracking()
+        var teams = await _context.Teams.AsNoTracking()
             .Select(d => new
             {
                 d.Name, d.Code, d.IsActive,
@@ -143,8 +143,8 @@ public class DataReconciliationService
                 Members = d.Members.Count(m => m.IsActive),
                 Open = d.Cases.Count(c => c.Status != CaseStatus.Resolved && c.Status != CaseStatus.Closed && c.Status != CaseStatus.Cancelled),
                 All = d.Cases.Count,
-                Rules = _context.RoutingRules.Count(r => r.TargetDepartmentId == d.Id),
-                Cross = _context.ManualAssignmentCrossTeams.Count(x => x.DepartmentId == d.Id),
+                Rules = _context.RoutingRules.Count(r => r.TargetTeamId == d.Id),
+                Cross = _context.ManualAssignmentCrossTeams.Count(x => x.TeamId == d.Id),
             })
             .OrderBy(d => d.Name)
             .ToListAsync(ct);
@@ -182,7 +182,7 @@ public class DataReconciliationService
         foreach (var c in cases)
         {
             var fix = report.CasesHeldOutsideTheirTeam.First(f => f.CaseId == c.Id);
-            var decision = await _routing.AssignWithinTeamAsync(c, c.Customer, c.DepartmentId, "data reconciliation", ct);
+            var decision = await _routing.AssignWithinTeamAsync(c, c.Customer, c.TeamId, "data reconciliation", ct);
             c.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync(ct);
             var how = decision.HeldByUserId != null ? $"held by the team lead: {decision.HeldReason}" : $"{decision.AlgorithmUsed}";

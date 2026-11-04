@@ -12,8 +12,8 @@ public enum SeedMode
     /// (lookups, field layouts, case types, severities/SLA defaults, business hours, escalation
     /// levels). No users, teams, customers or routing rules.</summary>
     Bootstrap,
-    /// <summary>Bootstrap plus sample users, teams, customers, sub-categories, routing rules and
-    /// skills, so a developer or demo environment is usable immediately.</summary>
+    /// <summary>Bootstrap plus sample customers and skill rules. Never teams, departments or their mappings: those are
+    /// always created by an administrator.</summary>
     Development
 }
 
@@ -55,12 +55,10 @@ public static class DbSeeder
         new("bootstrap.escalation-reasons-and-reason-detail.v1", SeedKind.Bootstrap, EnsureEscalationReasonsAndReasonDetail),
         new("bootstrap.case-list-filter-fields.v1", SeedKind.Bootstrap, EnsureCaseListFilterFields),
 
-        new("development.users-and-departments.v1", SeedKind.Development, SeedDevUsers),
-        new("development.team-memberships.v1", SeedKind.Development, EnsureDevTeamMemberships),
+        // No step creates teams, departments, team members, sub-categories or routing rules: every team and every
+        // team–department mapping is created by an administrator. (The former sample-team steps were removed; a database
+        // that ran them keeps what they created, as ordinary, editable records.)
         new("development.sample-customers.v1", SeedKind.Development, ctx => { SeedPassportCustomer(ctx); SeedAccountNumberCustomer(ctx); }),
-        new("development.sample-subcategories-and-priority-mappings.v1", SeedKind.Development, SeedSampleSubCategoriesAndPriorityMappings),
-        new("development.teams-and-squads.v1", SeedKind.Development, EnsureTeamsAndSquads),
-        new("development.routing-rules-and-skills.v1", SeedKind.Development, EnsureRoutingRulesAndSkills),
         new("development.skill-rules.v1", SeedKind.Development, EnsureDevSkillRules),
         new("development.customer360-standardization.v1", SeedKind.Development, EnsureCustomer360Standardization),
 
@@ -152,119 +150,6 @@ public static class DbSeeder
     /// </summary>
     private static void LinkSampleUsersToHostIdentity(AppDbContext context) =>
         context.Database.ExecuteSqlRaw("UPDATE \"Users\" SET \"ExternalUserId\" = \"Id\"::text WHERE \"ExternalUserId\" IS NULL");
-
-    private static void SeedDevUsers(AppDbContext context)
-    {
-        try
-        {
-            var ccDept = context.Departments.FirstOrDefault(d => d.Code == "CC") ?? context.Departments.FirstOrDefault(d => d.Name.Contains("Contact"));
-            if (ccDept == null)
-            {
-                ccDept = new Department { Id = Guid.NewGuid(), Name = "Contact Center", Code = "CC", CreatedAt = DateTime.UtcNow };
-                context.Departments.Add(ccDept);
-                context.SaveChanges();
-            }
-
-            var mfDept = context.Departments.FirstOrDefault(d => d.Code == "MF") ?? context.Departments.FirstOrDefault(d => d.Name.Contains("Micro"));
-            if (mfDept == null)
-            {
-                mfDept = new Department { Id = Guid.NewGuid(), Name = "Micro Finance", Code = "MF", CreatedAt = DateTime.UtcNow };
-                context.Departments.Add(mfDept);
-                context.SaveChanges();
-            }
-
-            var fiDept = context.Departments.FirstOrDefault(d => d.Code == "FI") ?? context.Departments.FirstOrDefault(d => d.Name.Contains("Fraud"));
-            if (fiDept == null)
-            {
-                fiDept = new Department { Id = Guid.NewGuid(), Name = "Fraud Operations", Code = "FI", CreatedAt = DateTime.UtcNow };
-                context.Departments.Add(fiDept);
-                context.SaveChanges();
-            }
-
-            // Update existing Siti and Aisha with teams and queues
-            var siti = context.Users.FirstOrDefault(u => u.Email == "siti@bank.com");
-            if (siti != null)
-            {
-                if (string.IsNullOrEmpty(siti.Team)) siti.Team = "Contact Centre";
-                if (string.IsNullOrEmpty(siti.Queue)) siti.Queue = "General Support";
-            }
-
-            var aisha = context.Users.FirstOrDefault(u => u.Email == "aisha@bank.com");
-            if (aisha != null)
-            {
-                if (string.IsNullOrEmpty(aisha.Team)) aisha.Team = "Lending Operations";
-                if (string.IsNullOrEmpty(aisha.Queue)) aisha.Queue = "MicroFinance Tier 1";
-            }
-
-            // Seed realistic team leads, SMEs, and agents
-            var devUsers = new (string Name, string Email, string Role, string Team, string Queue, UserStatus Status, Guid DeptId)[]
-            {
-                ("Mei Ling Tan", "meiling@bank.com", "CC Team Lead", "Contact Centre", "Escalations", UserStatus.Available, ccDept.Id),
-                ("Kavitha Raj", "kavitha@bank.com", "Fraud Investigation Lead", "Fraud Operations", "Disputes Escalation", UserStatus.Available, fiDept.Id),
-                ("Hafiz Osman", "hafiz@bank.com", "MicroFinance Team Lead", "Lending Operations", "MicroFinance Tier 2", UserStatus.Available, mfDept.Id),
-                ("Farhan Lee", "farhan@bank.com", "Senior Dispute Specialist", "Card Disputes", "Dispute Resolution", UserStatus.Available, ccDept.Id),
-                ("Nurul Huda", "nurul@bank.com", "Service Agent", "Digital Banking", "Digital Support", UserStatus.Busy, ccDept.Id),
-                ("Zulkhairi Ahmad", "zulkhairi@bank.com", "Senior Fraud SME", "Fraud Risk", "AML & Fraud Risk", UserStatus.Available, fiDept.Id),
-                ("Daniel Chong", "daniel@bank.com", "Loan Specialist", "Loan Processing", "Underwriting", UserStatus.Away, mfDept.Id),
-                ("Amina Al-Mansoor", "amina@bank.com", "CX Supervisor", "Contact Centre", "Executive Escalations", UserStatus.Available, ccDept.Id),
-                ("David Tan Sri", "david.tan@bank.com", "Head of Customer Experience", "Contact Centre", "Executive CX Office", UserStatus.Available, ccDept.Id)
-            };
-
-            foreach (var (name, email, role, team, queue, status, deptId) in devUsers)
-            {
-                var user = context.Users.FirstOrDefault(u => u.Email == email);
-                if (user == null)
-                {
-                    context.Users.Add(new User
-                    {
-                        Id = Guid.NewGuid(),
-                        Name = name,
-                        Email = email,
-                        Role = role,
-                        Team = team,
-                        Queue = queue,
-                        Status = status,
-                        DepartmentId = deptId,
-                        CreatedAt = DateTime.UtcNow
-                    });
-                }
-                else
-                {
-                    // Existing users keep whatever name, role and status they have now;
-                    // only blanks are filled in.
-                    if (string.IsNullOrEmpty(user.Team)) user.Team = team;
-                    if (string.IsNullOrEmpty(user.Queue)) user.Queue = queue;
-                }
-            }
-
-            context.SaveChanges();
-
-            // Ensure department owners are set
-            var ccLead = context.Users.FirstOrDefault(u => u.Email == "meiling@bank.com");
-            if (ccLead != null && (ccDept.OwnerId == null || ccDept.OwnerId == Guid.Empty))
-            {
-                ccDept.OwnerId = ccLead.Id;
-            }
-
-            var fiLead = context.Users.FirstOrDefault(u => u.Email == "kavitha@bank.com");
-            if (fiLead != null && (fiDept.OwnerId == null || fiDept.OwnerId == Guid.Empty))
-            {
-                fiDept.OwnerId = fiLead.Id;
-            }
-
-            var mfLead = context.Users.FirstOrDefault(u => u.Email == "hafiz@bank.com");
-            if (mfLead != null && (mfDept.OwnerId == null || mfDept.OwnerId == Guid.Empty))
-            {
-                mfDept.OwnerId = mfLead.Id;
-            }
-
-            context.SaveChanges();
-        }
-        catch (Exception ex)
-        {
-            throw new InvalidOperationException($"Seed step 'SeedDevUsers' failed: {ex.Message}", ex);
-        }
-    }
 
     /// <summary>
     /// Ships a real, working escalation template per department so an administrator can see
@@ -516,7 +401,7 @@ public static class DbSeeder
             if (!existingCaseFields.Any(f => f.SectionKey == "Filters"))
             {
                 context.FieldConfigurations.AddRange(
-                    new FieldConfiguration { Id = Guid.NewGuid(), ModuleKey = "CaseManagement", SectionKey = "Filters", ApiField = "departmentId", DisplayLabel = "Handling Department", IsVisible = true, IsRequired = false, MaskingRule = "None", VisibleChars = 4, DisplayOrder = 1, FieldType = "Dropdown", CreatedAt = now },
+                    new FieldConfiguration { Id = Guid.NewGuid(), ModuleKey = "CaseManagement", SectionKey = "Filters", ApiField = "teamId", DisplayLabel = "Team", IsVisible = true, IsRequired = false, MaskingRule = "None", VisibleChars = 4, DisplayOrder = 1, FieldType = "Dropdown", CreatedAt = now },
                     new FieldConfiguration { Id = Guid.NewGuid(), ModuleKey = "CaseManagement", SectionKey = "Filters", ApiField = "status", DisplayLabel = "Case Status", IsVisible = true, IsRequired = false, MaskingRule = "None", VisibleChars = 4, DisplayOrder = 2, FieldType = "Dropdown", CreatedAt = now },
                     new FieldConfiguration { Id = Guid.NewGuid(), ModuleKey = "CaseManagement", SectionKey = "Filters", ApiField = "caseType", DisplayLabel = "Case Type", IsVisible = true, IsRequired = false, MaskingRule = "None", VisibleChars = 4, DisplayOrder = 3, FieldType = "Dropdown", CreatedAt = now }
                 );
@@ -940,91 +825,6 @@ public static class DbSeeder
     }
 
     /// <summary>
-    /// DEVELOPMENT DATA: sample sub-categories per department and their priority mappings. These
-    /// reference departments, which only exist in development seeds, so they are not part of the
-    /// production bootstrap.
-    /// </summary>
-    private static void SeedSampleSubCategoriesAndPriorityMappings(AppDbContext context)
-    {
-        try
-        {
-            var now = DateTime.UtcNow;
-            var rules = context.PrioritySlaRules.ToList();
-            PrioritySlaRule? RuleFor(string priority) => rules.FirstOrDefault(r => r.Priority == priority);
-            var critical = RuleFor("Critical");
-            var high = RuleFor("High");
-            var medium = RuleFor("Medium");
-            var low = RuleFor("Low");
-
-            // 2. Ensure initial Department Subcategories exist for category mapping
-            var allDepts = context.Departments.ToList();
-            var fiDept = allDepts.FirstOrDefault(d => d.Code == "FI") ?? allDepts.FirstOrDefault(d => d.Name.Contains("Fraud", StringComparison.OrdinalIgnoreCase));
-            var ccDept = allDepts.FirstOrDefault(d => d.Code == "CC") ?? allDepts.FirstOrDefault(d => d.Name.Contains("Contact", StringComparison.OrdinalIgnoreCase));
-            var mfDept = allDepts.FirstOrDefault(d => d.Code == "MF") ?? allDepts.FirstOrDefault(d => d.Name.Contains("Micro", StringComparison.OrdinalIgnoreCase));
-
-            var initialCategories = new List<(string Name, string Code, Guid? DeptId)>
-            {
-                ("Fraud", "FRD", fiDept?.Id),
-                ("Security Incident", "SEC", fiDept?.Id),
-                ("Payment Issue", "PAY", ccDept?.Id),
-                ("Account Access", "ACC", ccDept?.Id),
-                ("Card Dispute", "DIS", ccDept?.Id),
-                ("Loan Inquiry", "LON", mfDept?.Id),
-                ("General Inquiry", "GEN", ccDept?.Id)
-            };
-
-            foreach (var (name, code, deptId) in initialCategories)
-            {
-                if (deptId.HasValue && !context.DepartmentSubCategories.Any(s => s.Name == name))
-                {
-                    context.DepartmentSubCategories.Add(new DepartmentSubCategory
-                    {
-                        Id = Guid.NewGuid(),
-                        Name = name,
-                        Code = code,
-                        DepartmentId = deptId.Value,
-                        DisplayOrder = 1,
-                        IsActive = true,
-                        CreatedAt = now
-                    });
-                }
-            }
-            context.SaveChanges();
-
-            // 3. Seed PriorityCategoryMappings
-            var categoryMappings = new (string Category, PrioritySlaRule? Rule)[]
-            {
-                ("Fraud", critical),
-                ("Security Incident", critical),
-                ("Payment Issue", high),
-                ("Account Access", high),
-                ("Card Dispute", medium),
-                ("Loan Inquiry", low)
-            };
-
-            foreach (var (cat, r) in categoryMappings)
-            {
-                if (r == null) continue;
-                var subCategory = context.DepartmentSubCategories.FirstOrDefault(s => s.Name == cat);
-                if (subCategory == null || context.PriorityCategoryMappings.Any(m => m.DepartmentSubCategoryId == subCategory.Id)) continue;
-
-                context.PriorityCategoryMappings.Add(new PriorityCategoryMapping
-                {
-                    Id = Guid.NewGuid(),
-                    PrioritySlaRuleId = r.Id,
-                    DepartmentSubCategoryId = subCategory.Id,
-                    CreatedAt = now
-                });
-            }
-            context.SaveChanges();
-        }
-        catch (Exception ex)
-        {
-            throw new InvalidOperationException($"Seed step 'SeedSampleSubCategoriesAndPriorityMappings' failed: {ex.Message}", ex);
-        }
-    }
-
-    /// <summary>
     /// LEGACY ONLY: gives cases created before SLA snapshots existed their snapshot fields.
     /// Runs once, while adopting a pre-migration database; a fresh database has no such cases.
     /// </summary>
@@ -1054,10 +854,10 @@ public static class DbSeeder
     /// <summary>The global default for how cases are given to agents. Every team follows it unless it has its own settings.</summary>
     private static void EnsureGlobalAssignmentSettings(AppDbContext context)
     {
-        if (context.AssignmentConfigurations.Any(c => c.DepartmentId == null)) return;
+        if (context.AssignmentConfigurations.Any(c => c.TeamId == null)) return;
         context.AssignmentConfigurations.Add(new AssignmentConfiguration
         {
-            Id = Guid.NewGuid(), DepartmentId = null, Algorithm = "RoundRobin", MaxConcurrentCapacity = 5, IsActive = true, CreatedAt = DateTime.UtcNow
+            Id = Guid.NewGuid(), TeamId = null, Algorithm = "RoundRobin", MaxConcurrentCapacity = 5, IsActive = true, CreatedAt = DateTime.UtcNow
         });
         context.SaveChanges();
     }
@@ -1261,24 +1061,6 @@ public static class DbSeeder
         }
     }
 
-    /// <summary>DEVELOPMENT DATA: the sample users belong to their team, because membership is what makes someone eligible for its cases.</summary>
-    private static void EnsureDevTeamMemberships(AppDbContext context)
-    {
-        var now = DateTime.UtcNow;
-        var users = context.Users.Where(u => u.DepartmentId != null).ToList();
-        var existing = context.TeamMembers.Select(m => new { m.DepartmentId, m.UserId }).ToList().Select(m => (m.DepartmentId, m.UserId)).ToHashSet();
-        foreach (var u in users)
-        {
-            if (existing.Contains((u.DepartmentId!.Value, u.Id))) continue;
-            context.TeamMembers.Add(new TeamMember
-            {
-                Id = Guid.NewGuid(), DepartmentId = u.DepartmentId.Value, UserId = u.Id,
-                MemberRole = string.IsNullOrWhiteSpace(u.Role) ? "Service Agent" : u.Role, IsAssignable = true, IsActive = true, JoinedAt = now, CreatedAt = now
-            });
-        }
-        context.SaveChanges();
-    }
-
     /// <summary>DEVELOPMENT DATA: sample (banking) skill rules. A new installation starts with none and defines its own.</summary>
     private static void EnsureDevSkillRules(AppDbContext context)
     {
@@ -1296,354 +1078,6 @@ public static class DbSeeder
             Id = Guid.NewGuid(), SkillName = r.Skill, MatchField = r.Field, MatchType = r.Field == "Channel" ? "Equals" : "Contains", MatchValue = r.Value, IsActive = true, CreatedAt = now
         }));
         context.SaveChanges();
-    }
-
-    private static void EnsureTeamsAndSquads(AppDbContext context)
-    {
-        try
-        {
-            var now = DateTime.UtcNow;
-
-            // 1. Ensure squads users exist
-            var squadUsers = new (string Name, string Email, string Role, UserStatus Status)[]
-            {
-                ("Nurul Aisyah", "nurul.aisyah@bank.com", "Team Lead", UserStatus.Available),
-                ("Grace Wong", "grace.wong@bank.com", "Team Lead", UserStatus.Available),
-                ("Amirul Hakim", "amirul.hakim@bank.com", "Team Lead", UserStatus.Available),
-                ("Farid Rahman", "farid.rahman@bank.com", "Service Agent — Voice/Chat", UserStatus.Available),
-                ("Mei Ling Tan", "meiling@bank.com", "Service Agent — Digital", UserStatus.Busy),
-                ("Siti Hajar", "siti.hajar@bank.com", "Service Agent — Email", UserStatus.Away),
-                ("Priya Nair", "priya.nair@bank.com", "Service Agent — Social", UserStatus.Available),
-                ("Rajesh Kumar", "rajesh.kumar@bank.com", "Sales Agent — Leads", UserStatus.Available),
-                ("Hafiz Osman", "hafiz@bank.com", "Collections Agent", UserStatus.Away)
-            };
-
-            var defaultDept = context.Departments.OrderBy(d => d.Id).FirstOrDefault();
-            var defaultDeptId = defaultDept?.Id ?? Guid.NewGuid();
-
-            var userMap = new Dictionary<string, User>();
-            foreach (var (name, email, role, status) in squadUsers)
-            {
-                var user = context.Users.FirstOrDefault(u => u.Email == email);
-                if (user == null)
-                {
-                    user = new User
-                    {
-                        Id = Guid.NewGuid(),
-                        Name = name,
-                        Email = email,
-                        Role = role,
-                        Status = status,
-                        DepartmentId = defaultDeptId,
-                        CreatedAt = now
-                    };
-                    context.Users.Add(user);
-                }
-                else
-                {
-                    user.Status = status;
-                    if (!string.IsNullOrWhiteSpace(role)) user.Role = role;
-                }
-                userMap[name] = user;
-            }
-            context.SaveChanges();
-
-            // 2. Ensure Teams (Departments)
-            var squads = new[]
-            {
-                new {
-                    Name = "Service Desk — Retail",
-                    Code = "SDR",
-                    Function = "Case handling (retail banking)",
-                    LeadName = "Nurul Aisyah",
-                    MemberNames = new[] { "Farid Rahman", "Mei Ling Tan", "Siti Hajar", "Priya Nair" }
-                },
-                new {
-                    Name = "Sales Pursuit",
-                    Code = "SP",
-                    Function = "Lead qualification & conversion",
-                    LeadName = "Grace Wong",
-                    MemberNames = new[] { "Rajesh Kumar", "Hafiz Osman" }
-                }
-            };
-
-            foreach (var sq in squads)
-            {
-                var dept = context.Departments.FirstOrDefault(d => d.Name == sq.Name || d.Code == sq.Code);
-                var lead = userMap.ContainsKey(sq.LeadName) ? userMap[sq.LeadName] : null;
-
-                if (dept == null)
-                {
-                    dept = new Department
-                    {
-                        Id = Guid.NewGuid(),
-                        Name = sq.Name,
-                        Code = sq.Code,
-                        Function = sq.Function,
-                        OwnerId = lead?.Id,
-                        IsActive = true,
-                        CreatedAt = now
-                    };
-                    context.Departments.Add(dept);
-                    context.SaveChanges();
-                }
-                else
-                {
-                    dept.Function = sq.Function;
-                    if (lead != null) dept.OwnerId = lead.Id;
-                    context.SaveChanges();
-                }
-
-                // Ensure TeamMembers
-                foreach (var memberName in sq.MemberNames)
-                {
-                    if (userMap.TryGetValue(memberName, out var memberUser))
-                    {
-                        var tm = context.TeamMembers.FirstOrDefault(m => m.DepartmentId == dept.Id && m.UserId == memberUser.Id);
-                        if (tm == null)
-                        {
-                            context.TeamMembers.Add(new TeamMember
-                            {
-                                Id = Guid.NewGuid(),
-                                DepartmentId = dept.Id,
-                                UserId = memberUser.Id,
-                                MemberRole = memberUser.Role,
-                                IsActive = true,
-                                JoinedAt = now
-                            });
-                        }
-                    }
-                }
-            }
-            context.SaveChanges();
-
-            // 3. Ensure a couple of at-risk and open cases for the monitor
-            var sdrDept = context.Departments.FirstOrDefault(d => d.Code == "SDR");
-            var cust = context.Customers.OrderBy(c => c.Id).FirstOrDefault();
-            var farid = userMap.ContainsKey("Farid Rahman") ? userMap["Farid Rahman"] : null;
-            var meiLing = userMap.ContainsKey("Mei Ling Tan") ? userMap["Mei Ling Tan"] : null;
-
-            // The sample cases carry the SLA snapshot of the configured "High" priority, like any case created through the app.
-            var highRule = context.PrioritySlaRules.FirstOrDefault(r => r.Priority == "High");
-
-            if (sdrDept != null && cust != null && farid != null && meiLing != null && highRule != null)
-            {
-                if (!context.Cases.Any(c => c.CaseNumber == "C-01041"))
-                {
-                    context.Cases.Add(new Case
-                    {
-                        Id = Guid.NewGuid(),
-                        CaseNumber = "C-01041",
-                        CaseType = "Complaint",
-                        Title = "Unauthorised card transaction RM 2,500 via ATM",
-                        Description = "Customer disputes unknown cash withdrawal from card ending in 8821.",
-                        Status = CaseStatus.InProgress,
-                        Severity = "High",
-                        SourceChannel = "Voice",
-                        CommunicationChannel = "Voice",
-                        DepartmentId = sdrDept.Id,
-                        CustomerId = cust.Id,
-                        OwnerId = meiLing.Id,
-                        SlaStartTime = now.AddHours(-3.3),
-                        CreatedAt = now.AddHours(-3.3)
-                    }.WithSlaSnapshot(highRule));
-                }
-
-                if (!context.Cases.Any(c => c.CaseNumber == "S-01042"))
-                {
-                    context.Cases.Add(new Case
-                    {
-                        Id = Guid.NewGuid(),
-                        CaseNumber = "S-01042",
-                        CaseType = "Service",
-                        Title = "ASB financing payment failed twice after scheduled debit",
-                        Description = "Monthly repayment not reflected in financing balance despite auto-debit deduction.",
-                        Status = CaseStatus.Open,
-                        Severity = "High",
-                        SourceChannel = "Email",
-                        CommunicationChannel = "Email",
-                        DepartmentId = sdrDept.Id,
-                        CustomerId = cust.Id,
-                        OwnerId = farid.Id,
-                        SlaStartTime = now.AddHours(-3.6),
-                        CreatedAt = now.AddHours(-3.6)
-                    }.WithSlaSnapshot(highRule));
-                }
-                context.SaveChanges();
-            }
-        }
-        catch (Exception ex)
-        {
-            throw new InvalidOperationException($"Seed step 'EnsureTeamsAndSquads' failed: {ex.Message}", ex);
-        }
-    }
-
-    private static void EnsureRoutingRulesAndSkills(AppDbContext context)
-    {
-        try
-        {
-            var now = DateTime.UtcNow;
-
-            // 1. Ensure required departments exist
-            var rfdDept = context.Departments.FirstOrDefault(d => d.Code == "RFD" || d.Name.Contains("Fraud"));
-            if (rfdDept == null)
-            {
-                rfdDept = new Department
-                {
-                    Id = Guid.NewGuid(),
-                    Name = "Risk & Fraud Dept",
-                    Code = "RFD",
-                    Function = "Fraud detection and dispute management",
-                    IsActive = true,
-                    CreatedAt = now
-                };
-                context.Departments.Add(rfdDept);
-                context.SaveChanges();
-            }
-
-            var pbsDept = context.Departments.FirstOrDefault(d => d.Code == "PBS" || d.Name.Contains("Premier"));
-            if (pbsDept == null)
-            {
-                pbsDept = new Department
-                {
-                    Id = Guid.NewGuid(),
-                    Name = "Premier Banking Squad",
-                    Code = "PBS",
-                    Function = "High net worth & priority customer desk",
-                    IsActive = true,
-                    CreatedAt = now
-                };
-                context.Departments.Add(pbsDept);
-                context.SaveChanges();
-            }
-
-            var sdrDept = context.Departments.FirstOrDefault(d => d.Code == "SDR" || d.Name.Contains("Service Desk"));
-            var csDept = context.Departments.FirstOrDefault(d => d.Code == "CS" || d.Name.Contains("Campaign"));
-
-            // 2. Ensure default Assignment Configuration
-            if (!context.AssignmentConfigurations.Any())
-            {
-                context.AssignmentConfigurations.Add(new AssignmentConfiguration
-                {
-                    Id = Guid.NewGuid(),
-                    DepartmentId = null,
-                    Algorithm = "RoundRobin",
-                    MaxConcurrentCapacity = 5,
-                    IsActive = true,
-                    CreatedAt = now,
-                    UpdatedAt = now
-                });
-                context.SaveChanges();
-            }
-
-            // 3. Ensure Routing Rules
-            if (!context.RoutingRules.Any())
-            {
-                var r1Target = rfdDept?.Id ?? (sdrDept?.Id ?? Guid.NewGuid());
-                var r2Target = pbsDept?.Id ?? (sdrDept?.Id ?? Guid.NewGuid());
-                var r3Target = csDept?.Id ?? (sdrDept?.Id ?? Guid.NewGuid());
-                var r4Target = sdrDept?.Id ?? Guid.NewGuid();
-
-                var defaultRules = new[]
-                {
-                    new RoutingRule
-                    {
-                        Id = Guid.NewGuid(),
-                        Name = "Fraud keywords → Critical queue",
-                        Description = "Sub-category = Fraud",
-                        EvaluationOrder = 1,
-                        IsActive = true,
-                        ConditionsJson = "{\"MatchType\":\"ALL\",\"Category\":\"Fraud\"}",
-                        TargetDepartmentId = r1Target,
-                        ActionDescription = "Route to Risk & Fraud Dept (High Priority)",
-                        CreatedAt = now
-                    },
-                    new RoutingRule
-                    {
-                        Id = Guid.NewGuid(),
-                        Name = "Priority segment fast-lane",
-                        Description = "Priority = High/Critical • Segment = Priority / Premier • Match: any priority case from premier...",
-                        EvaluationOrder = 2,
-                        IsActive = true,
-                        ConditionsJson = "{\"MatchType\":\"ALL\",\"Priority\":\"Critical\",\"CustomerSegment\":\"Priority\"}",
-                        TargetDepartmentId = r2Target,
-                        ActionDescription = "Route to Premier Banking Squad",
-                        CreatedAt = now
-                    },
-                    new RoutingRule
-                    {
-                        Id = Guid.NewGuid(),
-                        Name = "Social channel → Digital team",
-                        Description = "Channel = Social • Type = Any • Match: all incoming social media cases (Twitter, Facebook, IG)...",
-                        EvaluationOrder = 3,
-                        IsActive = true,
-                        ConditionsJson = "{\"MatchType\":\"ALL\",\"Channel\":\"Social\"}",
-                        TargetDepartmentId = r3Target,
-                        ActionDescription = "Route to Campaign Studio",
-                        CreatedAt = now
-                    },
-                    new RoutingRule
-                    {
-                        Id = Guid.NewGuid(),
-                        Name = "SME complaints → RM notify",
-                        Description = "Segment = SME • Type = Complaint • Match: all SME complaints; auto-assign to SME desk and alert RM...",
-                        EvaluationOrder = 4,
-                        IsActive = false,
-                        ConditionsJson = "{\"MatchType\":\"ALL\",\"CaseType\":\"Complaint\",\"CustomerSegment\":\"SME\"}",
-                        TargetDepartmentId = r4Target,
-                        ActionDescription = "Route to Service Desk — Retail",
-                        CreatedAt = now
-                    }
-                };
-
-                context.RoutingRules.AddRange(defaultRules);
-                context.SaveChanges();
-            }
-
-            // 4. Ensure Agent Skills
-            if (!context.AgentSkills.Any())
-            {
-                var skillsToSeed = new (string UserEmail, string Skill, int Level)[]
-                {
-                    ("priya.nair@bank.com", "Social", 5),
-                    ("priya.nair@bank.com", "Digital", 4),
-                    ("priya.nair@bank.com", "Complaints", 4),
-                    ("meiling@bank.com", "Digital", 5),
-                    ("meiling@bank.com", "Chat", 4),
-                    ("meiling@bank.com", "Fraud", 3),
-                    ("farid.rahman@bank.com", "Voice", 5),
-                    ("farid.rahman@bank.com", "Retail", 4),
-                    ("farid.rahman@bank.com", "General", 4),
-                    ("rajesh.kumar@bank.com", "Sales", 5),
-                    ("rajesh.kumar@bank.com", "Leads", 4),
-                    ("rajesh.kumar@bank.com", "Cards", 4),
-                    ("siti.hajar@bank.com", "Email", 5),
-                    ("siti.hajar@bank.com", "SME", 4),
-                    ("siti.hajar@bank.com", "Billing", 3)
-                };
-
-                foreach (var item in skillsToSeed)
-                {
-                    var user = context.Users.FirstOrDefault(u => u.Email == item.UserEmail);
-                    if (user != null)
-                    {
-                        context.AgentSkills.Add(new AgentSkill
-                        {
-                            Id = Guid.NewGuid(),
-                            UserId = user.Id,
-                            SkillName = item.Skill,
-                            ProficiencyLevel = item.Level,
-                            CreatedAt = now
-                        });
-                    }
-                }
-                context.SaveChanges();
-            }
-        }
-        catch (Exception ex)
-        {
-            throw new InvalidOperationException($"Seed step 'EnsureRoutingRulesAndSkills' failed: {ex.Message}", ex);
-        }
     }
 
     private static void EnsureCustomer360Standardization(AppDbContext context)

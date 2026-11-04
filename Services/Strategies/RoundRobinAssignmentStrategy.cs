@@ -17,7 +17,7 @@ public class RoundRobinAssignmentStrategy : IAssignmentStrategy
         var candidates = request.Eligible.Select(c => c.User).OrderBy(u => u.Id).ToList();
         if (candidates.Count == 0) return null;
 
-        var pointer = await _context.TeamAssignmentPointers.FirstOrDefaultAsync(p => p.DepartmentId == request.DepartmentId, ct);
+        var pointer = await _context.TeamAssignmentPointers.FirstOrDefaultAsync(p => p.TeamId == request.DepartmentId, ct);
 
         // The next eligible person after whoever got the previous case (wrapping around), by stable id order.
         User selected;
@@ -26,7 +26,7 @@ public class RoundRobinAssignmentStrategy : IAssignmentStrategy
             selected = candidates[0];
             _context.TeamAssignmentPointers.Add(new TeamAssignmentPointer
             {
-                DepartmentId = request.DepartmentId,
+                TeamId = request.DepartmentId,
                 LastAssignedUserId = selected.Id,
                 LastAssignedAt = DateTime.UtcNow,
             });

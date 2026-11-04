@@ -5,7 +5,7 @@ public class AssignmentSettingsDto
 {
     // Assignment scope / cross-team
     public string CrossTeamMode { get; set; } = string.Empty;          // Disabled | SelectedTeams | AllTeams
-    public List<Guid> CrossTeamDepartmentIds { get; set; } = new();
+    public List<Guid> CrossTeamIds { get; set; } = new();
     public List<string> CrossTeamModes { get; set; } = new();
 
     // Eligible roles, availability and workload
@@ -55,7 +55,7 @@ public class AssignmentSettingsMemberDto
 public class UpdateAssignmentSettingsDto
 {
     public string CrossTeamMode { get; set; } = string.Empty;
-    public List<Guid> CrossTeamDepartmentIds { get; set; } = new();
+    public List<Guid> CrossTeamIds { get; set; } = new();
     public bool IncludeTeamLeads { get; set; }
     public bool RequireAvailable { get; set; }
     public bool EnforceCapacity { get; set; }
@@ -69,7 +69,7 @@ public class UpdateAssignmentSettingsDto
 
 public class MemberSelectionDto
 {
-    public Guid DepartmentId { get; set; }
+    public Guid TeamId { get; set; }
     public Guid UserId { get; set; }
     public bool CanBeManuallyAssigned { get; set; }
 }

@@ -29,8 +29,8 @@ public class CreateCaseDto
     /// <summary>An existing Customer 360 customer, as chosen from the search results. Only identifiers are stored.</summary>
     public Customer360SelectionDto? Customer360 { get; set; }
     /// <summary>
-    /// The business department the case belongs to (Create Case → Department); routing picks the team. For older callers a
-    /// TEAM id is still accepted here: the case then starts with that team, and its department is the one the team serves.
+    /// The department the case belongs to (Create Case → Department). The case goes to the team that department is assigned
+    /// to; a department with no team, or an inactive one, is refused.
     /// </summary>
     public Guid DepartmentId { get; set; }
     public string Severity { get; set; } = string.Empty;
@@ -100,9 +100,9 @@ public class AssignCaseDto
 public class EligibleAssigneesDto
 {
     public Guid CaseId { get; set; }
-    public Guid DepartmentId { get; set; }
-    public string DepartmentName { get; set; } = string.Empty;
-    public bool DepartmentIsActive { get; set; }
+    public Guid TeamId { get; set; }
+    public string TeamName { get; set; } = string.Empty;
+    public bool TeamIsActive { get; set; }
     public Guid? CurrentOwnerId { get; set; }
     /// <summary>Open cases an agent may hold in this team (the team's own setting, else the global one).</summary>
     public int Capacity { get; set; }
@@ -144,11 +144,11 @@ public class AddCoworkersDto
     public List<Guid> CoworkerIds { get; set; } = new();
 }
 
+/// <summary>Moves a case to another department; it goes to the team that department is assigned to.</summary>
 public class TransferDepartmentDto
 {
+    /// <summary>The department to move the case to.</summary>
     public Guid DepartmentId { get; set; }
-    public string? TransferTo { get; set; } // "Queue", "Department", "Team"
-    public string? TargetQueue { get; set; }
     /// <summary>An active TRANSFER_REASON option (its value or label).</summary>
     public string? Reason { get; set; }
     /// <summary>The explanation, required when the chosen option RequiresDetail.</summary>
@@ -167,20 +167,6 @@ public record RelatedCustomerCaseDto(
     bool IsAlreadyLinked
 );
 
-
-public class CreateUserDto
-{
-    public string Name { get; set; } = string.Empty;
-    public string Email { get; set; } = string.Empty;
-    public string Role { get; set; } = string.Empty;
-    public Guid DepartmentId { get; set; }
-}
-
-public class CreateDepartmentDto
-{
-    public string Name { get; set; } = string.Empty;
-    public string Code { get; set; } = string.Empty;
-}
 
 public class LinkCaseDto
 {
@@ -206,11 +192,6 @@ public class UnlinkCaseDto
 {
     public string TargetCaseNumber { get; set; } = string.Empty;
     public Guid UserId { get; set; }
-}
-
-public class SetDepartmentOwnerDto
-{
-    public Guid OwnerId { get; set; }
 }
 
 public class UpdateUserStatusDto

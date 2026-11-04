@@ -240,13 +240,6 @@ public class UpdateSeverityDto
     public bool IsActive { get; set; } = true;
 }
 
-public class UpdateDepartmentDto
-{
-    public string Name { get; set; } = string.Empty;
-    public string Code { get; set; } = string.Empty;
-    public bool IsActive { get; set; } = true;
-}
-
 /// <summary>One option of a list, as edited in the field drawer. No <see cref="Id"/> = a new option.</summary>
 public class LookupValueDraftDto
 {

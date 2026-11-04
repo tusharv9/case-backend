@@ -41,19 +41,19 @@ public class PriorityConfigurationTests
             w.DeptA = Guid.NewGuid(); w.DeptB = Guid.NewGuid();
             w.FraudA = Guid.NewGuid(); w.FraudB = Guid.NewGuid(); w.PaymentA = Guid.NewGuid();
             w.Ctx.AddRange(
-                new Department { Id = w.DeptA, Name = "Contact Center", Code = "CC", CreatedAt = DateTime.UtcNow },
-                new Department { Id = w.DeptB, Name = "Fraud Ops", Code = "FO", CreatedAt = DateTime.UtcNow });
+                new Team { Id = w.DeptA, Name = "Contact Center", Code = "CC", CreatedAt = DateTime.UtcNow },
+                new Team { Id = w.DeptB, Name = "Fraud Ops", Code = "FO", CreatedAt = DateTime.UtcNow });
             await w.Ctx.SaveChangesAsync();
             w.Ctx.AddRange(
-                new DepartmentSubCategory { Id = w.FraudA, DepartmentId = w.DeptA, Name = "Fraud", Code = "F", IsActive = true, CreatedAt = DateTime.UtcNow },
-                new DepartmentSubCategory { Id = w.FraudB, DepartmentId = w.DeptB, Name = "Fraud", Code = "FB", IsActive = true, CreatedAt = DateTime.UtcNow },
-                new DepartmentSubCategory { Id = w.PaymentA, DepartmentId = w.DeptA, Name = "Payment Issue", Code = "P", IsActive = true, CreatedAt = DateTime.UtcNow });
+                new DepartmentSubCategory { Id = w.FraudA, DepartmentId = TestDepartments.IdFor(w.DeptA), Name = "Fraud", Code = "F", IsActive = true, CreatedAt = DateTime.UtcNow },
+                new DepartmentSubCategory { Id = w.FraudB, DepartmentId = TestDepartments.IdFor(w.DeptB), Name = "Fraud", Code = "FB", IsActive = true, CreatedAt = DateTime.UtcNow },
+                new DepartmentSubCategory { Id = w.PaymentA, DepartmentId = TestDepartments.IdFor(w.DeptA), Name = "Payment Issue", Code = "P", IsActive = true, CreatedAt = DateTime.UtcNow });
             await w.Ctx.SaveChangesAsync();
             await TestDepartments.LinkTeamsAsync(w.Ctx);
 
             // Configuration changes are audited against a real user (the audit trail has a foreign key).
             w.Actor = Guid.NewGuid();
-            w.Ctx.Users.Add(new User { Id = w.Actor, Name = "Admin", Email = "admin@example.test", Role = "Admin", DepartmentId = w.DeptA, CreatedAt = DateTime.UtcNow });
+            w.Ctx.Users.Add(new User { Id = w.Actor, Name = "Admin", Email = "admin@example.test", Role = "Admin", CreatedAt = DateTime.UtcNow });
             await w.Ctx.SaveChangesAsync();
 
             w.Sla = new SlaRoutingService(w.Ctx, NullLogger<SlaRoutingService>.Instance,
@@ -234,14 +234,14 @@ public class PriorityConfigurationTests
         // A routing rule that matches on "High" and a case that uses "High".
         var userId = Guid.NewGuid(); var customerId = Guid.NewGuid();
         w.Ctx.AddRange(
-            new User { Id = userId, Name = "U", Email = "u@example.test", Role = "Agent", DepartmentId = w.DeptA, CreatedAt = DateTime.UtcNow },
+            new User { Id = userId, Name = "U", Email = "u@example.test", Role = "Agent", CreatedAt = DateTime.UtcNow },
             new Customer { Id = customerId, FullName = "C", PhoneNumber = "+60 1", PreferredLanguage = "English", CreatedAt = DateTime.UtcNow });
         await w.Ctx.SaveChangesAsync();
-        w.Ctx.Add(new RoutingRule { Id = Guid.NewGuid(), Name = "High to CC", TargetDepartmentId = w.DeptA, ConditionsJson = "{\"matchType\":\"ALL\",\"priority\":\"High\"}", EvaluationOrder = 1, CreatedAt = DateTime.UtcNow });
+        w.Ctx.Add(new RoutingRule { Id = Guid.NewGuid(), Name = "High to CC", TargetTeamId = w.DeptA, ConditionsJson = "{\"matchType\":\"ALL\",\"priority\":\"High\"}", EvaluationOrder = 1, CreatedAt = DateTime.UtcNow });
         w.Ctx.Add(new Case
         {
             Id = Guid.NewGuid(), CaseNumber = "C-00001", CaseType = "Complaint", Title = "t", Description = "d", Status = CaseStatus.Open,
-            Severity = "High", DepartmentId = w.DeptA, CustomerId = customerId, OwnerId = userId, CreatedAt = DateTime.UtcNow
+            Severity = "High", TeamId = w.DeptA, CustomerId = customerId, OwnerId = userId, CreatedAt = DateTime.UtcNow
         });
         await w.Ctx.SaveChangesAsync();
         var high = await w.Rule("High");

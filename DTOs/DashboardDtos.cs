@@ -22,7 +22,7 @@ public class DashboardSummaryDto
     public List<SeverityCaseCount> CasesBySeverity { get; set; } = new();
 
     // Cases by department
-    public List<DepartmentCaseCount> CasesByDepartment { get; set; } = new();
+    public List<TeamCaseCount> CasesByTeam { get; set; } = new();
 
     // Cases by case type
     public List<CaseTypeCaseCount> CasesByType { get; set; } = new();
@@ -44,10 +44,10 @@ public class DashboardSummaryDto
     public List<RecentActivityItem> RecentActivities { get; set; } = new();
 }
 
-public class DepartmentCaseCount
+public class TeamCaseCount
 {
-    public string DepartmentName { get; set; } = string.Empty;
-    public Guid DepartmentId { get; set; }
+    public string TeamName { get; set; } = string.Empty;
+    public Guid TeamId { get; set; }
     public int Count { get; set; }
 }
 
@@ -72,7 +72,7 @@ public class AttentionCaseSummary
     public string Severity { get; set; } = string.Empty;
     public string OwnerName { get; set; } = string.Empty;
     public Guid OwnerId { get; set; }
-    public string DepartmentName { get; set; } = string.Empty;
+    public string TeamName { get; set; } = string.Empty;
     public DateTime SlaStartTime { get; set; }
     public int SlaTargetHours { get; set; }
     public DateTime? SlaBreachedAt { get; set; }
@@ -114,12 +114,12 @@ public class DashboardFiltersDto
 {
     /// <summary>
     /// Whether the caller may filter by team: only someone who sees every team's cases (cases:ViewAll, administrators).
-    /// Everyone else's reports already cover just their own teams and assignments, and <see cref="Departments"/> is empty.
+    /// Everyone else's reports already cover just their own teams and assignments, and <see cref="Teams"/> is empty.
     /// </summary>
-    public bool CanFilterByDepartment { get; set; }
+    public bool CanFilterByTeam { get; set; }
     /// <summary>The caller's reports cover every team (true) or only their own teams and assignments (false).</summary>
     public bool SeesAllTeams { get; set; }
-    public List<NamedOptionDto> Departments { get; set; } = new();
+    public List<NamedOptionDto> Teams { get; set; } = new();
     public List<FilterOptionDto> CaseTypes { get; set; } = new();
     public List<FilterOptionDto> Statuses { get; set; } = new();
     public List<string> Priorities { get; set; } = new();

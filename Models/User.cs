@@ -34,8 +34,4 @@ public class User : AuditableEntity
 
     public string? Team { get; set; }
     public string? Queue { get; set; }
-
-    /// <summary>Null for a Host user who has not been placed in a team yet.</summary>
-    public Guid? DepartmentId { get; set; }
-    public Department? Department { get; set; }
 }

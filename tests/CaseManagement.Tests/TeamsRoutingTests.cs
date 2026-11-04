@@ -39,14 +39,14 @@ public class TeamsRoutingTests
 
             w.Team = Guid.NewGuid(); w.Lead = Guid.NewGuid(); w.Admin = Guid.NewGuid();
             w.A = Guid.NewGuid(); w.B = Guid.NewGuid(); w.C = Guid.NewGuid();
-            ctx.Departments.Add(new Department { Id = w.Team, Name = "Support", Code = "SUP", Function = "Support", CreatedAt = DateTime.UtcNow, IsActive = true });
+            ctx.Teams.Add(new Team { Id = w.Team, Name = "Support", Code = "SUP", Function = "Support", CreatedAt = DateTime.UtcNow, IsActive = true });
             await ctx.SaveChangesAsync();
             User U(Guid id, string name, string role) => new() { Id = id, Name = name, Email = name.ToLower().Replace(' ', '.') + "@x.test", Role = role, Status = status, CreatedAt = DateTime.UtcNow };
             ctx.Users.AddRange(U(w.Lead, "Lead Lee", "Team Lead"), U(w.Admin, "Admin Ann", "Admin"), U(w.A, "Agent A", "Agent"), U(w.B, "Agent B", "Agent"), U(w.C, "Agent C", "Agent"));
             await ctx.SaveChangesAsync();
-            await ctx.Departments.Where(d => d.Id == w.Team).ExecuteUpdateAsync(u => u.SetProperty(d => d.OwnerId, w.Lead));
-            ctx.TeamMembers.Add(new TeamMember { Id = Guid.NewGuid(), DepartmentId = w.Team, UserId = w.Lead, MemberRole = "Team Lead", IsActive = true, IsAssignable = false, JoinedAt = DateTime.UtcNow, CreatedAt = DateTime.UtcNow });
-            ctx.TeamMembers.AddRange(new[] { w.A, w.B, w.C }.Select(id => new TeamMember { Id = Guid.NewGuid(), DepartmentId = w.Team, UserId = id, MemberRole = "Agent", IsActive = true, IsAssignable = true, JoinedAt = DateTime.UtcNow, CreatedAt = DateTime.UtcNow }));
+            await ctx.Teams.Where(d => d.Id == w.Team).ExecuteUpdateAsync(u => u.SetProperty(d => d.OwnerId, w.Lead));
+            ctx.TeamMembers.Add(new TeamMember { Id = Guid.NewGuid(), TeamId = w.Team, UserId = w.Lead, MemberRole = "Team Lead", IsActive = true, IsAssignable = false, JoinedAt = DateTime.UtcNow, CreatedAt = DateTime.UtcNow });
+            ctx.TeamMembers.AddRange(new[] { w.A, w.B, w.C }.Select(id => new TeamMember { Id = Guid.NewGuid(), TeamId = w.Team, UserId = id, MemberRole = "Agent", IsActive = true, IsAssignable = true, JoinedAt = DateTime.UtcNow, CreatedAt = DateTime.UtcNow }));
             await ctx.SaveChangesAsync();
             return w;
         }
@@ -66,14 +66,14 @@ public class TeamsRoutingTests
         public async Task SetAlgorithm(string algorithm, int capacity = 5)
         {
             await using var ctx = Ctx();
-            await ctx.AssignmentConfigurations.Where(c => c.DepartmentId == null)
+            await ctx.AssignmentConfigurations.Where(c => c.TeamId == null)
                 .ExecuteUpdateAsync(u => u.SetProperty(c => c.Algorithm, algorithm).SetProperty(c => c.MaxConcurrentCapacity, capacity));
         }
 
         public Case NewCase(Guid ownerId, string title = "Card problem", string channel = "Voice", string subcategory = "General") => new()
         {
             Id = Guid.NewGuid(), CaseNumber = "T-" + Guid.NewGuid().ToString("N")[..8], Title = title, CaseType = "Complaint", Severity = "High",
-            SourceChannel = channel, Subcategory = subcategory, DepartmentId = Team, OwnerId = ownerId, Status = CaseStatus.Open,
+            SourceChannel = channel, Subcategory = subcategory, TeamId = Team, OwnerId = ownerId, Status = CaseStatus.Open,
             CustomerId = Guid.Empty, SlaStartTime = DateTime.UtcNow, CreatedAt = DateTime.UtcNow,
             FirstResponseTargetMinutes = 30, InternalResolutionTargetMinutes = 120, ExternalResolutionTargetMinutes = 240, FirstResponseStatus = "Pending",
         };
@@ -126,7 +126,7 @@ public class TeamsRoutingTests
         await using (var ctx = w.Ctx())
         {
             // Their "home department" is the team, but they are not a member (the old code treated that as membership).
-            ctx.Users.Add(new User { Id = outsider, Name = "Outsider", Email = "o@x.test", Role = "Agent", DepartmentId = w.Team, Status = UserStatus.Available, CreatedAt = DateTime.UtcNow });
+            ctx.Users.Add(new User { Id = outsider, Name = "Outsider", Email = "o@x.test", Role = "Agent", Status = UserStatus.Available, CreatedAt = DateTime.UtcNow });
             await ctx.SaveChangesAsync();
         }
         await using var check = w.Ctx();
@@ -308,7 +308,7 @@ public class TeamsRoutingTests
     // ------------------------------------------------------------------------------------------ rules
 
     private static CreateRoutingRuleDto Rule(string name, Guid target, RuleConditionsDto conditions, int? order = null) =>
-        new() { Name = name, TargetDepartmentId = target, Conditions = conditions, EvaluationOrder = order };
+        new() { Name = name, TargetTeamId = target, Conditions = conditions, EvaluationOrder = order };
 
     [PostgresFact]
     public async Task RuleConditions_AreExact_NotContains()
@@ -317,10 +317,10 @@ public class TeamsRoutingTests
         var other = Guid.NewGuid();
         await using (var ctx = w.Ctx())
         {
-            ctx.Departments.Add(new Department { Id = other, Name = "Fraud Desk", Code = "FD", CreatedAt = DateTime.UtcNow });
+            ctx.Teams.Add(new Team { Id = other, Name = "Fraud Desk", Code = "FD", CreatedAt = DateTime.UtcNow });
             ctx.DepartmentSubCategories.AddRange(
-                new DepartmentSubCategory { Id = Guid.NewGuid(), DepartmentId = w.Team, Name = "Fraud", Code = "F", IsActive = true, CreatedAt = DateTime.UtcNow },
-                new DepartmentSubCategory { Id = Guid.NewGuid(), DepartmentId = w.Team, Name = "Fraud Prevention", Code = "FP", IsActive = true, CreatedAt = DateTime.UtcNow });
+                new DepartmentSubCategory { Id = Guid.NewGuid(), DepartmentId = TestDepartments.IdFor(w.Team), Name = "Fraud", Code = "F", IsActive = true, CreatedAt = DateTime.UtcNow },
+                new DepartmentSubCategory { Id = Guid.NewGuid(), DepartmentId = TestDepartments.IdFor(w.Team), Name = "Fraud Prevention", Code = "FP", IsActive = true, CreatedAt = DateTime.UtcNow });
             await ctx.SaveChangesAsync();
             await TestDepartments.LinkTeamsAsync(ctx);
             await w.Engine(ctx).CreateRuleAsync(Rule("Fraud", other, new RuleConditionsDto { Category = "Fraud" }), w.Admin);
@@ -330,10 +330,10 @@ public class TeamsRoutingTests
         await using var run = w.Ctx();
         var engine = w.Engine(run);
         var prevention = w.NewCase(w.Lead, subcategory: "Fraud Prevention");
-        Assert.Equal(w.Team, (await engine.RouteAndAssignCaseAsync(prevention, null)).TargetDepartmentId);
+        Assert.Equal(w.Team, (await engine.RouteAndAssignCaseAsync(prevention, null)).TargetTeamId);
 
         var exact = w.NewCase(w.Lead, subcategory: "fraud");   // case-insensitive
-        Assert.Equal(other, (await engine.RouteAndAssignCaseAsync(exact, null)).TargetDepartmentId);
+        Assert.Equal(other, (await engine.RouteAndAssignCaseAsync(exact, null)).TargetTeamId);
     }
 
     [PostgresFact]
@@ -343,15 +343,15 @@ public class TeamsRoutingTests
         await using var w = await World.CreateAsync();
         var other = Guid.NewGuid();
         await using var ctx = w.Ctx();
-        ctx.Departments.Add(new Department { Id = other, Name = "Social Desk", Code = "SD", CreatedAt = DateTime.UtcNow });
+        ctx.Teams.Add(new Team { Id = other, Name = "Social Desk", Code = "SD", CreatedAt = DateTime.UtcNow });
         await ctx.SaveChangesAsync();
         var engine = w.Engine(ctx);
         await engine.CreateRuleAsync(Rule("Social", other, new RuleConditionsDto { Channel = "Social" }), w.Admin);
 
         var blank = w.NewCase(w.Lead, channel: "");
-        Assert.Equal(w.Team, (await engine.RouteAndAssignCaseAsync(blank, null)).TargetDepartmentId);
+        Assert.Equal(w.Team, (await engine.RouteAndAssignCaseAsync(blank, null)).TargetTeamId);
         var social = w.NewCase(w.Lead, channel: "Social");
-        Assert.Equal(other, (await engine.RouteAndAssignCaseAsync(social, null)).TargetDepartmentId);
+        Assert.Equal(other, (await engine.RouteAndAssignCaseAsync(social, null)).TargetTeamId);
     }
 
     [PostgresFact]
@@ -373,7 +373,7 @@ public class TeamsRoutingTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => engine.CreateRuleAsync(Rule("bad", Guid.NewGuid(), new RuleConditionsDto()), w.Admin));
         await Assert.ThrowsAsync<InvalidOperationException>(() => engine.CreateRuleAsync(Rule("bad", w.Team, new RuleConditionsDto { MatchType = "SOMETIMES" }), w.Admin));
 
-        await ctx.Departments.Where(d => d.Id == w.Team).ExecuteUpdateAsync(u => u.SetProperty(d => d.IsActive, false));
+        await ctx.Teams.Where(d => d.Id == w.Team).ExecuteUpdateAsync(u => u.SetProperty(d => d.IsActive, false));
         await Assert.ThrowsAsync<InvalidOperationException>(() => engine.CreateRuleAsync(Rule("inactive", w.Team, new RuleConditionsDto()), w.Admin));
     }
 
@@ -382,9 +382,9 @@ public class TeamsRoutingTests
     {
         await using var w = await World.CreateAsync();
         await using var ctx = w.Ctx();
-        await ctx.Departments.Where(d => d.Id == w.Team).ExecuteUpdateAsync(u => u.SetProperty(d => d.IsActive, false));
+        await ctx.Teams.Where(d => d.Id == w.Team).ExecuteUpdateAsync(u => u.SetProperty(d => d.IsActive, false));
         // Another active team exists, but nothing silently falls back to it (the old code picked "CC" or the first active team).
-        ctx.Departments.Add(new Department { Id = Guid.NewGuid(), Name = "Contact Center", Code = "CC", CreatedAt = DateTime.UtcNow });
+        ctx.Teams.Add(new Team { Id = Guid.NewGuid(), Name = "Contact Center", Code = "CC", CreatedAt = DateTime.UtcNow });
         await ctx.SaveChangesAsync();
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => w.Engine(ctx).RouteAndAssignCaseAsync(w.NewCase(w.Lead), null));
@@ -496,14 +496,14 @@ public class TeamsRoutingTests
         var customer = new Customer { Id = Guid.NewGuid(), FullName = "C", NRIC = "NM1", PhoneNumber = "+60122222222", CreatedAt = DateTime.UtcNow };
         await using (var ctx = w.Ctx())
         {
-            ctx.Departments.Add(new Department { Id = other, Name = "Other Team", Code = "OT", CreatedAt = DateTime.UtcNow });
+            ctx.Teams.Add(new Team { Id = other, Name = "Other Team", Code = "OT", CreatedAt = DateTime.UtcNow });
             ctx.Customers.Add(customer);
             await ctx.SaveChangesAsync();
 
             Case Make(Guid dept, Guid owner, int ageMinutes, CaseStatus status, string channel)
             {
                 var c = w.NewCase(owner, channel: channel);
-                c.DepartmentId = dept; c.CustomerId = customer.Id; c.Status = status;
+                c.TeamId = dept; c.CustomerId = customer.Id; c.Status = status;
                 c.SlaStartTime = DateTime.UtcNow.AddMinutes(-ageMinutes); c.CreatedAt = c.SlaStartTime;
                 return c;
             }

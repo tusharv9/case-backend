@@ -27,7 +27,7 @@ public class MetadataValidationTests
         return new AppDbContext(options);
     }
 
-    private async Task<(Customer customer, Department department, string subcategory)> SeedValidCustomerAndDepartmentAsync(AppDbContext db)
+    private async Task<(Customer customer, Team department, string subcategory)> SeedValidCustomerAndDepartmentAsync(AppDbContext db)
     {
         var cust = new Customer
         {
@@ -35,27 +35,26 @@ public class MetadataValidationTests
             FullName = "Test Customer",
             NRIC = "123456-78-9012"
         };
-        var dept = new Department
+        var dept = new Team
         {
             Id = Guid.NewGuid(),
             Name = "Contact Center",
             Code = "CC",
             IsActive = true
         };
-        // The tests pass the TEAM's id, the form older callers send: the case's department is the one that team serves.
-        var business = new OrgDepartment { Id = Guid.NewGuid(), Name = "Customer Service", Code = "CS", IsActive = true };
+        // The case's department, mapped to the team; the tests pass its id (TestDepartments.IdFor the team).
+        var business = new Department { Id = TestDepartments.IdFor(dept.Id), Name = "Customer Service", Code = "CS", IsActive = true };
         var subcat = new DepartmentSubCategory
         {
             Id = Guid.NewGuid(),
-            DepartmentId = dept.Id,
-            OrgDepartmentId = business.Id,
+            DepartmentId = business.Id,
             Name = "General Inquiry",
             IsActive = true
         };
         db.Customers.Add(cust);
-        db.Departments.Add(dept);
-        db.OrgDepartments.Add(business);
-        db.TeamDepartments.Add(new TeamDepartment { TeamId = dept.Id, OrgDepartmentId = business.Id, IsDefault = true });
+        db.Teams.Add(dept);
+        db.Departments.Add(business);
+        db.TeamDepartments.Add(new TeamDepartment { TeamId = dept.Id, DepartmentId = business.Id });
         db.CaseTypeConfigs.Add(new CaseTypeConfig { Id = Guid.NewGuid(), Code = "Inquiry", Name = "Inquiry", Prefix = "I-", IsActive = true, CreatedAt = DateTime.UtcNow });
         db.DepartmentSubCategories.Add(subcat);
         await db.SaveChangesAsync();
@@ -95,7 +94,7 @@ public class MetadataValidationTests
         var dto = new CreateCaseDto
         {
             CustomerId = cust.Id,
-            DepartmentId = dept.Id,
+            DepartmentId = TestDepartments.IdFor(dept.Id),
             CaseType = "Inquiry",
             Subcategory = subcat,
             SourceChannel = "Voice",
@@ -143,7 +142,7 @@ public class MetadataValidationTests
         var dto = new CreateCaseDto
         {
             CustomerId = cust.Id,
-            DepartmentId = dept.Id,
+            DepartmentId = TestDepartments.IdFor(dept.Id),
             CaseType = "Inquiry",
             Subcategory = subcat,
             SourceChannel = "Voice",
@@ -190,7 +189,7 @@ public class MetadataValidationTests
         var dto = new CreateCaseDto
         {
             CustomerId = cust.Id,
-            DepartmentId = dept.Id,
+            DepartmentId = TestDepartments.IdFor(dept.Id),
             CaseType = "Inquiry",
             Subcategory = subcat,
             SourceChannel = "Voice",

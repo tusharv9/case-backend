@@ -29,11 +29,11 @@ public class TransactionSafetyTests
     {
         using var db = CreateInMemoryDbContext();
 
-        var originalDept = new Department { Id = Guid.NewGuid(), Name = "Card Services", Code = "CRD" };
-        var user = new User { Id = Guid.NewGuid(), Name = "Officer Tan", Email = "tan@bank.com", Role = "Agent", DepartmentId = originalDept.Id };
+        var originalDept = new Team { Id = Guid.NewGuid(), Name = "Card Services", Code = "CRD" };
+        var user = new User { Id = Guid.NewGuid(), Name = "Officer Tan", Email = "tan@bank.com", Role = "Agent" };
         var customer = new Customer { Id = Guid.NewGuid(), FullName = "Lee Min", NRIC = "880808-10-8888", PhoneNumber = "+60123456780" };
 
-        db.Departments.Add(originalDept);
+        db.Teams.Add(originalDept);
         db.Users.Add(user);
         db.Customers.Add(customer);
 
@@ -44,8 +44,8 @@ public class TransactionSafetyTests
             Title = "Disputed Charge",
             CustomerId = customer.Id,
             Customer = customer,
-            DepartmentId = originalDept.Id,
-            Department = originalDept,
+            TeamId = originalDept.Id,
+            Team = originalDept,
             OwnerId = user.Id,
             Owner = user,
             Status = CaseStatus.Open,
@@ -74,13 +74,13 @@ public class TransactionSafetyTests
         };
 
         // Transfer should fail because the target department doesn't exist
-        await Assert.ThrowsAsync<KeyNotFoundException>(() =>
+        await Assert.ThrowsAsync<FieldValidationException>(() =>
             service.TransferDepartmentAsync(testCase.Id, transferDto, user.Id));
 
         // Verify case department did not change
         var caseInDb = await db.Cases.FindAsync(testCase.Id);
         Assert.NotNull(caseInDb);
-        Assert.Equal(originalDept.Id, caseInDb.DepartmentId);
+        Assert.Equal(originalDept.Id, caseInDb.TeamId);
     }
 
     [Fact]
@@ -88,11 +88,11 @@ public class TransactionSafetyTests
     {
         using var db = CreateInMemoryDbContext();
 
-        var dept = new Department { Id = Guid.NewGuid(), Name = "Support", Code = "SUP" };
-        var initialOwner = new User { Id = Guid.NewGuid(), Name = "Owner 1", Email = "owner1@bank.com", Role = "Agent", DepartmentId = dept.Id };
+        var dept = new Team { Id = Guid.NewGuid(), Name = "Support", Code = "SUP" };
+        var initialOwner = new User { Id = Guid.NewGuid(), Name = "Owner 1", Email = "owner1@bank.com", Role = "Agent" };
         var customer = new Customer { Id = Guid.NewGuid(), FullName = "Wong", NRIC = "920202-14-2222", PhoneNumber = "+60123456781" };
 
-        db.Departments.Add(dept);
+        db.Teams.Add(dept);
         db.Users.Add(initialOwner);
         db.Customers.Add(customer);
 
@@ -103,8 +103,8 @@ public class TransactionSafetyTests
             Title = "Account Query",
             CustomerId = customer.Id,
             Customer = customer,
-            DepartmentId = dept.Id,
-            Department = dept,
+            TeamId = dept.Id,
+            Team = dept,
             OwnerId = initialOwner.Id,
             Owner = initialOwner,
             Status = CaseStatus.Open,
@@ -145,11 +145,11 @@ public class TransactionSafetyTests
     {
         using var db = CreateInMemoryDbContext();
 
-        var dept = new Department { Id = Guid.NewGuid(), Name = "Support", Code = "SUP" };
-        var user = new User { Id = Guid.NewGuid(), Name = "Agent 1", Email = "agent1@bank.com", Role = "Agent", DepartmentId = dept.Id };
+        var dept = new Team { Id = Guid.NewGuid(), Name = "Support", Code = "SUP" };
+        var user = new User { Id = Guid.NewGuid(), Name = "Agent 1", Email = "agent1@bank.com", Role = "Agent" };
         var customer = new Customer { Id = Guid.NewGuid(), FullName = "Customer A", NRIC = "990101-14-1111", PhoneNumber = "+60123456782" };
 
-        db.Departments.Add(dept);
+        db.Teams.Add(dept);
         db.Users.Add(user);
         db.Customers.Add(customer);
 
@@ -160,8 +160,8 @@ public class TransactionSafetyTests
             Title = "Queue Transfer Case",
             CustomerId = customer.Id,
             Customer = customer,
-            DepartmentId = dept.Id,
-            Department = dept,
+            TeamId = dept.Id,
+            Team = dept,
             OwnerId = user.Id,
             Owner = user,
             Status = CaseStatus.Open,
@@ -181,12 +181,10 @@ public class TransactionSafetyTests
             mockEnv.Object
         );
 
-        // A team IS the queue: "transferring" without naming another team (the old fake queue option) is refused.
+        // A transfer names a department; one that names none, or a team's id instead, is refused before anything changes.
         var transferDto = new TransferDepartmentDto
         {
             DepartmentId = Guid.Empty,
-            TransferTo = "Queue",
-            TargetQueue = "Tier 2 - Escalations",
             Reason = "Complex query",
             HandoverNote = "Customer needs urgent assistance"
         };
@@ -202,12 +200,12 @@ public class TransactionSafetyTests
     {
         using var db = CreateInMemoryDbContext();
 
-        var dept = new Department { Id = Guid.NewGuid(), Name = "Support", Code = "SUP" };
-        var agent = new User { Id = Guid.NewGuid(), Name = "Frontline Agent", Email = "frontline@bank.com", Role = "Agent", DepartmentId = dept.Id };
-        var supervisor = new User { Id = Guid.NewGuid(), Name = "Supervisor Amina", Email = "supervisor@bank.com", Role = "CX Supervisor", DepartmentId = dept.Id };
+        var dept = new Team { Id = Guid.NewGuid(), Name = "Support", Code = "SUP" };
+        var agent = new User { Id = Guid.NewGuid(), Name = "Frontline Agent", Email = "frontline@bank.com", Role = "Agent" };
+        var supervisor = new User { Id = Guid.NewGuid(), Name = "Supervisor Amina", Email = "supervisor@bank.com", Role = "CX Supervisor" };
         var customer = new Customer { Id = Guid.NewGuid(), FullName = "Customer B", NRIC = "990101-14-2222", PhoneNumber = "+60123456783" };
 
-        db.Departments.Add(dept);
+        db.Teams.Add(dept);
         db.Users.AddRange(agent, supervisor);
         db.Customers.Add(customer);
 
@@ -218,8 +216,8 @@ public class TransactionSafetyTests
             Title = "Escalation Case",
             CustomerId = customer.Id,
             Customer = customer,
-            DepartmentId = dept.Id,
-            Department = dept,
+            TeamId = dept.Id,
+            Team = dept,
             OwnerId = agent.Id,
             Owner = agent,
             Status = CaseStatus.InProgress,
@@ -276,11 +274,11 @@ public class TransactionSafetyTests
     {
         using var db = CreateInMemoryDbContext();
 
-        var dept = new Department { Id = Guid.NewGuid(), Name = "Support", Code = "SUP" };
-        var user = new User { Id = Guid.NewGuid(), Name = "Agent 2", Email = "agent2@bank.com", Role = "Agent", DepartmentId = dept.Id };
+        var dept = new Team { Id = Guid.NewGuid(), Name = "Support", Code = "SUP" };
+        var user = new User { Id = Guid.NewGuid(), Name = "Agent 2", Email = "agent2@bank.com", Role = "Agent" };
         var customer = new Customer { Id = Guid.NewGuid(), FullName = "Customer C", NRIC = "990101-14-3333", PhoneNumber = "+60123456784" };
 
-        db.Departments.Add(dept);
+        db.Teams.Add(dept);
         db.Users.Add(user);
         db.Customers.Add(customer);
 
@@ -291,8 +289,8 @@ public class TransactionSafetyTests
             Title = "Resolvable Case",
             CustomerId = customer.Id,
             Customer = customer,
-            DepartmentId = dept.Id,
-            Department = dept,
+            TeamId = dept.Id,
+            Team = dept,
             OwnerId = user.Id,
             Owner = user,
             Status = CaseStatus.Open,

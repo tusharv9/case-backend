@@ -139,10 +139,10 @@ public class NotificationPolicyTests
         await using var _db = db;
         await using var ctx = db.NewContext();
         var customer = new Customer { Id = Guid.NewGuid(), FullName = "C", NRIC = "N", PhoneNumber = "+60111111111", CreatedAt = DateTime.UtcNow };
-        var dept = new Department { Id = Guid.NewGuid(), Name = "D", Code = "D", CreatedAt = DateTime.UtcNow };
+        var dept = new Team { Id = Guid.NewGuid(), Name = "D", Code = "D", CreatedAt = DateTime.UtcNow };
         ctx.AddRange(customer, dept);
         await ctx.SaveChangesAsync();
-        var c = new Case { Id = Guid.NewGuid(), CaseNumber = "T-1", Title = "t", CustomerId = customer.Id, DepartmentId = dept.Id, OwnerId = agent, Status = CaseStatus.Open, Severity = "High", SlaStartTime = DateTime.UtcNow.AddHours(-5), CreatedAt = DateTime.UtcNow };
+        var c = new Case { Id = Guid.NewGuid(), CaseNumber = "T-1", Title = "t", CustomerId = customer.Id, TeamId = dept.Id, OwnerId = agent, Status = CaseStatus.Open, Severity = "High", SlaStartTime = DateTime.UtcNow.AddHours(-5), CreatedAt = DateTime.UtcNow };
         ctx.Cases.Add(c);
         await ctx.SaveChangesAsync();
 

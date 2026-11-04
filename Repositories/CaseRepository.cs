@@ -58,13 +58,13 @@ public class CaseRepository : ICaseRepository
     public async Task<IEnumerable<Case>> GetAllAsync(Guid? departmentId = null)
     {
         var query = _context.Cases
-            .Include(c => c.Department)
+            .Include(c => c.Team)
             .Include(c => c.Owner)
             .AsQueryable();
 
         if (departmentId.HasValue)
         {
-            query = query.Where(c => c.DepartmentId == departmentId.Value);
+            query = query.Where(c => c.TeamId == departmentId.Value);
         }
 
         return await query.OrderByDescending(c => c.CreatedAt).ToListAsync();
@@ -161,7 +161,7 @@ public class CaseRepository : ICaseRepository
 
     public async Task<Guid?> GetDepartmentOwnerAsync(Guid departmentId)
     {
-        var department = await _context.Departments.FirstOrDefaultAsync(d => d.Id == departmentId);
+        var department = await _context.Teams.FirstOrDefaultAsync(d => d.Id == departmentId);
         if (department == null) throw new KeyNotFoundException("Department not found.");
         return department.OwnerId;
     }
@@ -188,7 +188,7 @@ public class CaseRepository : ICaseRepository
 
             if (departmentId.HasValue)
             {
-                query = query.Where(c => c.DepartmentId == departmentId.Value);
+                query = query.Where(c => c.TeamId == departmentId.Value);
             }
 
             if (!string.IsNullOrWhiteSpace(caseType) && !caseType.Equals("all", StringComparison.OrdinalIgnoreCase))
@@ -447,7 +447,7 @@ public class CaseRepository : ICaseRepository
     public async Task<CaseChildRelation?> GetChildRelationByChildIdAsync(string childId, CancellationToken ct = default)
     {
         return await _context.CaseChildRelations
-            .Include(cr => cr.ParentCase).ThenInclude(pc => pc.Department)
+            .Include(cr => cr.ParentCase).ThenInclude(pc => pc.Team)
             .Include(cr => cr.ParentCase).ThenInclude(pc => pc.Customer)
             .Include(cr => cr.LinkedCase)
             .Include(cr => cr.CreatedByUser)
@@ -510,11 +510,11 @@ public class CaseRepository : ICaseRepository
             var actors = filter.ActorIds.ToList();
             query = query.Where(ce => ce.UserId != null && actors.Contains(ce.UserId.Value)).Where(AutomaticEvents.IsPersonal);
         }
-        if (filter.TeamId.HasValue) query = query.Where(ce => ce.Case != null && ce.Case.DepartmentId == filter.TeamId.Value);
+        if (filter.TeamId.HasValue) query = query.Where(ce => ce.Case != null && ce.Case.TeamId == filter.TeamId.Value);
         if (filter.DepartmentId.HasValue)
         {
-            var teams = db.TeamDepartments.Where(l => l.OrgDepartmentId == filter.DepartmentId.Value).Select(l => l.TeamId);
-            query = query.Where(ce => ce.Case != null && teams.Contains(ce.Case.DepartmentId));
+            var teams = db.TeamDepartments.Where(l => l.DepartmentId == filter.DepartmentId.Value).Select(l => l.TeamId);
+            query = query.Where(ce => ce.Case != null && teams.Contains(ce.Case.TeamId));
         }
         if (filter.From.HasValue) query = query.Where(ce => ce.CreatedAt >= filter.From.Value);
         if (filter.To.HasValue) query = query.Where(ce => ce.CreatedAt < filter.To.Value);
@@ -584,7 +584,7 @@ public class CaseRepository : ICaseRepository
                 CaseTitle = ce.Case != null ? ce.Case.Title : (ce.Module ?? "Configurable Settings"),
                 CustomerId = ce.Case != null ? (Guid?)ce.Case.CustomerId : null,
                 CustomerName = ce.Case != null && ce.Case.Customer != null ? ce.Case.Customer.FullName : null,
-                DepartmentName = ce.Case != null && ce.Case.Department != null ? ce.Case.Department.Name : null,
+                DepartmentName = ce.Case != null && ce.Case.Team != null ? ce.Case.Team.Name : null,
                 Severity = ce.Case != null ? ce.Case.Severity : null,
                 NewOwner = ce.Case != null && ce.Case.Owner != null ? ce.Case.Owner.Name : null,
                 Module = ce.Module,
@@ -611,7 +611,7 @@ public class CaseRepository : ICaseRepository
             CustomerId = e.CustomerId,
             CustomerName = e.CustomerName,
             Description = e.Message,
-            DepartmentName = e.DepartmentName,
+            TeamName = e.DepartmentName,
             Severity = e.Severity,
             NewOwner = e.NewOwner,
             Module = e.Module,

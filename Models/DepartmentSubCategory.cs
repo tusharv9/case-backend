@@ -4,14 +4,9 @@ public class DepartmentSubCategory : AuditableEntity
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     /// <summary>
-    /// The business department the sub-category classifies cases of (Create Case lists a department's sub-categories, and the
-    /// priority mapping is looked up by department + name). Null only for rows written by code older than departments.
+    /// The department the sub-category classifies cases of (Create Case lists a department's sub-categories, and the priority
+    /// mapping is looked up by department + name). Null only for rows written before departments existed.
     /// </summary>
-    public Guid? OrgDepartmentId { get; set; }
-    public OrgDepartment? OrgDepartment { get; set; }
-
-    /// <summary>Legacy: the team the sub-category was first created under, from before sub-categories belonged to departments.
-    /// Kept (not dropped) so older code and rollbacks keep working; nothing new reads it.</summary>
     public Guid? DepartmentId { get; set; }
     public Department? Department { get; set; }
 

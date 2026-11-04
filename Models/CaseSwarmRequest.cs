@@ -23,7 +23,7 @@ public class CaseSwarmRequest
 
     /// <summary>The team the Team Lead was chosen for; null for a Supervisor.</summary>
     public Guid? TeamId { get; set; }
-    public Department? Team { get; set; }
+    public Team? Team { get; set; }
 
     public string Message { get; set; } = string.Empty;
 

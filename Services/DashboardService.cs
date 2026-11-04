@@ -74,12 +74,12 @@ public class DashboardService : IDashboardService
                 .ToListAsync(ct);
 
         var seesAll = SeesAllTeams;
-        var result = new DashboardFiltersDto { CanFilterByDepartment = seesAll, SeesAllTeams = seesAll };
+        var result = new DashboardFiltersDto { CanFilterByTeam = seesAll, SeesAllTeams = seesAll };
         List<FilterOptionDto> ranges = new();
 
         // Seven small, independent reads: side by side, not one after another (each is a round trip to the database).
         await ReadAllAsync(ct,
-            async db => result.Departments = !seesAll ? new List<NamedOptionDto>() : await db.Departments.AsNoTracking().Where(d => d.IsActive).OrderBy(d => d.Name)
+            async db => result.Teams = !seesAll ? new List<NamedOptionDto>() : await db.Teams.AsNoTracking().Where(d => d.IsActive).OrderBy(d => d.Name)
                 .Select(d => new NamedOptionDto { Id = d.Id, Name = d.Name }).ToListAsync(ct),
             async db => result.CaseTypes = await db.CaseTypeConfigs.AsNoTracking().Where(t => t.IsActive).OrderBy(t => t.DisplayOrder)
                 .Select(t => new FilterOptionDto { Value = t.Name, Label = t.Name }).ToListAsync(ct),
@@ -111,13 +111,13 @@ public class DashboardService : IDashboardService
 
     /// <summary>
     /// The cases one set of report filters selects, always within what the caller may see. Filtering by team is reserved
-    /// for people who see every team (see <see cref="DashboardFiltersDto.CanFilterByDepartment"/>); anyone else's team
+    /// for people who see every team (see <see cref="DashboardFiltersDto.CanFilterByTeam"/>); anyone else's team
     /// filter is ignored rather than allowed to suggest a cross-team view they do not have.
     /// </summary>
     private IQueryable<Case> ApplyFilters(AppDbContext db, DashboardQuery q, CaseStatus? statusFilter, DateTime? start, DateTime? end)
     {
         IQueryable<Case> query = _caseAccess?.Apply(db.Cases.AsNoTracking(), db) ?? db.Cases.AsNoTracking();
-        if (q.DepartmentId.HasValue && SeesAllTeams) query = query.Where(c => c.DepartmentId == q.DepartmentId.Value);
+        if (q.DepartmentId.HasValue && SeesAllTeams) query = query.Where(c => c.TeamId == q.DepartmentId.Value);
         if (!string.IsNullOrWhiteSpace(q.CaseType)) query = query.Where(c => c.CaseType == q.CaseType);
         if (!string.IsNullOrWhiteSpace(q.Severity)) query = query.Where(c => c.Severity == q.Severity);
         if (q.OwnerId.HasValue) query = query.Where(c => c.OwnerId == q.OwnerId.Value);
@@ -151,7 +151,7 @@ public class DashboardService : IDashboardService
         List<(string Severity, int Count)> bySeverity = new();
         var unassigned = 0;
         List<(string Priority, int DisplayOrder)> order = new();
-        List<DepartmentCaseCount> byDepartment = new();
+        List<TeamCaseCount> byTeam = new();
         List<CaseTypeCaseCount> byType = new();
         List<(Guid Id, CaseStatus Status, string Severity, SlaInputs Inputs)> inputs = new();
         var finishedBreached = 0;
@@ -168,9 +168,9 @@ public class DashboardService : IDashboardService
             async db => unassigned = await Filtered(db).CountAsync(c => c.OwnerId == emptyGuid, ct),
             async db => order = (await db.PrioritySlaRules.AsNoTracking().Where(r => r.IsActive).OrderBy(r => r.DisplayOrder)
                 .Select(r => new { r.Priority, r.DisplayOrder }).ToListAsync(ct)).Select(x => (x.Priority, x.DisplayOrder)).ToList(),
-            async db => byDepartment = await Filtered(db)
-                .GroupBy(c => new { c.DepartmentId, c.Department.Name })
-                .Select(g => new DepartmentCaseCount { DepartmentId = g.Key.DepartmentId, DepartmentName = g.Key.Name, Count = g.Count() })
+            async db => byTeam = await Filtered(db)
+                .GroupBy(c => new { c.TeamId, c.Team.Name })
+                .Select(g => new TeamCaseCount { TeamId = g.Key.TeamId, TeamName = g.Key.Name, Count = g.Count() })
                 .OrderByDescending(d => d.Count).ToListAsync(ct),
             async db => byType = await Filtered(db).GroupBy(c => c.CaseType)
                 .Select(g => new CaseTypeCaseCount { CaseType = g.Key, Count = g.Count() }).OrderByDescending(t => t.Count).ToListAsync(ct),
@@ -222,7 +222,7 @@ public class DashboardService : IDashboardService
             EscalatedCases = byStatus.GetValueOrDefault(CaseStatus.Escalated),
             ResolvedCases = byStatus.GetValueOrDefault(CaseStatus.Resolved),
             UnassignedCases = unassigned,
-            CasesByDepartment = byDepartment,
+            CasesByTeam = byTeam,
             CasesByType = byType,
             RecentActivities = activities,
         };
@@ -298,7 +298,7 @@ public class DashboardService : IDashboardService
             {
                 Id = c.Id, CaseNumber = c.CaseNumber, Title = c.Title, Status = c.Status.ToString(), Severity = c.Severity,
                 OwnerName = c.Owner != null ? c.Owner.Name : string.Empty, OwnerId = c.OwnerId,
-                DepartmentName = c.Department != null ? c.Department.Name : string.Empty,
+                TeamName = c.Team != null ? c.Team.Name : string.Empty,
                 SlaStartTime = c.SlaStartTime, SlaTargetHours = c.SlaTargetHours, SlaBreachedAt = c.SlaBreachedAt, SlaPausedAt = c.SlaPausedAt,
                 SlaTotalPausedMinutes = c.SlaTotalPausedMinutes, CustomerName = c.Customer != null ? c.Customer.FullName : string.Empty,
                 CustomerSource = c.CustomerSource, CustomerType = c.CustomerType, CreatedAt = c.CreatedAt
@@ -344,7 +344,7 @@ public class DashboardService : IDashboardService
     private static AttentionCaseSummary Clone(AttentionCaseSummary c) => new()
     {
         Id = c.Id, CaseNumber = c.CaseNumber, Title = c.Title, Status = c.Status, Severity = c.Severity, OwnerName = c.OwnerName, OwnerId = c.OwnerId,
-        DepartmentName = c.DepartmentName, SlaStartTime = c.SlaStartTime, SlaTargetHours = c.SlaTargetHours, SlaBreachedAt = c.SlaBreachedAt,
+        TeamName = c.TeamName, SlaStartTime = c.SlaStartTime, SlaTargetHours = c.SlaTargetHours, SlaBreachedAt = c.SlaBreachedAt,
         SlaPausedAt = c.SlaPausedAt, SlaTotalPausedMinutes = c.SlaTotalPausedMinutes, CustomerName = c.CustomerName,
         CustomerSource = c.CustomerSource, CustomerType = c.CustomerType, CreatedAt = c.CreatedAt,
         Sla = c.Sla, IsHolidayToday = c.IsHolidayToday, HolidayName = c.HolidayName
@@ -362,7 +362,7 @@ public class DashboardService : IDashboardService
         public string? Subcategory { get; init; }
         public CaseStatus Status { get; init; }
         public string Severity { get; init; } = string.Empty;
-        public string DepartmentName { get; init; } = string.Empty;
+        public string TeamName { get; init; } = string.Empty;
         public string OwnerName { get; init; } = string.Empty;
         public string CustomerName { get; set; } = string.Empty;
         public string CustomerSource { get; init; } = CustomerSources.Local;
@@ -405,7 +405,7 @@ public class DashboardService : IDashboardService
             {
                 Id = c.Id, CaseNumber = c.CaseNumber, Title = c.Title, CaseType = c.CaseType, Subcategory = c.Subcategory,
                 Status = c.Status, Severity = c.Severity,
-                DepartmentName = c.Department != null ? c.Department.Name : string.Empty,
+                TeamName = c.Team != null ? c.Team.Name : string.Empty,
                 OwnerName = c.Owner != null ? c.Owner.Name : string.Empty,
                 CustomerName = c.Customer != null ? c.Customer.FullName : string.Empty,
                 CustomerSource = c.CustomerSource, CustomerType = c.CustomerType,
@@ -471,7 +471,7 @@ public class DashboardService : IDashboardService
 
         var csv = ReportCsv.Build(ExportHeader, rows.Select(r => (IReadOnlyList<string?>)new[]
         {
-            r.CaseNumber, r.Title, r.CaseType, r.Subcategory, StatusLabel(r.Status), r.Severity, r.DepartmentName, r.OwnerName,
+            r.CaseNumber, r.Title, r.CaseType, r.Subcategory, StatusLabel(r.Status), r.Severity, r.TeamName, r.OwnerName,
             CustomerLabel(r), r.CustomerSource == CustomerSources.Customer360 ? "Customer 360" : "Case Management", r.Channel,
             SlaLabel(health[r.Id]), r.EscalationLevel.ToString(), Local(r.CreatedAt), Local(r.ResolvedAt),
         }));

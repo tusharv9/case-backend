@@ -37,17 +37,17 @@ public class TeamPoliciesAndAuditTests : IDisposable
 
         User U(Guid id, string name) => new() { Id = id, Name = name, Email = name.ToLower().Replace(' ', '.') + "@x.test", Role = "Agent", IsActive = true, CreatedAt = DateTime.UtcNow };
         db.Users.AddRange(U(lead, "Lena Lead"), U(ann, "Ann Agent"), U(bob, "Bob Agent"), U(cy, "Cy Outsider"));
-        db.Departments.AddRange(
-            new Department { Id = cards, Name = "Cards", Code = "CD", OwnerId = lead, IsActive = true, CreatedAt = DateTime.UtcNow },
-            new Department { Id = loans, Name = "Loans", Code = "LN", IsActive = true, CreatedAt = DateTime.UtcNow });
+        db.Teams.AddRange(
+            new Team { Id = cards, Name = "Cards", Code = "CD", OwnerId = lead, IsActive = true, CreatedAt = DateTime.UtcNow },
+            new Team { Id = loans, Name = "Loans", Code = "LN", IsActive = true, CreatedAt = DateTime.UtcNow });
         db.TeamMembers.AddRange(
             Member(cards, lead, assignable: false),
             Member(cards, ann),
             Member(loans, cy));
-        db.OrgDepartments.AddRange(
-            new OrgDepartment { Id = retail, Name = "Retail Banking", Code = "RB", IsActive = true, DisplayOrder = 1, CreatedAt = DateTime.UtcNow },
-            new OrgDepartment { Id = corporate, Name = "Corporate Banking", Code = "CB", IsActive = true, DisplayOrder = 2, CreatedAt = DateTime.UtcNow },
-            new OrgDepartment { Id = closed, Name = "Closed Unit", Code = "CU", IsActive = false, DisplayOrder = 3, CreatedAt = DateTime.UtcNow });
+        db.Departments.AddRange(
+            new Department { Id = retail, Name = "Retail Banking", Code = "RB", IsActive = true, DisplayOrder = 1, CreatedAt = DateTime.UtcNow },
+            new Department { Id = corporate, Name = "Corporate Banking", Code = "CB", IsActive = true, DisplayOrder = 2, CreatedAt = DateTime.UtcNow },
+            new Department { Id = closed, Name = "Closed Unit", Code = "CU", IsActive = false, DisplayOrder = 3, CreatedAt = DateTime.UtcNow });
         db.BusinessCalendarSettings.Add(new BusinessCalendarSetting { Id = Guid.NewGuid(), TimeZoneId = "UTC", CreatedAt = DateTime.UtcNow });
         foreach (var d in Enum.GetValues<DayOfWeek>())
             db.BusinessHours.Add(new BusinessHour { DayOfWeek = d, DayName = d.ToString(), IsEnabled = true, StartTime = TimeSpan.Zero, EndTime = TimeSpan.FromHours(24), CreatedAt = DateTime.UtcNow });
@@ -58,7 +58,7 @@ public class TeamPoliciesAndAuditTests : IDisposable
 
     private static TeamMember Member(Guid team, Guid user, bool assignable = true) => new()
     {
-        Id = Guid.NewGuid(), DepartmentId = team, UserId = user, MemberRole = "Agent", IsActive = true, IsAssignable = assignable, JoinedAt = DateTime.UtcNow, CreatedAt = DateTime.UtcNow
+        Id = Guid.NewGuid(), TeamId = team, UserId = user, MemberRole = "Agent", IsActive = true, IsAssignable = assignable, JoinedAt = DateTime.UtcNow, CreatedAt = DateTime.UtcNow
     };
 
     private TeamService Teams()
@@ -96,13 +96,16 @@ public class TeamPoliciesAndAuditTests : IDisposable
     // ------------------------------------------------------------------------------------------------ departments
 
     [Fact]
-    public async Task A_team_can_serve_one_department_or_several_and_lists_them_in_display_order()
+    public async Task A_team_can_handle_several_departments_listed_in_display_order_and_they_are_then_taken()
     {
-        var one = await Teams().CreateTeamAsync(new CreateTeamDto { Name = "Mortgages", DepartmentIds = new() { retail } }, lead);
         var both = await Teams().CreateTeamAsync(new CreateTeamDto { Name = "Wealth", DepartmentIds = new() { corporate, retail } }, lead);
+        db.ChangeTracker.Clear();
 
-        Assert.Equal(new[] { "Retail Banking" }, one.Departments.Select(d => d.Name));
+        var taken = await Assert.ThrowsAsync<FieldValidationException>(() =>
+            Teams().CreateTeamAsync(new CreateTeamDto { Name = "Mortgages", DepartmentIds = new() { retail } }, lead));
+
         Assert.Equal(new[] { "Retail Banking", "Corporate Banking" }, both.Departments.Select(d => d.Name));
+        Assert.Contains(taken.Errors, e => e.Message.Contains("Retail Banking is already assigned to the team 'Wealth'"));
     }
 
     [Fact]
@@ -122,7 +125,7 @@ public class TeamPoliciesAndAuditTests : IDisposable
     [Fact]
     public async Task An_inactive_department_cannot_be_added_but_a_team_already_linked_to_it_keeps_the_link()
     {
-        db.TeamDepartments.Add(new TeamDepartment { TeamId = cards, OrgDepartmentId = closed });
+        db.TeamDepartments.Add(new TeamDepartment { TeamId = cards, DepartmentId = closed });
         await db.SaveChangesAsync();
         db.ChangeTracker.Clear();
 
@@ -149,20 +152,20 @@ public class TeamPoliciesAndAuditTests : IDisposable
     [Fact]
     public async Task A_department_still_served_by_a_team_cannot_be_deleted()
     {
-        db.TeamDepartments.Add(new TeamDepartment { TeamId = cards, OrgDepartmentId = retail });
+        db.TeamDepartments.Add(new TeamDepartment { TeamId = cards, DepartmentId = retail });
         await db.SaveChangesAsync();
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => new OrgDepartmentService(db).DeleteAsync(retail, lead));
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => new DepartmentService(db).DeleteAsync(retail, lead));
 
         Assert.Contains("Cards", error.Message);
-        Assert.True(await db.OrgDepartments.AnyAsync(d => d.Id == retail));
+        Assert.True(await db.Departments.AnyAsync(d => d.Id == retail));
     }
 
     [Fact]
     public async Task Two_departments_cannot_share_a_name_or_a_code()
     {
         var error = await Assert.ThrowsAsync<FieldValidationException>(() =>
-            new OrgDepartmentService(db).CreateAsync(new SaveOrgDepartmentDto { Name = "retail banking", Code = "cb" }, lead));
+            new DepartmentService(db).CreateAsync(new SaveDepartmentDto { Name = "retail banking", Code = "cb" }, lead));
 
         Assert.Contains(error.Errors, e => e.Field == "name");
         Assert.Contains(error.Errors, e => e.Field == "code");
@@ -253,7 +256,7 @@ public class TeamPoliciesAndAuditTests : IDisposable
 
         Assert.Contains(error.Errors, e => e.Field == TeamFormFields.Members && e.Message.Contains("Ann Agent (Cards)"));
         Assert.NotNull(viaAdd);
-        Assert.False(await db.TeamMembers.AnyAsync(m => m.DepartmentId == loans && m.UserId == ann));
+        Assert.False(await db.TeamMembers.AnyAsync(m => m.TeamId == loans && m.UserId == ann));
     }
 
     [Fact]
@@ -264,7 +267,7 @@ public class TeamPoliciesAndAuditTests : IDisposable
         // Lena leads Cards (and so has a member row there); joining Loans as a member is her ONE membership.
         await Teams().AddMemberAsync(loans, new AddTeamMemberDto { UserId = lead }, lead);
 
-        Assert.True(await db.TeamMembers.AnyAsync(m => m.DepartmentId == loans && m.UserId == lead && m.IsActive));
+        Assert.True(await db.TeamMembers.AnyAsync(m => m.TeamId == loans && m.UserId == lead && m.IsActive));
     }
 
     [Fact]
@@ -275,7 +278,7 @@ public class TeamPoliciesAndAuditTests : IDisposable
         var error = await Assert.ThrowsAsync<FieldValidationException>(() => Teams().UpdateTeamAsync(loans, new UpdateTeamDto { TeamLeadId = lead }, lead));
 
         Assert.Contains(error.Errors, e => e.Field == TeamFormFields.TeamLead && e.Message.Contains("already leads Cards"));
-        Assert.Null(await db.Departments.Where(d => d.Id == loans).Select(d => d.OwnerId).FirstAsync());
+        Assert.Null(await db.Teams.Where(d => d.Id == loans).Select(d => d.OwnerId).FirstAsync());
     }
 
     [Fact]
@@ -308,10 +311,10 @@ public class TeamPoliciesAndAuditTests : IDisposable
 
     private async Task SeedAuditAsync()
     {
-        var cardCase = new Case { Id = Guid.NewGuid(), CaseNumber = "C-00001", Title = "Lost card", DepartmentId = cards, OwnerId = ann, Severity = "High", CreatedAt = DateTime.UtcNow };
-        var loanCase = new Case { Id = Guid.NewGuid(), CaseNumber = "L-00002", Title = "Loan query", DepartmentId = loans, OwnerId = cy, Severity = "Low", CreatedAt = DateTime.UtcNow };
+        var cardCase = new Case { Id = Guid.NewGuid(), CaseNumber = "C-00001", Title = "Lost card", TeamId = cards, OwnerId = ann, Severity = "High", CreatedAt = DateTime.UtcNow };
+        var loanCase = new Case { Id = Guid.NewGuid(), CaseNumber = "L-00002", Title = "Loan query", TeamId = loans, OwnerId = cy, Severity = "Low", CreatedAt = DateTime.UtcNow };
         db.Cases.AddRange(cardCase, loanCase);
-        db.TeamDepartments.Add(new TeamDepartment { TeamId = loans, OrgDepartmentId = corporate });
+        db.TeamDepartments.Add(new TeamDepartment { TeamId = loans, DepartmentId = corporate });
         var t = DateTime.UtcNow;
         CaseEvent E(Case c, Guid user, EventType type, string message, int minutesAgo) =>
             new() { Id = Guid.NewGuid(), CaseId = c.Id, UserId = user, EventType = type, Message = message, CreatedAt = t.AddMinutes(-minutesAgo) };
@@ -372,8 +375,8 @@ public class TeamPoliciesAndAuditTests : IDisposable
         await SeedAuditAsync();
         var scope = new Mock<ICaseAccessScope>();
         scope.SetupGet(s => s.SeesAll).Returns(false);
-        scope.Setup(s => s.Apply(It.IsAny<IQueryable<Case>>())).Returns((IQueryable<Case> q) => q.Where(c => c.DepartmentId == cards));
-        scope.Setup(s => s.Apply(It.IsAny<IQueryable<Case>>(), It.IsAny<AppDbContext>())).Returns((IQueryable<Case> q, AppDbContext _) => q.Where(c => c.DepartmentId == cards));
+        scope.Setup(s => s.Apply(It.IsAny<IQueryable<Case>>())).Returns((IQueryable<Case> q) => q.Where(c => c.TeamId == cards));
+        scope.Setup(s => s.Apply(It.IsAny<IQueryable<Case>>(), It.IsAny<AppDbContext>())).Returns((IQueryable<Case> q, AppDbContext _) => q.Where(c => c.TeamId == cards));
 
         var export = await Audit(scope.Object).ExportAsync(new AuditFilter(), 100);
 

@@ -23,7 +23,7 @@ public class DashboardController : BaseApiController
     /// </summary>
     [HttpGet("summary")]
     public async Task<IActionResult> GetDashboardSummary(
-        [FromQuery] Guid? departmentId,
+        [FromQuery] Guid? teamId,
         [FromQuery] string? caseType,
         [FromQuery] string? status,
         [FromQuery] string? severity,
@@ -34,7 +34,7 @@ public class DashboardController : BaseApiController
         CancellationToken ct)
     {
         var summary = await _dashboard.GetSummaryAsync(new DashboardQuery(
-            departmentId, caseType, status, severity, dateRange, customStartDate, customEndDate,
+            teamId, caseType, status, severity, dateRange, customStartDate, customEndDate,
             myCasesOnly == true ? CurrentUserId : null), ct);
 
         return Ok(summary);
@@ -46,7 +46,7 @@ public class DashboardController : BaseApiController
     /// </summary>
     [HttpGet("export")]
     public async Task<IActionResult> Export(
-        [FromQuery] Guid? departmentId,
+        [FromQuery] Guid? teamId,
         [FromQuery] string? caseType,
         [FromQuery] string? status,
         [FromQuery] string? severity,
@@ -59,7 +59,7 @@ public class DashboardController : BaseApiController
         CancellationToken ct)
     {
         var export = await _dashboard.ExportAsync(new DashboardQuery(
-            departmentId, caseType, status, severity, dateRange, customStartDate, customEndDate,
+            teamId, caseType, status, severity, dateRange, customStartDate, customEndDate,
             myCasesOnly == true ? CurrentUserId : null), slaStatus, search, ct);
 
         Response.Headers["X-Export-Row-Count"] = export.RowCount.ToString(System.Globalization.CultureInfo.InvariantCulture);
