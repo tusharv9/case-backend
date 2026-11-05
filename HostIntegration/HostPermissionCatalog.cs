@@ -50,9 +50,9 @@ public static class HostPermissionCatalog
             new("Supervise", "Supervise cases", "Bulk reassign and bulk resolve, take over escalated cases, and be asked for help as a Supervisor in Request Swarm.", Permissions.CasesSupervise),
         ],
         [
-            // Reports sits below the operational Cases row. Its key stays "dashboard" so existing links and pages.js keep working.
+            // Dashboard (formerly Reports) sits below the operational Cases row. Its key stays "dashboard" so existing links and pages.js keep working.
             new("case-management", "Cases", "Briefcase", 10, "View"),
-            new("dashboard", "Reports", "PieChart", 20, "View"),
+            new("dashboard", "Dashboard", "PieChart", 20, "View"),
         ]),
         new("customers", "Case Customers", 20,
         [

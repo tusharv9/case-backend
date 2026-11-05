@@ -129,11 +129,25 @@ public class TeamService : ITeamService
         if (string.IsNullOrWhiteSpace(dto.Name))
             throw new InvalidOperationException("Team name is required.");
 
-        var name = dto.Name.Trim();
-        var code = !string.IsNullOrWhiteSpace(dto.Code) ? dto.Code.Trim().ToUpperInvariant() : GenerateTeamCode(name);
+        var name = NormalizeName(dto.Name);
+        if (await _context.Teams.AnyAsync(d => d.Name.ToLower() == name.ToLower(), ct))
+            throw new FieldValidationException(new[] { new FieldError(TeamFormFields.Name, $"A team named '{name}' already exists. Team names must be unique.") });
 
-        if (await _context.Teams.AnyAsync(d => d.Name.ToLower() == name.ToLower() || d.Code.ToLower() == code.ToLower(), ct))
-            throw new InvalidOperationException($"A team or department with name '{name}' or code '{code}' already exists.");
+        string code;
+        if (!string.IsNullOrWhiteSpace(dto.Code))
+        {
+            code = dto.Code.Trim().ToUpperInvariant();
+            if (await _context.Teams.AnyAsync(d => d.Code.ToLower() == code.ToLower(), ct))
+                throw new FieldValidationException(new[] { new FieldError(TeamFormFields.Code, $"Another team already uses the code '{code}'.") });
+        }
+        else
+        {
+            // A code made from the name never blocks a save: a clash gets a number added (PD, PD2, PD3…).
+            var stem = GenerateTeamCode(name);
+            var taken = (await _context.Teams.AsNoTracking().Select(d => d.Code.ToUpper()).ToListAsync(ct)).ToHashSet();
+            code = stem;
+            for (var n = 2; taken.Contains(code); n++) code = $"{stem}{n}";
+        }
 
         await EnsureUserIsActiveAsync(dto.TeamLeadId, "team lead", ct);
 
@@ -187,11 +201,11 @@ public class TeamService : ITeamService
         var oldState = JsonSerializer.Serialize(new { department.Name, department.Function, department.OwnerId, department.IsActive, DepartmentIds = department.DepartmentLinks.Select(l => l.DepartmentId) });
         var policy = await _settings.GetPolicyAsync(ct);
 
-        if (!string.IsNullOrWhiteSpace(dto.Name) && !string.Equals(dto.Name.Trim(), department.Name, StringComparison.Ordinal))
+        if (!string.IsNullOrWhiteSpace(dto.Name) && !string.Equals(NormalizeName(dto.Name), department.Name, StringComparison.Ordinal))
         {
-            var name = dto.Name.Trim();
+            var name = NormalizeName(dto.Name);
             if (await _context.Teams.AnyAsync(d => d.Id != id && d.Name.ToLower() == name.ToLower(), ct))
-                throw new InvalidOperationException($"A team named '{name}' already exists.");
+                throw new FieldValidationException(new[] { new FieldError(TeamFormFields.Name, $"A team named '{name}' already exists. Team names must be unique.") });
             department.Name = name;
         }
         if (dto.TeamLeadId.HasValue) await EnsureUserIsActiveAsync(dto.TeamLeadId, "team lead", ct);
@@ -531,17 +545,61 @@ public class TeamService : ITeamService
         }, ct);
     }
 
-    public async Task RemoveMemberAsync(Guid teamId, Guid userId, Guid currentUserId, CancellationToken ct = default)
+    public async Task RemoveMemberAsync(Guid teamId, Guid userId, Guid currentUserId, CancellationToken ct = default, string? reason = null)
     {
+        var team = await _context.Teams.AsNoTracking().Where(t => t.Id == teamId).Select(t => new { t.Name, t.OwnerId }).FirstOrDefaultAsync(ct)
+            ?? throw new KeyNotFoundException("Team not found.");
+        if (team.OwnerId == userId)
+            throw new InvalidOperationException("This person is the team lead. Remove them as lead first.");
         var member = await _context.TeamMembers.Include(m => m.User).FirstOrDefaultAsync(tm => tm.TeamId == teamId && tm.UserId == userId, ct);
         if (member == null) return;
 
+        var policy = await _settings.GetPolicyAsync(ct);
+        if (!policy.AllowTeamsWithoutMembers)
+        {
+            var others = await _context.TeamMembers.CountAsync(m => m.TeamId == teamId && m.IsActive && m.UserId != userId && m.UserId != team.OwnerId, ct);
+            if (others == 0)
+                throw new InvalidOperationException($"{member.User?.Name} is the last member of {team.Name}, and a team cannot be left without members (Case Settings → Teams → Team Rules).");
+        }
+
+        var name = member.User?.Name ?? userId.ToString();
         _context.TeamMembers.Remove(member);
-        _context.CaseEvents.Add(Audit("REMOVE_MEMBER", member.User?.Name ?? userId.ToString(), "Removed member from team", null, null, currentUserId));
+        _context.CaseEvents.Add(Audit("REMOVE_MEMBER", team.Name,
+            $"Removed {name} from team '{team.Name}'{(string.IsNullOrWhiteSpace(reason) ? "" : $". Reason: {reason}")}", name, reason, currentUserId));
         await _context.SaveChangesAsync(ct);
     }
 
-    public async Task<TeamDto> ToggleTeamStatusAsync(Guid id, Guid currentUserId, CancellationToken ct = default)
+    public async Task<TeamDto> RemoveLeadAsync(Guid teamId, string reason, Guid currentUserId, CancellationToken ct = default)
+    {
+        var team = await _context.Teams.Include(t => t.Owner).Include(t => t.Members).FirstOrDefaultAsync(t => t.Id == teamId, ct)
+            ?? throw new KeyNotFoundException($"Team with ID '{teamId}' was not found.");
+        if (team.OwnerId == null) throw new InvalidOperationException($"{team.Name} has no team lead.");
+
+        var policy = await _settings.GetPolicyAsync(ct);
+        if (policy.RequireTeamLead && team.IsActive)
+            throw new InvalidOperationException($"Every active team needs a lead (Case Settings → Teams → Team Rules). Choose a new lead for {team.Name} by editing the team, or turn that rule off.");
+
+        var leadId = team.OwnerId.Value;
+        var leadName = team.Owner?.Name ?? leadId.ToString();
+        await TeamWriteLock.RunAsync(_context, async () =>
+        {
+            team.OwnerId = null;
+            team.UpdatedAt = DateTime.UtcNow;
+            // The lead's own member row exists only because they lead; one who was not also given cases leaves the team with the role.
+            var row = team.Members.FirstOrDefault(m => m.UserId == leadId);
+            if (row != null)
+            {
+                if (row.IsAssignable && row.IsActive) row.MemberRole = string.IsNullOrWhiteSpace(team.Owner?.Role) ? "Service Agent" : team.Owner!.Role;
+                else _context.TeamMembers.Remove(row);
+            }
+            _context.CaseEvents.Add(Audit("REMOVE_LEAD", team.Name, $"Removed {leadName} as lead of team '{team.Name}'. Reason: {reason}", leadName, reason, currentUserId));
+            await _context.SaveChangesAsync(ct);
+        }, ct);
+
+        return (await GetTeamByIdAsync(teamId, ct))!;
+    }
+
+    public async Task<TeamDto> ToggleTeamStatusAsync(Guid id, Guid currentUserId, CancellationToken ct = default, IReadOnlyCollection<Guid>? departmentIds = null)
     {
         var department = await _context.Teams.FirstOrDefaultAsync(d => d.Id == id, ct)
             ?? throw new KeyNotFoundException($"Team with ID '{id}' was not found.");
@@ -557,6 +615,20 @@ public class TeamService : ITeamService
         {
             department.IsActive = !department.IsActive;
             department.UpdatedAt = DateTime.UtcNow;
+            if (department.IsActive && departmentIds is { Count: > 0 })
+            {
+                // Coming back: the team takes on the departments chosen for it (each active and handled by no other team).
+                var chosen = departmentIds.Distinct().ToList();
+                if (!policy.AllowMultipleDepartments && chosen.Count > 1)
+                    throw new FieldValidationException(new[] { new FieldError(TeamFormFields.Departments, "A team can serve only one department (Case Settings → Teams → Team Rules).") });
+                var linked = await _context.TeamDepartments.Where(l => l.TeamId == id).Select(l => l.DepartmentId).ToListAsync(ct);
+                await CheckDepartmentsAsync(chosen, linked.ToHashSet(), ct);
+                await DepartmentTeams.EnsureNotMappedElsewhereAsync(_context, chosen, id, TeamFormFields.Departments, ct);
+                foreach (var add in chosen.Where(c => !linked.Contains(c)))
+                    _context.TeamDepartments.Add(new TeamDepartment { TeamId = id, DepartmentId = add, LinkedAt = DateTime.UtcNow });
+                var names = await _context.Departments.AsNoTracking().Where(d => chosen.Contains(d.Id)).OrderBy(d => d.Name).Select(d => d.Name).ToListAsync(ct);
+                _context.CaseEvents.Add(Audit("UPDATE", department.Name, $"Activated team '{department.Name}' to handle {string.Join(", ", names)}", null, string.Join(", ", names), currentUserId));
+            }
             _context.CaseEvents.Add(Audit("TOGGLE_STATUS", department.Name, $"Toggled team '{department.Name}' status to {(department.IsActive ? "ACTIVE" : "INACTIVE")}", (!department.IsActive).ToString(), department.IsActive.ToString(), currentUserId));
             if (!department.IsActive)
             {
@@ -574,6 +646,9 @@ public class TeamService : ITeamService
 
         return (await GetTeamByIdAsync(department.Id, ct))!;
     }
+
+    /// <summary>Trimmed, with runs of spaces collapsed, so "Priority  Desk" and "Priority Desk" are the same name.</summary>
+    private static string NormalizeName(string name) => string.Join(' ', name.Split(' ', StringSplitOptions.RemoveEmptyEntries));
 
     private static string GenerateTeamCode(string name)
     {

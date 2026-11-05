@@ -31,11 +31,12 @@ public class DashboardController : BaseApiController
         [FromQuery] string? customStartDate,
         [FromQuery] string? customEndDate,
         [FromQuery] bool? myCasesOnly,
+        [FromQuery] Guid? departmentId,
         CancellationToken ct)
     {
         var summary = await _dashboard.GetSummaryAsync(new DashboardQuery(
             teamId, caseType, status, severity, dateRange, customStartDate, customEndDate,
-            myCasesOnly == true ? CurrentUserId : null), ct);
+            myCasesOnly == true ? CurrentUserId : null, departmentId), ct);
 
         return Ok(summary);
     }
@@ -56,11 +57,12 @@ public class DashboardController : BaseApiController
         [FromQuery] bool? myCasesOnly,
         [FromQuery] string? slaStatus,
         [FromQuery] string? search,
+        [FromQuery] Guid? departmentId,
         CancellationToken ct)
     {
         var export = await _dashboard.ExportAsync(new DashboardQuery(
             teamId, caseType, status, severity, dateRange, customStartDate, customEndDate,
-            myCasesOnly == true ? CurrentUserId : null), slaStatus, search, ct);
+            myCasesOnly == true ? CurrentUserId : null, departmentId), slaStatus, search, ct);
 
         Response.Headers["X-Export-Row-Count"] = export.RowCount.ToString(System.Globalization.CultureInfo.InvariantCulture);
         Response.Headers["X-Export-Truncated"] = export.Truncated ? "true" : "false";

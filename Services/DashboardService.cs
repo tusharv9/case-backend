@@ -6,8 +6,8 @@ using CaseManagement.Api.Models;
 using Microsoft.EntityFrameworkCore;
 
 public sealed record DashboardQuery(
-    Guid? DepartmentId, string? CaseType, string? Status, string? Severity,
-    string? DateRange, string? CustomStartDate, string? CustomEndDate, Guid? OwnerId);
+    Guid? TeamId, string? CaseType, string? Status, string? Severity,
+    string? DateRange, string? CustomStartDate, string? CustomEndDate, Guid? OwnerId, Guid? DepartmentId = null);
 
 public interface IDashboardService
 {
@@ -81,6 +81,8 @@ public class DashboardService : IDashboardService
         await ReadAllAsync(ct,
             async db => result.Teams = !seesAll ? new List<NamedOptionDto>() : await db.Teams.AsNoTracking().Where(d => d.IsActive).OrderBy(d => d.Name)
                 .Select(d => new NamedOptionDto { Id = d.Id, Name = d.Name }).ToListAsync(ct),
+            async db => result.Departments = await db.Departments.AsNoTracking().Where(d => d.IsActive).OrderBy(d => d.DisplayOrder).ThenBy(d => d.Name)
+                .Select(d => new NamedOptionDto { Id = d.Id, Name = d.Name }).ToListAsync(ct),
             async db => result.CaseTypes = await db.CaseTypeConfigs.AsNoTracking().Where(t => t.IsActive).OrderBy(t => t.DisplayOrder)
                 .Select(t => new FilterOptionDto { Value = t.Name, Label = t.Name }).ToListAsync(ct),
             async db => result.Statuses = await Lookup(db, "CASE_STATUS", ct),
@@ -117,7 +119,8 @@ public class DashboardService : IDashboardService
     private IQueryable<Case> ApplyFilters(AppDbContext db, DashboardQuery q, CaseStatus? statusFilter, DateTime? start, DateTime? end)
     {
         IQueryable<Case> query = _caseAccess?.Apply(db.Cases.AsNoTracking(), db) ?? db.Cases.AsNoTracking();
-        if (q.DepartmentId.HasValue && SeesAllTeams) query = query.Where(c => c.TeamId == q.DepartmentId.Value);
+        if (q.TeamId.HasValue && SeesAllTeams) query = query.Where(c => c.TeamId == q.TeamId.Value);
+        if (q.DepartmentId.HasValue) query = query.Where(c => c.DepartmentId == q.DepartmentId.Value);
         if (!string.IsNullOrWhiteSpace(q.CaseType)) query = query.Where(c => c.CaseType == q.CaseType);
         if (!string.IsNullOrWhiteSpace(q.Severity)) query = query.Where(c => c.Severity == q.Severity);
         if (q.OwnerId.HasValue) query = query.Where(c => c.OwnerId == q.OwnerId.Value);

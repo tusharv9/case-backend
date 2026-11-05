@@ -4,6 +4,7 @@ using CaseManagement.Api.HostIntegration;
 using CaseManagement.Api.DTOs;
 using CaseManagement.Api.Services;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
 
 [ApiController]
 [Route("api/[controller]")]
@@ -75,17 +76,30 @@ public class TeamsController : BaseApiController
         return Ok(new { message = "Member added to team successfully." });
     }
 
+    /// <summary>Takes a member off the team. The reason (body or <c>?reason=</c>) is required and kept in the audit history.</summary>
     [HttpDelete("{id:guid}/members/{userId:guid}")]
-    public async Task<IActionResult> RemoveMember(Guid id, Guid userId, CancellationToken ct)
+    public async Task<IActionResult> RemoveMember(Guid id, Guid userId, [FromQuery] string? reason, [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] TeamRemovalDto? dto, CancellationToken ct)
     {
-        await _teamService.RemoveMemberAsync(id, userId, CurrentUserId, ct);
+        var why = (dto?.Reason ?? reason)?.Trim();
+        if (string.IsNullOrWhiteSpace(why)) return BadRequest(new { error = "Give a reason for removing this member." });
+        await _teamService.RemoveMemberAsync(id, userId, CurrentUserId, ct, why);
         return Ok(new { message = "Member removed from team successfully." });
     }
 
-    [HttpPost("{id:guid}/toggle")]
-    public async Task<IActionResult> ToggleStatus(Guid id, CancellationToken ct)
+    /// <summary>Removes the team's lead (they stay on the team only if they were also chosen as a member). A reason is required.</summary>
+    [HttpDelete("{id:guid}/lead")]
+    public async Task<IActionResult> RemoveLead(Guid id, [FromQuery] string? reason, [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] TeamRemovalDto? dto, CancellationToken ct)
     {
-        var team = await _teamService.ToggleTeamStatusAsync(id, CurrentUserId, ct);
+        var why = (dto?.Reason ?? reason)?.Trim();
+        if (string.IsNullOrWhiteSpace(why)) return BadRequest(new { error = "Give a reason for removing the team lead." });
+        return Ok(await _teamService.RemoveLeadAsync(id, why, CurrentUserId, ct));
+    }
+
+    /// <summary>Activates or deactivates the team. When activating, the body may name the departments it is to handle.</summary>
+    [HttpPost("{id:guid}/toggle")]
+    public async Task<IActionResult> ToggleStatus(Guid id, [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] ToggleTeamDto? dto, CancellationToken ct)
+    {
+        var team = await _teamService.ToggleTeamStatusAsync(id, CurrentUserId, ct, dto?.DepartmentIds);
         return Ok(team);
     }
 }

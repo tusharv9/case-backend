@@ -325,6 +325,11 @@ builder.Services.AddHttpClient<HostUserDirectoryClient>();
 // Roles and the people holding them, read from AuthService (escalation matrix, escalation recipients, Supervisors).
 builder.Services.AddHttpClient<IOrgDirectory, HostOrgDirectory>();
 builder.Services.AddHttpClient<HostSignInHistoryClient>();
+// People deleted in the Host: their open cases go back to the team lead to be assigned, and leads and Supervisors are told.
+builder.Services.AddHttpClient<IHostUserStatusClient, HostUserStatusClient>();
+builder.Services.AddScoped<DepartedUserService>();
+builder.Services.AddScoped<DepartedUserMonitor>();
+builder.Services.AddHostedService<DepartedUserWorker>();
 builder.Services.AddScoped<HostUserService>();
 
 // Customer 360: existing customers are read from it with the caller's own token, and a case keeps only their

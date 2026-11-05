@@ -98,6 +98,8 @@ public class AgentPerformanceItemDto
 {
     public Guid UserId { get; set; }
     public string Name { get; set; } = string.Empty;
+    /// <summary>The team(s) the agent belongs to, comma-separated; shown in brackets after the name.</summary>
+    public string TeamName { get; set; } = string.Empty;
     public int OpenCount { get; set; }
     public int ResolvedCount { get; set; }
     /// <summary>Average opening-to-resolution time of the cases they resolved in the period (null when none).</summary>

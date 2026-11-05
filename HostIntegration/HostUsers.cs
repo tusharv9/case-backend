@@ -18,6 +18,9 @@ public class AuthServiceOptions
     /// With it, permissions are asked of AuthService on every request (<see cref="HostCapabilitiesClient"/>).
     /// </summary>
     public string? InternalApiKey { get; set; }
+
+    /// <summary>How often to ask AuthService which people were deleted there, to release their cases (<see cref="DepartedUserWorker"/>).</summary>
+    public int DepartedUserCheckSeconds { get; set; } = 60;
 }
 
 /// <summary>Why the Host's user directory could not be read, worded for the person using the Teams page.</summary>

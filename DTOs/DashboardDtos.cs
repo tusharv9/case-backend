@@ -120,6 +120,8 @@ public class DashboardFiltersDto
     /// <summary>The caller's reports cover every team (true) or only their own teams and assignments (false).</summary>
     public bool SeesAllTeams { get; set; }
     public List<NamedOptionDto> Teams { get; set; } = new();
+    /// <summary>The active departments; filtering by one stays within the cases the caller may see.</summary>
+    public List<NamedOptionDto> Departments { get; set; } = new();
     public List<FilterOptionDto> CaseTypes { get; set; } = new();
     public List<FilterOptionDto> Statuses { get; set; } = new();
     public List<string> Priorities { get; set; } = new();

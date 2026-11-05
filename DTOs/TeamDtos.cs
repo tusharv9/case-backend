@@ -116,3 +116,15 @@ public class AddTeamMemberDto
     public string? MemberRole { get; set; }
     public bool IsAssignable { get; set; } = true;
 }
+
+/// <summary>Why a person is taken off a team (or off its lead): required, kept in the team's audit history.</summary>
+public class TeamRemovalDto
+{
+    public string? Reason { get; set; }
+}
+
+/// <summary>Activating a team: the departments it is to handle from now on (each must be active and free).</summary>
+public class ToggleTeamDto
+{
+    public List<Guid>? DepartmentIds { get; set; }
+}

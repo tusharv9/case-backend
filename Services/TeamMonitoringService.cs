@@ -240,7 +240,7 @@ public class TeamMonitoringService : ITeamMonitoringService
                 var done = resolvedByOwner.GetValueOrDefault(a.UserId);
                 return new AgentPerformanceItemDto
                 {
-                    UserId = a.UserId, Name = a.Name, OpenCount = a.OpenCasesCount, ResolvedCount = a.ResolvedInPeriodCount,
+                    UserId = a.UserId, Name = a.Name, TeamName = a.TeamName, OpenCount = a.OpenCasesCount, ResolvedCount = a.ResolvedInPeriodCount,
                     AvgResolutionMinutes = done is { Count: > 0 } ? Math.Round(done.Average(r => r.Minutes), 1) : null,
                 };
             })

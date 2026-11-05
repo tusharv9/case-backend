@@ -131,13 +131,13 @@ public class ReportExportAndMentionTests : IDisposable
     // ------------------------------------------------------------------------------------------------ sidebar
 
     [Fact]
-    public void The_host_sidebar_lists_Cases_first_then_Reports_on_the_unchanged_dashboard_route()
+    public void The_host_sidebar_lists_Cases_first_then_Dashboard_on_the_unchanged_dashboard_route()
     {
         var cases = CaseManagement.Api.HostIntegration.HostPermissionCatalog.Modules.Single(m => m.Key == "cases");
 
         var rows = cases.Nav.OrderBy(n => n.SortOrder).Select(n => (n.Key, n.Label)).ToArray();
 
-        Assert.Equal(new[] { ("case-management", "Cases"), ("dashboard", "Reports") }, rows);
+        Assert.Equal(new[] { ("case-management", "Cases"), ("dashboard", "Dashboard") }, rows);
     }
 
     // ------------------------------------------------------------------------------------------------ unstaffed team
