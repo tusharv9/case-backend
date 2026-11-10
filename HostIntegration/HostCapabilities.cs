@@ -1,6 +1,7 @@
 namespace CaseManagement.Api.HostIntegration;
 
 using System.Net.Http.Json;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
 
 /// <summary>Why the caller could not be let in, with the status to answer — refused (401/403) or not known (503).</summary>
@@ -21,10 +22,17 @@ public sealed class HostAccessException(int status, string message) : Exception(
 /// AuthService that cannot be reached is an outage (503) — never a pass, and never "you have no permission".</para>
 /// <para>Used only when <c>AuthService:InternalApiKey</c> is set; without it the token's own claims are read as
 /// before (older Hosts, and the tests that sign tokens carrying them).</para>
+/// <para><b>Reused briefly.</b> Asking costs AuthService two database reads, which every Case Management request used to
+/// wait for. An answer is now reused for <see cref="AuthServiceOptions.CapabilityCacheSeconds"/> (default 15 s; 0 = ask every
+/// time), and requests that arrive together (a page loads several at once) share one question. Only a granted answer is kept:
+/// "unknown", "inactive" and "could not reach AuthService" are asked again on the next request. So a permission revoked in
+/// the Host stops working here within that many seconds rather than at once.</para>
 /// </remarks>
-public sealed class HostCapabilitiesClient(HttpClient http, IOptions<AuthServiceOptions> options, ILogger<HostCapabilitiesClient> logger)
+public sealed class HostCapabilitiesClient(HttpClient http, IOptions<AuthServiceOptions> options, ILogger<HostCapabilitiesClient> logger,
+    Microsoft.Extensions.Caching.Memory.IMemoryCache? cache = null)
 {
     private static readonly TimeSpan Deadline = TimeSpan.FromSeconds(3);
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Lazy<Task<Answer>>> InFlight = new();
     private readonly AuthServiceOptions _options = options.Value;
 
     public bool IsConfigured => !string.IsNullOrWhiteSpace(_options.BaseUrl) && !string.IsNullOrWhiteSpace(_options.InternalApiKey);
@@ -35,6 +43,29 @@ public sealed class HostCapabilitiesClient(HttpClient http, IOptions<AuthService
 
     /// <exception cref="HostAccessException">The user is unknown or inactive, or AuthService could not answer.</exception>
     public async Task<Answer> ForUserAsync(string userId, CancellationToken ct)
+    {
+        var ttl = TimeSpan.FromSeconds(Math.Max(0, _options.CapabilityCacheSeconds));
+        if (cache == null || ttl == TimeSpan.Zero) return await FetchAsync(userId, ct);
+
+        var key = "host-capabilities:" + userId;
+        if (cache.TryGetValue(key, out Answer? hit) && hit != null) return hit;
+
+        // One question per user at a time: the requests a page fires together wait for the same answer. The shared fetch
+        // is not tied to any one caller's cancellation (it has its own deadline).
+        var shared = InFlight.GetOrAdd(key, _ => new Lazy<Task<Answer>>(() => FetchAsync(userId, CancellationToken.None)));
+        try
+        {
+            var answer = await shared.Value.WaitAsync(ct);
+            cache.Set(key, answer, ttl);
+            return answer;
+        }
+        finally
+        {
+            if (shared.IsValueCreated && shared.Value.IsCompleted) InFlight.TryRemove(new KeyValuePair<string, Lazy<Task<Answer>>>(key, shared));
+        }
+    }
+
+    private async Task<Answer> FetchAsync(string userId, CancellationToken ct)
     {
         Response? body;
         try

@@ -21,6 +21,9 @@ public class AuthServiceOptions
 
     /// <summary>How often to ask AuthService which people were deleted there, to release their cases (<see cref="DepartedUserWorker"/>).</summary>
     public int DepartedUserCheckSeconds { get; set; } = 60;
+
+    /// <summary>How long a user's permissions read from AuthService are reused (<see cref="HostCapabilitiesClient"/>); 0 asks on every request.</summary>
+    public int CapabilityCacheSeconds { get; set; } = 15;
 }
 
 /// <summary>Why the Host's user directory could not be read, worded for the person using the Teams page.</summary>

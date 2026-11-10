@@ -19,15 +19,17 @@ public class SlaRoutingService : ISlaRoutingService
     private readonly IEscalationService _escalation;
     private readonly IConfigCache? _cache;
     private readonly IOrgDirectory? _directory;
+    private readonly IDbContextFactory<AppDbContext>? _contexts;
 
     public SlaRoutingService(AppDbContext context, ILogger<SlaRoutingService> logger, IEscalationService escalation,
-        IConfigCache? cache = null, IOrgDirectory? directory = null)
+        IConfigCache? cache = null, IOrgDirectory? directory = null, IDbContextFactory<AppDbContext>? contexts = null)
     {
         _context = context;
         _logger = logger;
         _escalation = escalation;
         _cache = cache;
         _directory = directory;
+        _contexts = contexts;
     }
 
     // ===================================================================================== escalation validation
@@ -86,12 +88,56 @@ public class SlaRoutingService : ISlaRoutingService
 
     public async Task<SlaRoutingConfigResponseDto> GetFullConfigurationAsync(CancellationToken ct = default)
     {
-        // 1. Priority SLA Rules & Mappings (ordered by the administrator-defined display order)
-        var rules = await _context.PrioritySlaRules
-            .Include(r => r.CategoryMappings)
-            .AsNoTracking()
-            .OrderBy(r => r.DisplayOrder).ThenBy(r => r.Priority)
-            .ToListAsync(ct);
+        // Six independent reads and the Host's role list, side by side: each read is one round trip to the database, and the
+        // page used to wait for all of them one after another (about 3 s against the hosted database).
+        List<PrioritySlaRule> rules = new();
+        List<CategoryOptionDto> categories = new();
+        List<BusinessHour> businessHoursRaw = new();
+        List<PublicHolidayDto> holidays = new();
+        List<EscalationLevelConfig> levelRows = new();
+        string timeZoneId = string.Empty;
+        List<string> roles = new();
+        string? rolesUnavailable = null;
+
+        // 6. Roles a level may be given: the Host roles granted Case Management access (read live from the Host). Without a
+        // context factory (tests) the directory may read the request's context, so it then runs after the reads, not beside them.
+        async Task ReadRoles()
+        {
+            if (_directory == null) return;
+            try { roles = (await _directory.CaseRolesAsync(ct)).ToList(); }
+            catch (HostUsersException ex) { rolesUnavailable = ex.Message; }
+        }
+        var rolesTask = _contexts != null ? ReadRoles() : Task.CompletedTask;
+
+        await ParallelReads.RunAsync(_contexts, _context, ct,
+            // 1. Priority SLA Rules & Mappings (ordered by the administrator-defined display order)
+            async db => rules = await db.PrioritySlaRules.Include(r => r.CategoryMappings).AsNoTracking()
+                .OrderBy(r => r.DisplayOrder).ThenBy(r => r.Priority).ToListAsync(ct),
+            // 2. Sub-categories a priority can be applied to: every active one, plus any that is already mapped (so a mapping
+            //    never silently disappears from the screen). Grouped by the business department the sub-category belongs to.
+            async db => categories = await db.DepartmentSubCategories.AsNoTracking()
+                .Where(s => s.IsActive || db.PriorityCategoryMappings.Any(m => m.DepartmentSubCategoryId == s.Id))
+                .OrderBy(s => s.Department!.Name).ThenBy(s => s.Name)
+                .Select(s => new CategoryOptionDto
+                {
+                    Id = s.Id,
+                    Name = s.Name,
+                    DepartmentId = s.DepartmentId ?? Guid.Empty,
+                    DepartmentName = s.Department != null ? s.Department.Name : "No department",
+                    IsActive = s.IsActive
+                })
+                .ToListAsync(ct),
+            // 3. Business Hours (7 Days)
+            async db => businessHoursRaw = await db.BusinessHours.AsNoTracking().ToListAsync(ct),
+            // 4. Public Holidays
+            async db => holidays = await db.PublicHolidays.AsNoTracking().OrderBy(h => h.HolidayDate)
+                .Select(h => new PublicHolidayDto { Id = h.Id, HolidayDate = h.HolidayDate, Name = h.Name, IsActive = h.IsActive })
+                .ToListAsync(ct),
+            // 5. Escalation Levels
+            async db => levelRows = await db.EscalationLevelConfigs.AsNoTracking().OrderBy(l => l.LevelNumber).ToListAsync(ct),
+            async db => timeZoneId = await db.BusinessCalendarSettings.AsNoTracking().Select(t => t.TimeZoneId).FirstOrDefaultAsync(ct) ?? string.Empty);
+        await rolesTask;
+        if (_contexts == null) await ReadRoles();
 
         var ruleDtos = rules.Select(r => new PrioritySlaRuleDto
         {
@@ -111,30 +157,6 @@ public class SlaRoutingService : ISlaRoutingService
             AppliedSubCategoryIds = r.CategoryMappings.Select(m => m.DepartmentSubCategoryId).ToList()
         }).ToList();
 
-        // 2. Sub-categories a priority can be applied to: every active one, plus any that is already
-        //    mapped (so a mapping never silently disappears from the screen).
-        var mappedIds = rules.SelectMany(r => r.CategoryMappings).Select(m => m.DepartmentSubCategoryId).ToHashSet();
-        var categories = await _context.DepartmentSubCategories
-            .AsNoTracking()
-            .Where(s => s.IsActive || mappedIds.Contains(s.Id))
-            .OrderBy(s => s.Department!.Name)
-            .ThenBy(s => s.Name)
-            .Select(s => new CategoryOptionDto
-            {
-                Id = s.Id,
-                Name = s.Name,
-                // Grouped by the business department the sub-category belongs to.
-                DepartmentId = s.DepartmentId ?? Guid.Empty,
-                DepartmentName = s.Department != null ? s.Department.Name : "No department",
-                IsActive = s.IsActive
-            })
-            .ToListAsync(ct);
-
-        // 3. Business Hours (7 Days)
-        var businessHoursRaw = await _context.BusinessHours
-            .AsNoTracking()
-            .ToListAsync(ct);
-
         var businessHours = businessHoursRaw
             .OrderBy(b => b.DayOfWeek == DayOfWeek.Sunday ? 7 : (int)b.DayOfWeek) // Monday first, Sunday last
             .Select(b => new BusinessHourDto
@@ -148,30 +170,6 @@ public class SlaRoutingService : ISlaRoutingService
             })
             .ToList();
 
-        // 4. Public Holidays
-        var holidays = await _context.PublicHolidays
-            .AsNoTracking()
-            .OrderBy(h => h.HolidayDate)
-            .Select(h => new PublicHolidayDto
-            {
-                Id = h.Id,
-                HolidayDate = h.HolidayDate,
-                Name = h.Name,
-                IsActive = h.IsActive
-            })
-            .ToListAsync(ct);
-
-        // 5. Escalation Levels
-        var levelRows = await _context.EscalationLevelConfigs.AsNoTracking().OrderBy(l => l.LevelNumber).ToListAsync(ct);
-
-        // 6. Roles a level may be given: the Host roles granted Case Management access (read live from the Host).
-        List<string> roles = new();
-        string? rolesUnavailable = null;
-        if (_directory != null)
-        {
-            try { roles = (await _directory.CaseRolesAsync(ct)).ToList(); }
-            catch (HostUsersException ex) { rolesUnavailable = ex.Message; }
-        }
         var roleSet = new HashSet<string>(roles, StringComparer.OrdinalIgnoreCase);
         var levels = levelRows.Select(l =>
         {
@@ -179,8 +177,6 @@ public class SlaRoutingService : ISlaRoutingService
             dto.RoleUnavailable = rolesUnavailable == null && !string.IsNullOrWhiteSpace(l.TargetRole) && !roleSet.Contains(l.TargetRole.Trim());
             return dto;
         }).ToList();
-
-        var timeZoneId = await _context.BusinessCalendarSettings.AsNoTracking().Select(t => t.TimeZoneId).FirstOrDefaultAsync(ct) ?? string.Empty;
 
         return new SlaRoutingConfigResponseDto
         {

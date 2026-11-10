@@ -31,6 +31,12 @@ public interface IOrgDirectory
 
     /// <summary>Active people whose role is granted <c>cases:Supervise</c>.</summary>
     Task<IReadOnlyList<User>> SupervisorsAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Active OmniConnect administrators (Platform Administrator Access), as local users, by name. The last resort for work
+    /// nobody else can hold — e.g. the open cases of a deleted person whose team has no lead and no Supervisor.
+    /// </summary>
+    Task<IReadOnlyList<User>> AdministratorsAsync(CancellationToken ct = default);
 }
 
 public sealed class HostOrgDirectory(
@@ -41,7 +47,8 @@ public sealed class HostOrgDirectory(
     AppDbContext db,
     IUserProjectionService projection,
     IPermissionProvider permissions,
-    ILogger<HostOrgDirectory> logger) : IOrgDirectory
+    ILogger<HostOrgDirectory> logger,
+    HostCapabilitiesClient? capabilities = null) : IOrgDirectory
 {
     private static readonly TimeSpan CacheFor = TimeSpan.FromMinutes(1);
 
@@ -103,6 +110,31 @@ public sealed class HostOrgDirectory(
             result.AddRange(await LocalUsersAsync(people, role.Name, ct));
         }
         return result.DistinctBy(u => u.Id).OrderBy(u => u.Name, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    public async Task<IReadOnlyList<User>> AdministratorsAsync(CancellationToken ct = default)
+    {
+        var people = await db.Users.AsNoTracking().Where(u => u.IsActive && u.ExternalUserId != null)
+            .OrderBy(u => u.Name).Take(500).ToListAsync(ct);
+
+        if (capabilities is not { IsConfigured: true })
+        {
+            // Standalone: whoever the configured role map gives configuration management (null = every demo user holds it).
+            var roles = permissions.RolesGranting(Permissions.ConfigManage);
+            return roles == null ? people : people.Where(u => roles.Contains(u.Role)).ToList();
+        }
+
+        // AuthService says who is an administrator (the same answer every request's permissions come from, reused briefly).
+        var admins = new List<User>();
+        foreach (var person in people)
+        {
+            try
+            {
+                if ((await capabilities.ForUserAsync(person.ExternalUserId!, ct)).IsAdministrator) admins.Add(person);
+            }
+            catch (HostAccessException) { /* unknown or inactive in the Host: not an administrator */ }
+        }
+        return admins;
     }
 
     /// <summary>The local reference of each Host user, created when missing, with the Host role name kept on it.</summary>

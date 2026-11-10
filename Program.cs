@@ -197,10 +197,11 @@ if (string.IsNullOrWhiteSpace(connectionString))
 
 // Keep a few connections open and alive (the same rule the platform services use, AuthService WithWarmPool): every new
 // connection to the database costs a TLS handshake of several round trips, which the dashboard's side-by-side reads would
-// otherwise pay on the first load after a quiet spell. Database:MinimumPoolSize overrides the default of 10.
+// otherwise pay on the first load after a quiet spell. Database:MinimumPoolSize overrides the default of 20 (the Dashboard
+// alone reads about 20 things side by side), and DatabasePoolWarmup opens that many at startup.
 {
     var npgsql = new Npgsql.NpgsqlConnectionStringBuilder(connectionString);
-    var minimum = builder.Configuration.GetValue<int?>("Database:MinimumPoolSize") ?? 10;
+    var minimum = builder.Configuration.GetValue<int?>("Database:MinimumPoolSize") ?? 20;
     if (npgsql.MinPoolSize == 0 && minimum > 0) npgsql.MinPoolSize = Math.Min(minimum, npgsql.MaxPoolSize);
     if (npgsql.KeepAlive == 0) npgsql.KeepAlive = 30;
     connectionString = npgsql.ConnectionString;
@@ -344,7 +345,14 @@ builder.Services.AddScoped<CaseManagement.Api.Services.Customer360.ICustomer360C
 builder.Services.AddScoped<CaseManagement.Api.Services.Customer360.ICaseCustomerNames, CaseManagement.Api.Services.Customer360.CaseCustomerNames>();
 builder.Services.AddSingleton<CaseManagement.Api.Services.Customer360.ICustomer360Handoff, CaseManagement.Api.Services.Customer360.Customer360Handoff>();
 builder.Services.AddScoped<ICustomerService, CustomerService>();
+// Notifications are delivered by OmniConnect's central system (AuthService): events are queued and sent in the background.
+builder.Services.AddHttpClient<CaseManagement.Api.Services.Notifications.HostNotificationsClient>(http => http.Timeout = TimeSpan.FromSeconds(15));
+builder.Services.AddSingleton<CaseManagement.Api.Services.Notifications.CaseNotificationDispatcher>();
+builder.Services.AddSingleton<CaseManagement.Api.Services.Notifications.ICaseNotificationSink>(sp => sp.GetRequiredService<CaseManagement.Api.Services.Notifications.CaseNotificationDispatcher>());
+builder.Services.AddHostedService(sp => sp.GetRequiredService<CaseManagement.Api.Services.Notifications.CaseNotificationDispatcher>());
 builder.Services.AddScoped<INotificationService, NotificationService>();
+// Live changes (an agent's status) pushed to every open Case Management tab: GET /api/live.
+builder.Services.AddSingleton<ILiveEvents, LiveEvents>();
 builder.Services.AddScoped<IConfigurableSettingsService, ConfigurableSettingsService>();
 builder.Services.AddScoped<IPiiMaskingService, PiiMaskingService>();
 builder.Services.AddScoped<IFieldValidationEngine, FieldValidationEngine>();
@@ -389,6 +397,10 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<DatabaseInitialize
 
 // Register SLA Escalation Background Worker
 builder.Services.AddHostedService<SlaEscalationBackgroundService>();
+
+// Opens the minimum pool at startup, so the first pages after a restart do not each wait for new database connections.
+builder.Services.AddHostedService(sp => new CaseManagement.Api.Data.DatabasePoolWarmup(
+    connectionString, sp.GetRequiredService<DatabaseInitializationState>(), sp.GetRequiredService<ILogger<CaseManagement.Api.Data.DatabasePoolWarmup>>()));
 
 // In-process cache used by the authorization middleware and lookup caching
 builder.Services.AddMemoryCache();

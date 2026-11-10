@@ -40,7 +40,7 @@ public sealed class HostUserStatusClient(HttpClient http, IOptions<AuthServiceOp
 /// <summary>
 /// What happens in Case Management when a person is deleted in the Host: they leave every team (a team they led is left
 /// without a lead), they are marked inactive, and each open case they own is handed to the lead of the case's team — or,
-/// when the team has no other lead, to a Supervisor — to be given to an agent. The team lead and every Supervisor are told
+/// when the team has no lead, to a Supervisor, and when there is none, to an OmniConnect administrator — to be given to an agent. The team lead and every Supervisor are told
 /// which cases need assigning. Their history (events, comments, closed cases) is kept.
 /// </summary>
 /// <remarks>Only a Host answer of <c>Deleted</c> triggers this. A person the Host does not know at all (a row from another
@@ -86,15 +86,30 @@ public sealed class DepartedUserService(AppDbContext db, IOrgDirectory org, INot
         var activeUsers = await db.Users.AsNoTracking().Where(u => u.IsActive && !departedIds.Contains(u.Id)).Select(u => u.Id).ToListAsync(ct);
         var active = activeUsers.ToHashSet();
 
+        // Last resort, read only when needed: OmniConnect administrators, so a case is never left with someone who can no
+        // longer open it just because its team has no lead and nobody holds the Supervisor permission.
+        IReadOnlyList<User>? admins = null;
+        async Task<IReadOnlyList<User>> Administrators()
+        {
+            if (admins != null) return admins;
+            try { admins = (await org.AdministratorsAsync(ct)).Where(a => !departedIds.Contains(a.Id) && active.Contains(a.Id)).ToList(); }
+            catch (Exception ex) { logger.LogWarning(ex, "Administrators could not be read."); admins = Array.Empty<User>(); }
+            return admins;
+        }
+
         var toNotify = new List<(Guid Recipient, Case Case, string FormerOwner)>();
         foreach (var c in open)
         {
             var former = departed.First(u => u.Id == c.OwnerId).Name;
             var lead = leads.GetValueOrDefault(c.TeamId);
-            Guid? holder = lead.HasValue && active.Contains(lead.Value) ? lead : activeSupervisors.FirstOrDefault()?.Id;
+            var heldBy = "the team lead";
+            Guid? holder = lead.HasValue && active.Contains(lead.Value) ? lead : null;
+            if (holder == null && activeSupervisors.Count > 0) { holder = activeSupervisors[0].Id; heldBy = "a Supervisor"; }
+            var adminFallback = false;
+            if (holder == null && (await Administrators()).FirstOrDefault() is { } admin) { holder = admin.Id; heldBy = "an administrator"; adminFallback = true; }
             if (holder == null)
             {
-                logger.LogWarning("Case {Case} was owned by deleted user {User}, but its team has no lead and there is no Supervisor to hold it.", c.CaseNumber, former);
+                logger.LogWarning("Case {Case} was owned by deleted user {User}, but there is no team lead, Supervisor or administrator to hold it.", c.CaseNumber, former);
                 continue;
             }
 
@@ -103,13 +118,14 @@ public sealed class DepartedUserService(AppDbContext db, IOrgDirectory org, INot
             db.CaseEvents.Add(new CaseEvent
             {
                 Id = Guid.NewGuid(), CaseId = c.Id, EventType = EventType.Assign, CreatedAt = now,
-                Message = $"{former} was deleted in OmniConnect. The case is no longer assigned to them and is held by the team lead until it is assigned to an agent.",
+                Message = $"{former} was deleted in OmniConnect. The case is no longer assigned to them and is held by {heldBy} until it is assigned to an agent.",
                 OldValue = former, NewValue = "Needs an agent",
             });
 
             var recipients = new HashSet<Guid> { holder.Value };
             if (lead.HasValue && active.Contains(lead.Value)) recipients.Add(lead.Value);
             foreach (var s in activeSupervisors) recipients.Add(s.Id);
+            if (adminFallback) foreach (var a in await Administrators()) recipients.Add(a.Id);   // every administrator is told
             foreach (var r in recipients) toNotify.Add((r, c, former));
         }
 

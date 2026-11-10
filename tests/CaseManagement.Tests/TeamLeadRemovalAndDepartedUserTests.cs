@@ -178,4 +178,25 @@ public class TeamLeadRemovalAndDepartedUserTests : IDisposable
         Assert.Null((await db.Teams.SingleAsync(t => t.Id == service)).OwnerId);
         Assert.Equal(boss, (await db.Cases.SingleAsync(c => c.Id == caseId)).OwnerId);
     }
+
+    [Fact]
+    public async Task With_no_lead_and_no_supervisor_an_administrator_holds_the_cases_and_is_told()
+    {
+        var admin = Guid.NewGuid();
+        db.Users.Add(new User { Id = admin, Name = "Ada Admin", Email = "ada@x.test", Role = "Administrator", ExternalUserId = "host-Ada", IsActive = true, CreatedAt = DateTime.UtcNow });
+        (await db.Teams.SingleAsync(t => t.Id == service)).OwnerId = null;   // the team has no lead
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        var caseId = OpenCase(ann);
+        var sent = new RecordingNotifications();
+        var release = new DepartedUserService(db, new FakeOrgDirectory(db, administratorRoles: new[] { "Administrator" }), sent, NullLogger<DepartedUserService>.Instance);
+
+        var moved = await release.ReleaseAsync(new[] { ann }, default);
+
+        db.ChangeTracker.Clear();
+        Assert.Equal(1, moved);
+        Assert.Equal(admin, (await db.Cases.SingleAsync(c => c.Id == caseId)).OwnerId);
+        Assert.Contains(sent.Sent, s => s.Recipient == admin && s.CaseId == caseId);
+        Assert.True(await db.CaseEvents.AnyAsync(e => e.CaseId == caseId && e.Message.Contains("an administrator")));
+    }
 }

@@ -136,15 +136,6 @@ public class SlaMonitorService : ISlaMonitor
             _logger.LogWarning(ex, "Could not back-fill SLA outcomes.");
         }
 
-        try
-        {
-            await _notifications.PurgeExpiredAsync(now, ct);   // housekeeping rides on the single-instance cycle
-        }
-        catch (Exception ex) when (!ct.IsCancellationRequested)
-        {
-            _logger.LogWarning(ex, "Could not purge expired notifications.");
-        }
-
         return new SlaMonitorReport(true, evaluated, reminders, escalations, breached.Count);
     }
 

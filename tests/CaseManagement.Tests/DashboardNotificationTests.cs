@@ -67,8 +67,10 @@ public class DashboardDateRangeTests
 
 public class NotificationPolicyTests
 {
-    private static NotificationService Service(AppDbContext ctx, NotificationOptions? options = null, IPermissionProvider? permissions = null) =>
-        new(ctx, permissions ?? new ConfiguredPermissionProvider(Options.Create(new HostIntegrationOptions())), Options.Create(options ?? new NotificationOptions()));
+    private readonly RecordingNotificationSink sink = new();
+
+    private NotificationService Service(AppDbContext ctx, NotificationOptions? options = null, IPermissionProvider? permissions = null) =>
+        new(ctx, permissions ?? new ConfiguredPermissionProvider(Options.Create(new HostIntegrationOptions())), Options.Create(options ?? new NotificationOptions()), sink);
 
     private static async Task<(TempDatabase Db, Guid Admin, Guid Agent, Guid Supervisor)> WorldAsync()
     {
@@ -77,9 +79,9 @@ public class NotificationPolicyTests
         await ctx.Database.MigrateAsync();
         Guid admin = Guid.NewGuid(), agent = Guid.NewGuid(), sup = Guid.NewGuid();
         ctx.Users.AddRange(
-            new User { Id = admin, Name = "Admin", Email = "a@x.test", Role = "Admin", CreatedAt = DateTime.UtcNow },
-            new User { Id = agent, Name = "Agent", Email = "g@x.test", Role = "Agent", CreatedAt = DateTime.UtcNow },
-            new User { Id = sup, Name = "Sup", Email = "s@x.test", Role = "Supervisor", CreatedAt = DateTime.UtcNow });
+            new User { Id = admin, Name = "Admin", Email = "a@x.test", Role = "Admin", ExternalUserId = Guid.NewGuid().ToString(), CreatedAt = DateTime.UtcNow },
+            new User { Id = agent, Name = "Agent", Email = "g@x.test", Role = "Agent", ExternalUserId = Guid.NewGuid().ToString(), CreatedAt = DateTime.UtcNow },
+            new User { Id = sup, Name = "Sup", Email = "s@x.test", Role = "Supervisor", ExternalUserId = Guid.NewGuid().ToString(), CreatedAt = DateTime.UtcNow });
         await ctx.SaveChangesAsync();
         return (db, admin, agent, sup);
     }
@@ -93,7 +95,7 @@ public class NotificationPolicyTests
 
         await Service(ctx).CreateConfigChangedNotificationAsync("Updated", "Case type X changed");
 
-        var recipients = await ctx.Notifications.Where(n => n.Type == "CONFIG_CHANGED").Select(n => n.RecipientUserId).ToListAsync();
+        var recipients = sink.Sent.Where(s => s.Kind == CaseManagement.Api.Services.Notifications.CaseNotificationKinds.SettingsChanged).Select(s => s.Recipient).ToList();
         Assert.Equal(new[] { admin }, recipients);          // Admin holds config.manage; Agent and Supervisor do not
     }
 
@@ -106,30 +108,7 @@ public class NotificationPolicyTests
         await ctx.Users.Where(u => u.Id == admin).ExecuteUpdateAsync(u => u.SetProperty(x => x.IsActive, false));
 
         await Service(ctx).CreateConfigChangedNotificationAsync("Updated", "x");
-        Assert.Empty(await ctx.Notifications.ToListAsync());
-    }
-
-    [PostgresFact]
-    public async Task RetentionRemovesOldReadNotificationsSoonerThanUnreadOnes()
-    {
-        var (db, _, agent, _) = await WorldAsync();
-        await using var _db = db;
-        await using var ctx = db.NewContext();
-        var now = DateTime.UtcNow;
-
-        NotificationItem N(string type, bool read, int ageDays) => new() { RecipientUserId = agent, Type = type, Title = type, Message = "m", IsRead = read, CreatedAt = now.AddDays(-ageDays) };
-        ctx.Notifications.AddRange(
-            N("recent-read", true, 5), N("old-read", true, 45), N("old-unread", false, 45), N("ancient-unread", false, 400));
-        await ctx.SaveChangesAsync();
-
-        // (The audit base class stamps CreatedAt when saving, so set the ages explicitly.)
-        foreach (var (type, age) in new[] { ("recent-read", 5), ("old-read", 45), ("old-unread", 45), ("ancient-unread", 400) })
-            await ctx.Notifications.Where(n => n.Type == type).ExecuteUpdateAsync(u => u.SetProperty(n => n.CreatedAt, now.AddDays(-age)));
-
-        var removed = await Service(ctx, new NotificationOptions { ReadRetentionDays = 30, MaxAgeDays = 180 }).PurgeExpiredAsync(now);
-
-        Assert.Equal(2, removed);
-        Assert.Equal(new[] { "old-unread", "recent-read" }, (await ctx.Notifications.Select(n => n.Type).ToListAsync()).OrderBy(t => t).ToArray());
+        Assert.Empty(sink.Requests);
     }
 
     [PostgresFact]
@@ -154,6 +133,6 @@ public class NotificationPolicyTests
         await svc.PublishSlaBreachNotificationsAsync(candidate, DateTime.UtcNow.AddMinutes(15));         // one reminder
         await svc.PublishSlaBreachNotificationsAsync(candidate, DateTime.UtcNow.AddMinutes(60));         // maximum reached: nothing more
 
-        Assert.Equal(new[] { "SLA_BREACHED", "SLA_BREACH_REMINDER" }, (await ctx.Notifications.OrderBy(n => n.CreatedAt).Select(n => n.Type).ToListAsync()).ToArray());
+        Assert.Equal(new[] { "case.sla_breached", "case.sla_reminder" }, sink.Requests.Select(r => r.Kind).ToArray());
     }
 }

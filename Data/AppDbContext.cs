@@ -16,7 +16,8 @@ public class AppDbContext : DbContext
     public DbSet<CaseParticipant> CaseParticipants { get; set; } = null!;
     public DbSet<LinkedCase> LinkedCases { get; set; } = null!;
     public DbSet<CaseChildRelation> CaseChildRelations { get; set; } = null!;
-    public DbSet<NotificationItem> Notifications { get; set; } = null!;
+    /// <summary>The SLA monitor's memory of what it already said about a breach (notifications themselves live in OmniConnect).</summary>
+    public DbSet<CaseSlaAlert> CaseSlaAlerts { get; set; } = null!;
     public DbSet<FieldConfiguration> FieldConfigurations { get; set; } = null!;
     public DbSet<LookupType> LookupTypes { get; set; } = null!;
     public DbSet<LookupValue> LookupValues { get; set; } = null!;
@@ -274,23 +275,12 @@ public class AppDbContext : DbContext
             .HasIndex(ce => new { ce.UserId, ce.CreatedAt })
             .IsDescending(false, true);
 
-        // Notification list is always scoped to one recipient, newest first.
-        modelBuilder.Entity<NotificationItem>()
-            .HasIndex(n => new { n.RecipientUserId, n.CreatedAt })
-            .IsDescending(false, true);
-
-        // Unread badge is polled continuously; a partial index keeps it small.
-        modelBuilder.Entity<NotificationItem>()
-            .HasIndex(n => n.RecipientUserId)
-            .HasFilter(@"""IsRead"" = false")
-            .HasDatabaseName("IX_Notifications_Unread");
-
-        // An event is notified to a recipient at most once, however many times the monitor sees it.
-        modelBuilder.Entity<NotificationItem>()
-            .HasIndex(n => new { n.RecipientUserId, n.EventKey })
-            .IsUnique()
-            .HasFilter("\"EventKey\" IS NOT NULL")
-            .HasDatabaseName("UX_Notifications_Recipient_EventKey");
+        // One row per case: what the SLA monitor already said about its current breach. Goes with the case.
+        modelBuilder.Entity<CaseSlaAlert>(e =>
+        {
+            e.HasKey(a => a.CaseId);
+            e.HasOne(a => a.Case).WithMany().HasForeignKey(a => a.CaseId).OnDelete(DeleteBehavior.Cascade);
+        });
 
         modelBuilder.Entity<CaseChildRelation>()
             .HasOne(cr => cr.ParentCase)

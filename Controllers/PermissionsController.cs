@@ -1,4 +1,5 @@
 using CaseManagement.Api.HostIntegration;
+using CaseManagement.Api.Services.Notifications;
 using Microsoft.AspNetCore.Mvc;
 
 namespace CaseManagement.Api.Controllers;
@@ -49,6 +50,26 @@ public class PermissionsController : ControllerBase
                     sortOrder = n.SortOrder,
                     requiredCapability = n.RequiredCapability,
                 }).ToList(),
+                // The notifications this module raises (Settings > Manage Notifications in the Host). An empty list, not
+                // null, for the other modules: it is a real answer, "none".
+                notifications = m.Key == CaseNotificationKinds.Module
+                    ? CaseNotificationKinds.All.Select(n => new
+                    {
+                        key = n.Key,
+                        label = n.Label,
+                        description = n.Description,
+                        audience = n.Audience,
+                        subjects = n.Subjects,
+                        defaultEnabled = n.DefaultEnabled,
+                        defaultToAdministrators = n.DefaultToAdministrators,
+                        severity = n.Severity,
+                        message = n.Message,
+                        context = n.Context,
+                        tone = n.Tone,
+                        icon = n.Icon,
+                        subjectMessage = n.SubjectMessage,
+                    }).Cast<object>().ToList()
+                    : new List<object>(),
             })
             .ToList();
 

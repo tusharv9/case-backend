@@ -533,12 +533,14 @@ public class SlaMonitorTests
             return w;
         }
 
+        public RecordingNotificationSink Sink { get; } = new();
+
         public SlaMonitorService Monitor(AppDbContext ctx, INotificationService? notifications = null)
         {
             var cache = new ConfigCache(new MemoryCache(new MemoryCacheOptions()));
             var escalation = new EscalationService(ctx, cache, new FakeOrgDirectory(ctx));
             var clock = new SlaClockProvider(new BusinessTimeService(ctx, cache), escalation);
-            return new SlaMonitorService(ctx, clock, escalation, notifications ?? new NotificationService(ctx, new ConfiguredPermissionProvider(Options.Create(new HostIntegrationOptions())), Options.Create(new NotificationOptions())), NullLogger<SlaMonitorService>.Instance);
+            return new SlaMonitorService(ctx, clock, escalation, notifications ?? new NotificationService(ctx, new ConfiguredPermissionProvider(Options.Create(new HostIntegrationOptions())), Options.Create(new NotificationOptions()), Sink), NullLogger<SlaMonitorService>.Instance);
         }
 
         /// <summary>An open case that started <paramref name="ageMinutes"/> ago with 100 internal / 200 external target minutes.</summary>
@@ -576,7 +578,7 @@ public class SlaMonitorTests
         await using var check = w.Ctx();
         Assert.Equal(1, (await check.Cases.FindAsync(old))!.EscalationLevel);
         Assert.Equal(0, (await check.Cases.FindAsync(young))!.EscalationLevel);
-        var told = await check.Notifications.Where(n => n.CaseId == old && n.Type == "CASE_AUTOMATICALLY_ESCALATED").Select(n => n.RecipientUserId).ToListAsync();
+        var told = w.Sink.Requests.Where(r => r.CaseId == old && r.Kind == "case.auto_escalated").SelectMany(r => r.RecipientLocalIds).ToList();
         Assert.Equal(new[] { w.Lead, w.Owner }.OrderBy(x => x), told.OrderBy(x => x));   // the role's holder and, as configured, the case's holder
     }
 
@@ -605,7 +607,7 @@ public class SlaMonitorTests
         Assert.Equal(2, c.EscalationLevel);
         Assert.Equal(CaseStatus.InProgress, c.Status);
         Assert.Equal(w.Owner, c.OwnerId);
-        Assert.Equal(1, await check.Notifications.CountAsync(n => n.CaseId == id && n.Type == "CASE_AUTOMATICALLY_ESCALATED" && n.RecipientUserId == w.Supervisor));
+        Assert.Equal(1, w.Sink.Requests.Count(r => r.CaseId == id && r.Kind == "case.auto_escalated" && r.RecipientLocalIds.Contains(w.Supervisor)));
         Assert.Equal(1, await check.CaseEvents.CountAsync(e => e.CaseId == id && e.ActionType == "AUTO_ESCALATION"));
     }
 
@@ -692,14 +694,15 @@ public class SlaMonitorTests
     {
         await using var w = await World.CreateAsync();
         await using var ctx = w.Ctx();
-        var svc = new NotificationService(ctx, new ConfiguredPermissionProvider(Options.Create(new HostIntegrationOptions())), Options.Create(new NotificationOptions()));
+        var svc = new NotificationService(ctx, new ConfiguredPermissionProvider(Options.Create(new HostIntegrationOptions())), Options.Create(new NotificationOptions()), w.Sink);
         var caseId = Guid.NewGuid();
 
         await svc.CreateNotificationAsync(w.Lead, "CASE_AUTOMATICALLY_ESCALATED", "L2", "m", null, "C-1", "Critical", 0, default, "escalation:x:2");
         await svc.CreateNotificationAsync(w.Lead, "CASE_AUTOMATICALLY_ESCALATED", "L2 again", "m", null, "C-1", "Critical", 0, default, "escalation:x:2");
         await svc.CreateNotificationAsync(w.Lead, "CASE_AUTOMATICALLY_ESCALATED", "L3", "m", null, "C-1", "Critical", 0, default, "escalation:x:3");   // same type, same minute: a different event
 
-        Assert.Equal(2, await ctx.Notifications.CountAsync(n => n.RecipientUserId == w.Lead));
+        // Same key, same event: AuthService writes it once. A different key is a different event.
+        Assert.Equal(2, w.Sink.Requests.Where(r => r.RecipientLocalIds.Contains(w.Lead)).Select(r => r.EventKey).Distinct().Count());
     }
 
     [PostgresFact]

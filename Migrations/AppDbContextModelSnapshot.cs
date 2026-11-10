@@ -605,6 +605,28 @@ namespace CaseManagement.Api.Migrations
                     b.ToTable("CaseParticipants");
                 });
 
+            modelBuilder.Entity("CaseManagement.Api.Models.CaseSlaAlert", b =>
+                {
+                    b.Property<Guid>("CaseId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CycleStart")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("LastReminderAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("NotifiedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("Reminders")
+                        .HasColumnType("integer");
+
+                    b.HasKey("CaseId");
+
+                    b.ToTable("CaseSlaAlerts");
+                });
+
             modelBuilder.Entity("CaseManagement.Api.Models.CaseSwarmRequest", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1269,72 +1291,6 @@ namespace CaseManagement.Api.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("ManualAssignmentSettings");
-                });
-
-            modelBuilder.Entity("CaseManagement.Api.Models.NotificationItem", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<Guid?>("CaseId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("CaseNumber")
-                        .HasColumnType("text");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("EventKey")
-                        .HasColumnType("text");
-
-                    b.Property<bool>("IsRead")
-                        .HasColumnType("boolean");
-
-                    b.Property<DateTime?>("LastReminderAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("Message")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("Priority")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<DateTime?>("ReadAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<Guid>("RecipientUserId")
-                        .HasColumnType("uuid");
-
-                    b.Property<int>("ReminderCount")
-                        .HasColumnType("integer");
-
-                    b.Property<string>("Title")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("Type")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("RecipientUserId")
-                        .HasDatabaseName("IX_Notifications_Unread")
-                        .HasFilter("\"IsRead\" = false");
-
-                    b.HasIndex("RecipientUserId", "CreatedAt")
-                        .IsDescending(false, true);
-
-                    b.HasIndex("RecipientUserId", "EventKey")
-                        .IsUnique()
-                        .HasDatabaseName("UX_Notifications_Recipient_EventKey")
-                        .HasFilter("\"EventKey\" IS NOT NULL");
-
-                    b.ToTable("Notifications");
                 });
 
             modelBuilder.Entity("CaseManagement.Api.Models.PriorityCategoryMapping", b =>
@@ -2027,6 +1983,17 @@ namespace CaseManagement.Api.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("CaseManagement.Api.Models.CaseSlaAlert", b =>
+                {
+                    b.HasOne("CaseManagement.Api.Models.Case", "Case")
+                        .WithMany()
+                        .HasForeignKey("CaseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Case");
+                });
+
             modelBuilder.Entity("CaseManagement.Api.Models.CaseSwarmRequest", b =>
                 {
                     b.HasOne("CaseManagement.Api.Models.Case", "Case")
@@ -2139,17 +2106,6 @@ namespace CaseManagement.Api.Migrations
                     b.Navigation("Settings");
 
                     b.Navigation("Team");
-                });
-
-            modelBuilder.Entity("CaseManagement.Api.Models.NotificationItem", b =>
-                {
-                    b.HasOne("CaseManagement.Api.Models.User", "RecipientUser")
-                        .WithMany()
-                        .HasForeignKey("RecipientUserId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("RecipientUser");
                 });
 
             modelBuilder.Entity("CaseManagement.Api.Models.PriorityCategoryMapping", b =>

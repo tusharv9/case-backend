@@ -409,13 +409,16 @@ public class TeamPoliciesAndAuditTests : IDisposable
 
     // ------------------------------------------------------------------------------------------------ nudge
 
+    private readonly RecordingNotificationSink sink = new();
+
     private TeamMonitoringService Monitor(Guid caller, bool seesAll, int cooldownSeconds = 120)
     {
         var scope = new Mock<ICaseAccessScope>();
         scope.SetupGet(s => s.SeesAll).Returns(seesAll);
         var user = new Mock<ICurrentUserAccessor>();
         user.SetupGet(u => u.LocalUserId).Returns(caller);
-        return new TeamMonitoringService(db, null!, null!, Options.Create(new TeamMonitoringOptions { NudgeCooldownSeconds = cooldownSeconds }), scope.Object, user.Object);
+        return new TeamMonitoringService(db, null!, null!, Options.Create(new TeamMonitoringOptions { NudgeCooldownSeconds = cooldownSeconds }), scope.Object, user.Object,
+            notifications: new NotificationService(db, new ConfiguredPermissionProvider(Options.Create(new HostIntegrationOptions())), Options.Create(new CaseManagement.Api.Configuration.NotificationOptions()), sink));
     }
 
     [Fact]
@@ -423,8 +426,9 @@ public class TeamPoliciesAndAuditTests : IDisposable
     {
         var result = await Monitor(lead, seesAll: false).NudgeAgentAsync(ann, null, lead);
 
-        var note = await db.Notifications.SingleAsync(n => n.RecipientUserId == ann);
-        Assert.Equal("Nudge from Lena Lead", note.Title);
+        var note = Assert.Single(sink.Requests, r => r.RecipientLocalIds.Contains(ann));
+        Assert.Equal("agent.nudge", note.Kind);
+        Assert.False(string.IsNullOrWhiteSpace(note.Body));   // the supervisor's words travel as the card's second line
         Assert.Equal("Nudge sent to Ann Agent.", result.Message);
         Assert.True(await db.CaseEvents.AnyAsync(e => e.ActionType == "NUDGE" && e.UserId == lead && e.EntityName == "Ann Agent"));
     }
@@ -438,7 +442,7 @@ public class TeamPoliciesAndAuditTests : IDisposable
         var error = await Assert.ThrowsAsync<NudgeCooldownException>(() => monitor.NudgeAgentAsync(ann, null, lead));
 
         Assert.InRange(error.RetryAfterSeconds, 1, 120);
-        Assert.Equal(1, await db.Notifications.CountAsync(n => n.RecipientUserId == ann));
+        Assert.Equal(1, sink.Requests.Count(r => r.RecipientLocalIds.Contains(ann)));
     }
 
     [Fact]
@@ -450,6 +454,6 @@ public class TeamPoliciesAndAuditTests : IDisposable
         await Assert.ThrowsAsync<KeyNotFoundException>(() => monitor.EnsureCanMonitorAsync(cy));
         await monitor.EnsureCanMonitorAsync(ann);
         await Monitor(lead, seesAll: true).EnsureCanMonitorAsync(cy);   // someone who sees every team may
-        Assert.False(await db.Notifications.AnyAsync(n => n.RecipientUserId == cy));
+        Assert.DoesNotContain(sink.Requests, r => r.RecipientLocalIds.Contains(cy));
     }
 }

@@ -1,5 +1,7 @@
 namespace CaseManagement.Api.Controllers;
 
+using CaseManagement.Api.Services;
+
 using CaseManagement.Api.Data;
 using CaseManagement.Api.DTOs;
 using CaseManagement.Api.HostIntegration;
@@ -18,15 +20,18 @@ public class UsersController : BaseApiController
     private readonly AppDbContext _context;
     private readonly CaseManagement.Api.Repositories.IUserRepository _userRepository;
     private readonly ICurrentUserAccessor _currentUser;
+    private readonly ILiveEvents? _live;
 
     public UsersController(
         AppDbContext context,
         CaseManagement.Api.Repositories.IUserRepository userRepository,
-        ICurrentUserAccessor currentUser)
+        ICurrentUserAccessor currentUser,
+        ILiveEvents? live = null)
     {
         _context = context;
         _userRepository = userRepository;
         _currentUser = currentUser;
+        _live = live;
     }
 
     /// <summary>Active users, for pickers (assign, co-worker, team lead…).</summary>
@@ -72,6 +77,9 @@ public class UsersController : BaseApiController
         user.Status = newStatus;
         user.StatusUpdatedAt = DateTime.UtcNow;   // the person chose it (Team Monitoring tells this apart from the default)
         await _context.SaveChangesAsync();
+
+        // Every open Case Management tab (the person's other tabs, Team Monitoring, the Teams page) shows it at once.
+        _live?.Publish(new LiveEvent("agent-status", new { userId = user.Id, status = newStatus.ToString(), at = user.StatusUpdatedAt }));
 
         return Ok(new { message = "Status updated successfully.", status = newStatus.ToString() });
     }

@@ -31,8 +31,10 @@ public class TeamMonitoringService : ITeamMonitoringService
     private readonly IDbContextFactory<AppDbContext>? _contexts;
 
     public TeamMonitoringService(AppDbContext context, ISlaClockProvider slaClock, IRoutingEngineService routing, IOptions<TeamMonitoringOptions> options,
-        ICaseAccessScope? access = null, ICurrentUserAccessor? currentUser = null, IDbContextFactory<AppDbContext>? contexts = null)
+        ICaseAccessScope? access = null, ICurrentUserAccessor? currentUser = null, IDbContextFactory<AppDbContext>? contexts = null,
+        INotificationService? notifications = null)
     {
+        _notifications = notifications;
         _context = context;
         _slaClock = slaClock;
         _routing = routing;
@@ -41,6 +43,8 @@ public class TeamMonitoringService : ITeamMonitoringService
         _currentUser = currentUser;
         _contexts = contexts;
     }
+
+    private readonly INotificationService? _notifications;
 
     private static readonly CaseStatus[] Finished = { CaseStatus.Resolved, CaseStatus.Closed, CaseStatus.Cancelled };
 
@@ -513,9 +517,11 @@ public class TeamMonitoringService : ITeamMonitoringService
 
         var now = DateTime.UtcNow;
         var cooldown = Math.Max(0, _options.NudgeCooldownSeconds);
-        var last = await _context.Notifications.AsNoTracking()
-            .Where(n => n.RecipientUserId == agentId && n.Type == "Nudge")
-            .MaxAsync(n => (DateTime?)n.CreatedAt, ct);
+        // The last nudge is read from the audit trail (each nudge records the agent's id), not from a notification store.
+        var agentKey = agentId.ToString();
+        var last = await _context.CaseEvents.AsNoTracking()
+            .Where(e => e.ActionType == "NUDGE" && e.Module == "Team Monitoring" && e.OldValue == agentKey)
+            .MaxAsync(e => (DateTime?)e.CreatedAt, ct);
         if (last.HasValue && cooldown > 0 && (now - last.Value).TotalSeconds < cooldown)
         {
             var wait = (int)Math.Ceiling(cooldown - (now - last.Value).TotalSeconds);
@@ -528,17 +534,17 @@ public class TeamMonitoringService : ITeamMonitoringService
         var text = string.IsNullOrWhiteSpace(reason) ? "Please check your active case queue and pick up the cases closest to their SLA." : reason.Trim();
         if (text.Length > 500) throw new ArgumentException("The nudge message can be at most 500 characters.");
 
-        _context.Notifications.Add(new NotificationItem
-        {
-            Id = Guid.NewGuid(), RecipientUserId = agentId, Type = "Nudge", Title = $"Nudge from {supervisor}",
-            Message = text, Priority = "High", IsRead = false, CreatedAt = now
-        });
         _context.CaseEvents.Add(new CaseEvent
         {
             Id = Guid.NewGuid(), CaseId = null, EventType = EventType.Other, Message = $"{supervisor} nudged {agent.Name}: {text}",
-            CreatedAt = now, UserId = supervisorUserId, Module = "Team Monitoring", EntityName = agent.Name, ActionType = "NUDGE", NewValue = text
+            CreatedAt = now, UserId = supervisorUserId, Module = "Team Monitoring", EntityName = agent.Name, ActionType = "NUDGE",
+            OldValue = agentKey, NewValue = text
         });
         await _context.SaveChangesAsync(ct);
+
+        // Delivered by OmniConnect's bell; the supervisor's words are the card's second line.
+        if (_notifications != null)
+            await _notifications.CreateNotificationAsync(agentId, "Nudge", $"Nudge from {supervisor}", text, ct: ct);
 
         return new NudgeResultDto { Message = $"Nudge sent to {agent.Name}.", NudgedAt = now, CooldownSeconds = cooldown };
     }
