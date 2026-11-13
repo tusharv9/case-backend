@@ -43,29 +43,68 @@ public class EmailMailbox : AuditableEntity
     public long? UidValidity { get; set; }
     /// <summary>The highest IMAP UID already read. Null until the first read, which starts from that moment (old mail is not imported).</summary>
     public long? LastUid { get; set; }
+
+    /// <summary>Who added and last changed the mailbox (Case Management user ids; plain values, so removing a user never blocks).</summary>
+    public Guid? CreatedByUserId { get; set; }
+    public Guid? UpdatedByUserId { get; set; }
 }
 
 /// <summary>
-/// A sender domain whose emails become cases by themselves, and the case details an email cannot supply (type, department,
-/// sub-category, priority, language). The domain is matched on the sender's address.
+/// An organisation that writes to us — e.g. BSN. One record however many domains it has, so its name is typed once and an email
+/// from any of its domains is filed under the same organisation.
+/// </summary>
+public class EmailOrganisation : AuditableEntity
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public string Name { get; set; } = string.Empty;
+    /// <summary>The name lower-cased and trimmed: unique, so "BSN" and "bsn " can never be two organisations.</summary>
+    public string NameKey { get; set; } = string.Empty;
+    public bool IsActive { get; set; } = true;
+    public Guid? CreatedByUserId { get; set; }
+    public Guid? UpdatedByUserId { get; set; }
+
+    public static string KeyOf(string name) => System.Text.RegularExpressions.Regex.Replace(name.Trim(), @"\s+", " ").ToLowerInvariant();
+}
+
+/// <summary>
+/// A sender domain whose emails become cases by themselves. The domain identifies the organisation; its <see cref="VerificationPolicy"/> decides which
+/// of its senders are verified — everyone, or only the listed <see cref="Senders"/>.
 /// </summary>
 public class EmailVerifiedDomain : AuditableEntity
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     /// <summary>e.g. sbi.co.in — lower-case, unique.</summary>
     public string Domain { get; set; } = string.Empty;
-    /// <summary>Who the domain belongs to, e.g. State Bank of India.</summary>
+    public Guid OrganisationId { get; set; }
+    public EmailOrganisation? Organisation { get; set; }
+    /// <summary>The organisation's name when it was last saved. Kept (and written) for one release as the fallback for a rollback; read <see cref="Organisation"/>.</summary>
     public string OrganisationName { get; set; } = string.Empty;
+    /// <summary><see cref="VerificationPolicies"/>: every sender at the domain, or only the listed senders.</summary>
+    public string VerificationPolicy { get; set; } = VerificationPolicies.EntireDomain;
+    /// <summary>Only emails that carry a valid signature of the domain (DKIM, aligned with the sender) are verified.</summary>
+    public bool RequireAuthentication { get; set; }
+    public List<EmailVerifiedSender> Senders { get; set; } = new();
+    public Guid? CreatedByUserId { get; set; }
+    public Guid? UpdatedByUserId { get; set; }
     /// <summary>Also accept it.sbi.co.in and other sub-domains.</summary>
     public bool IncludeSubdomains { get; set; }
     public bool IsActive { get; set; } = true;
+}
 
-    public string CaseType { get; set; } = string.Empty;
-    public Guid DepartmentId { get; set; }
-    public Department? Department { get; set; }
-    public string SubCategory { get; set; } = string.Empty;
-    public string Priority { get; set; } = string.Empty;
-    public string PreferredLanguage { get; set; } = string.Empty;
+/// <summary>A named sender at a verified domain, e.g. tushar@bsn.com.in shown as "Tushar". Under the "specific senders" policy only these are verified.</summary>
+public class EmailVerifiedSender : AuditableEntity
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid VerifiedDomainId { get; set; }
+    public EmailVerifiedDomain? VerifiedDomain { get; set; }
+    /// <summary>Lower-case. Unique across every domain: one address is one identity.</summary>
+    public string Address { get; set; } = string.Empty;
+    /// <summary>The name the sender is shown by (the alias), preferred over the name in the email's From line.</summary>
+    public string DisplayName { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public bool IsActive { get; set; } = true;
+    public Guid? CreatedByUserId { get; set; }
+    public Guid? UpdatedByUserId { get; set; }
 }
 
 /// <summary>One email read from a mailbox, and what was done with it.</summary>
@@ -105,6 +144,18 @@ public class InboundEmail : AuditableEntity
     public string? VerificationNote { get; set; }
     public Guid? VerifiedDomainId { get; set; }
     public EmailVerifiedDomain? VerifiedDomain { get; set; }
+    /// <summary>The organisation the sender's domain belongs to — set whenever the domain is known, verified or not.</summary>
+    public Guid? OrganisationId { get; set; }
+    public EmailOrganisation? Organisation { get; set; }
+    /// <summary>The listed sender the address matched, if any.</summary>
+    public Guid? VerifiedSenderId { get; set; }
+    public EmailVerifiedSender? VerifiedSender { get; set; }
+    /// <summary>The listed sender's name when the email was processed, so renaming the sender later does not rewrite this email.</summary>
+    public string? SenderAlias { get; set; }
+    /// <summary><see cref="EmailAuthenticity"/>: whether the email proves it came from its domain — kept apart from <see cref="Verification"/>.</summary>
+    public string Authenticity { get; set; } = EmailAuthenticity.NotChecked;
+    /// <summary>What the check found, e.g. "dkim=pass d=bsn.com.in; dmarc=reject".</summary>
+    public string? AuthenticationDetail { get; set; }
 
     /// <summary><see cref="EmailStatuses"/>.</summary>
     public string Status { get; set; } = EmailStatuses.Received;
@@ -154,6 +205,30 @@ public static class SenderVerification
     public const string Pending = "Pending";
     public const string Verified = "Verified";
     public const string NotVerified = "NotVerified";
+    /// <summary>The domain is verified, but under "specific senders" this address is not on its list.</summary>
+    public const string NotListed = "NotListed";
+}
+
+public static class VerificationPolicies
+{
+    public const string EntireDomain = "EntireDomain";
+    public const string SpecificSenders = "SpecificSenders";
+    public static readonly string[] All = { EntireDomain, SpecificSenders };
+}
+
+/// <summary>Whether an email proves it was sent by its domain. A domain match alone proves nothing: anyone can write any From line.</summary>
+public static class EmailAuthenticity
+{
+    /// <summary>Not checked: the sender's domain is not a verified one, or the email was processed before checks existed.</summary>
+    public const string NotChecked = "NotChecked";
+    /// <summary>A valid DKIM signature of the sender's domain (aligned with the From address).</summary>
+    public const string Pass = "Pass";
+    /// <summary>No valid signature of the domain, and the domain does not ask for such mail to be refused.</summary>
+    public const string None = "None";
+    /// <summary>Forged or altered: a broken signature, or the domain's DMARC policy refuses mail without its valid signature.</summary>
+    public const string Fail = "Fail";
+    /// <summary>The check could not be completed (DNS unavailable).</summary>
+    public const string Unknown = "Unknown";
 }
 
 public static class EmailStatuses

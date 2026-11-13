@@ -11,6 +11,9 @@ public sealed class InboxEmailListItemDto
     public string MailboxAddress { get; set; } = string.Empty;
     public string Verification { get; set; } = string.Empty;
     public string? OrganisationName { get; set; }
+    /// <summary>The listed sender's name (alias), when the address is on the domain's sender list.</summary>
+    public string? SenderAlias { get; set; }
+    public string Authenticity { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
     public string? CaseNumber { get; set; }
     public Guid? CaseId { get; set; }
@@ -37,6 +40,9 @@ public sealed class InboxEmailDetailDto
     public string Verification { get; set; } = string.Empty;
     public string? VerificationNote { get; set; }
     public string? OrganisationName { get; set; }
+    public string? SenderAlias { get; set; }
+    public string Authenticity { get; set; } = string.Empty;
+    public string? AuthenticationDetail { get; set; }
     public string Status { get; set; } = string.Empty;
     public string? StatusNote { get; set; }
     public int Attempts { get; set; }
@@ -121,41 +127,44 @@ public sealed class VerifiedDomainDto
 {
     public Guid Id { get; set; }
     public string Domain { get; set; } = string.Empty;
+    public Guid OrganisationId { get; set; }
     public string OrganisationName { get; set; } = string.Empty;
     public bool IncludeSubdomains { get; set; }
     public bool IsActive { get; set; }
-    public string CaseType { get; set; } = string.Empty;
-    public Guid DepartmentId { get; set; }
-    public string? DepartmentName { get; set; }
-    public string SubCategory { get; set; } = string.Empty;
-    public string Priority { get; set; } = string.Empty;
-    public string PreferredLanguage { get; set; } = string.Empty;
+    public string VerificationPolicy { get; set; } = string.Empty;
+    public bool RequireAuthentication { get; set; }
+    public List<VerifiedSenderDto> Senders { get; set; } = new();
     public int CaseCount { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime? UpdatedAt { get; set; }
 }
 
+public sealed class VerifiedSenderDto
+{
+    public Guid? Id { get; set; }
+    public string Address { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public bool IsActive { get; set; } = true;
+}
+
+public sealed class EmailOrganisationDto
+{
+    public Guid Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public int DomainCount { get; set; }
+}
+
 public sealed class SaveVerifiedDomainDto
 {
     public string Domain { get; set; } = string.Empty;
+    /// <summary>The organisation's name: an existing organisation (matched ignoring case and spacing) or a new one.</summary>
     public string OrganisationName { get; set; } = string.Empty;
     public bool IncludeSubdomains { get; set; }
     public bool IsActive { get; set; } = true;
-    public string CaseType { get; set; } = string.Empty;
-    public Guid DepartmentId { get; set; }
-    public string SubCategory { get; set; } = string.Empty;
-    public string Priority { get; set; } = string.Empty;
-    public string PreferredLanguage { get; set; } = string.Empty;
-}
-
-/// <summary>What the Verified Domain form offers: the active case types, departments (with their sub-categories), priorities and languages.</summary>
-public sealed class EmailCaseOptionsDto
-{
-    public List<OptionDto> CaseTypes { get; set; } = new();
-    public List<DepartmentOptionDto> Departments { get; set; } = new();
-    public List<string> Priorities { get; set; } = new();
-    public List<string> Languages { get; set; } = new();
-
-    public sealed record OptionDto(string Value, string Label);
-    public sealed record DepartmentOptionDto(Guid Id, string Name, bool HasTeam, List<string> SubCategories);
+    /// <summary>EntireDomain | SpecificSenders. Empty means EntireDomain.</summary>
+    public string? VerificationPolicy { get; set; }
+    public bool RequireAuthentication { get; set; }
+    /// <summary>The whole sender list (replaced as a set). Kept, though not used, while the policy is "entire domain".</summary>
+    public List<VerifiedSenderDto> Senders { get; set; } = new();
 }

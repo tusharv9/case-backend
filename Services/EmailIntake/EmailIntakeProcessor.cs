@@ -28,6 +28,7 @@ public sealed class EmailIntakeProcessor(
     IAttachmentStore store,
     IMailboxClient mail,
     IMailboxSecretProtector secrets,
+    IEmailAuthenticator authenticator,
     IOptions<EmailIntakeOptions> options,
     ILogger<EmailIntakeProcessor> logger,
     ILiveEvents? live = null)
@@ -219,7 +220,11 @@ public sealed class EmailIntakeProcessor(
         {
             // The case details configured for the domain no longer pass Create Case's rules: a person must fix them, so no automatic retry.
             email = await AfterFailureAsync(emailId, "The case could not be created: " + string.Join(" ", ex.Errors.Select(e => e.Message))
-                + " Fix the verified domain's case details, then press Check again.", retry: false);
+                + " Check Case Settings, then press Check again.", retry: false);
+        }
+        catch (TransientCheckException ex)
+        {
+            email = await AfterFailureAsync(emailId, ex.Message, retry: true);
         }
         catch (TeamUnavailableException ex)
         {
@@ -264,23 +269,55 @@ public sealed class EmailIntakeProcessor(
             return;
         }
 
-        // Who is it from: a verified domain, or not.
+        // Start from nothing on every attempt ("Check again" may follow a change to the domain's settings).
+        email.OrganisationId = null;
+        email.VerifiedSenderId = null;
+        email.SenderAlias = null;
+        email.Authenticity = EmailAuthenticity.NotChecked;
+        email.AuthenticationDetail = null;
+
+        // Who is it from: the domain names the organisation; the policy and the email's signature decide whether the sender is verified.
         var senderDomain = EmailParsing.DomainOf(email.FromAddress);
-        var domains = await db.EmailVerifiedDomains.AsNoTracking().Where(d => d.IsActive).ToListAsync(ct);
+        var domains = await db.EmailVerifiedDomains.AsNoTracking().Include(d => d.Organisation).Where(d => d.IsActive).ToListAsync(ct);
         var domain = EmailParsing.MatchDomain(senderDomain, domains, d => d.Domain, d => d.IncludeSubdomains);
-        if (domain != null && EmailParsing.FailedDmarc(message))
+        var verified = false;
+        string? refusal = null;
+        if (domain != null)
         {
-            SetNotVerified(email, $"The email claims to be from {senderDomain}, but the receiving mail server reports it failed that domain's sender check (DMARC). It may be forged.");
-            return;
+            email.OrganisationId = domain.OrganisationId;
+            var org = OrganisationOf(domain);
+
+            var listed = await db.EmailVerifiedSenders.AsNoTracking()
+                .FirstOrDefaultAsync(s => s.VerifiedDomainId == domain.Id && s.Address == email.FromAddress && s.IsActive, ct);
+            email.VerifiedSenderId = listed?.Id;
+            email.SenderAlias = listed?.DisplayName;
+
+            var auth = await authenticator.CheckAsync(message, senderDomain, ct);
+            email.Authenticity = auth.Result;
+            email.AuthenticationDetail = auth.Detail;
+
+            if (auth.Result == EmailAuthenticity.Fail)
+                refusal = $"The email claims to be from {senderDomain} ({org}), but it does not carry that domain's valid signature and the domain's own policy "
+                    + $"refuses such mail, or its signature was broken. It may be forged. ({auth.Detail})";
+            else if (domain.RequireAuthentication && auth.Result == EmailAuthenticity.Unknown)
+                throw new TransientCheckException($"The signature of {senderDomain} could not be checked (DNS did not answer); it will be checked again.");
+            else if (domain.RequireAuthentication && auth.Result != EmailAuthenticity.Pass)
+                refusal = $"{org} requires a valid signature (DKIM) of {senderDomain}, and this email has none. ({auth.Detail})";
+            else if (domain.VerificationPolicy == VerificationPolicies.SpecificSenders && listed == null)
+                refusal = $"{email.FromAddress} is not on {org}'s list of senders. Add it under Maintenance → Verified Domains → {domain.Domain}, then press Check again.";
+            else
+                verified = true;
         }
 
-        // A reply on a thread we already have a case for goes to that case — whoever sent it (they were sent our email, or copied on it).
-        var threadCase = await ThreadCaseAsync(email, ct);
-        if (threadCase == null && domain != null && EmailParsing.CaseNumberInSubject(email.Subject) is { } quoted)
-            threadCase = await QuotedCaseAsync(quoted, domain.Id, ct);
+        // A reply on a thread we already have a case for goes to that case — whoever sent it (they were sent our email, or copied
+        // on it) — unless the email is forged: a forged reply must not reach a client's case.
+        var forged = email.Authenticity == EmailAuthenticity.Fail;
+        var threadCase = forged ? null : await ThreadCaseAsync(email, ct);
+        if (threadCase == null && verified && EmailParsing.CaseNumberInSubject(email.Subject) is { } quoted)
+            threadCase = await QuotedCaseAsync(quoted, domain!.Id, ct);
         if (threadCase != null)
         {
-            await LinkToCaseAsync(email, message, threadCase.Value, domain, ct);
+            await LinkToCaseAsync(email, message, threadCase.Value, verified ? domain : null, refusal, ct);
             return;
         }
 
@@ -291,15 +328,75 @@ public sealed class EmailIntakeProcessor(
                 : $"{senderDomain} is not a verified domain. Add it under Maintenance → Verified Domains, then press Check again.");
             return;
         }
+        if (!verified)
+        {
+            SetNotVerified(email, refusal!, domain.VerificationPolicy == VerificationPolicies.SpecificSenders && email.VerifiedSenderId == null && !forged
+                ? SenderVerification.NotListed : SenderVerification.NotVerified);
+            return;
+        }
 
         await CreateCaseAsync(email, message, domain, ct);
+    }
+
+    /// <summary>The case details an email cannot supply.</summary>
+    private sealed record EmailCaseDetails(string CaseType, Guid DepartmentId, string SubCategory, string Priority, string PreferredLanguage);
+
+    /// <summary>
+    /// The case type, department, sub-category, priority and language a case from an email starts with, chosen from Case Settings
+    /// as they are today: the first active case type, the first active department that has an active team and an active sub-category (and that sub-category), the
+    /// "Medium"/"Normal" priority (else the middle one of the active priorities) and the first active language. Nothing is
+    /// configured for email specifically: a domain says who wrote, not what about, and an agent sets the real details on the case.
+    /// </summary>
+    private async Task<EmailCaseDetails> CaseDetailsAsync(CancellationToken ct)
+    {
+        var caseType = await db.CaseTypeConfigs.AsNoTracking().Where(c => c.IsActive).OrderBy(c => c.DisplayOrder).ThenBy(c => c.Name)
+            .Select(c => c.Code).FirstOrDefaultAsync(ct);
+        (Guid Id, string Sub)? department = null;
+        var departments = await db.Departments.AsNoTracking().Where(d => d.IsActive).OrderBy(d => d.DisplayOrder).ThenBy(d => d.Name)
+            .Select(d => d.Id).ToListAsync(ct);
+        foreach (var id in departments)
+        {
+            if (await Teams.DepartmentTeams.TeamOfAsync(db, id, ct) is not { IsActive: true }) continue;
+            var sub = await db.DepartmentSubCategories.AsNoTracking().Where(s => s.DepartmentId == id && s.IsActive)
+                .OrderBy(s => s.DisplayOrder).ThenBy(s => s.Name).Select(s => s.Name).FirstOrDefaultAsync(ct);
+            if (sub != null) { department = (id, sub); break; }
+        }
+        var priorities = await db.PrioritySlaRules.AsNoTracking().Where(p => p.IsActive).OrderBy(p => p.DisplayOrder).Select(p => p.Priority).ToListAsync(ct);
+        var priority = priorities.FirstOrDefault(p => p.Equals("Medium", StringComparison.OrdinalIgnoreCase) || p.Equals("Normal", StringComparison.OrdinalIgnoreCase))
+                       ?? (priorities.Count > 0 ? priorities[(priorities.Count - 1) / 2] : null);
+        var language = await db.LookupValues.AsNoTracking().Where(v => v.TypeCode == "PREFERRED_LANGUAGE" && v.IsActive)
+            .OrderBy(v => v.DisplayOrder).Select(v => v.Value).FirstOrDefaultAsync(ct);
+
+        if (caseType == null || department == null || priority == null || language == null)
+            throw new TransientCheckException("The case could not be created: Case Settings needs an active case type, priority and language, and a "
+                + "department with an active team and an active sub-category. The email is tried again automatically.");
+        return new EmailCaseDetails(caseType, department.Value.Id, department.Value.Sub, priority, language);
+    }
+
+    private static string OrganisationOf(EmailVerifiedDomain domain) => domain.Organisation?.Name ?? domain.OrganisationName;
+
+    /// <summary>How the sender was verified, in words for the Inbox.</summary>
+    private static string VerifiedNote(InboundEmail email, EmailVerifiedDomain domain)
+    {
+        var who = email.SenderAlias != null
+            ? $"{email.SenderAlias} ({email.FromAddress}) is a listed sender of {OrganisationOf(domain)}."
+            : $"{EmailParsing.DomainOf(email.FromAddress)} is verified ({OrganisationOf(domain)}).";
+        var proof = email.Authenticity switch
+        {
+            EmailAuthenticity.Pass => " The email carries the domain's valid signature.",
+            EmailAuthenticity.Unknown => " Its signature could not be checked (DNS did not answer).",
+            _ => " The email carries no signature of the domain, so the From address itself is not proven.",
+        };
+        return who + proof;
     }
 
     private async Task CreateCaseAsync(InboundEmail email, MimeMessage message, EmailVerifiedDomain domain, CancellationToken ct)
     {
         var systemUser = await SystemUserAsync(ct);
         var mailbox = await db.EmailMailboxes.AsNoTracking().FirstAsync(m => m.Id == email.MailboxId, ct);
-        var customerId = await CustomerForAsync(email, domain, ct);
+        // The case details an email cannot supply; an agent corrects them on the case.
+        var defaults = await CaseDetailsAsync(ct);
+        var customerId = await CustomerForAsync(email, domain, defaults, ct);
 
         var body = email.BodyText;
         if (body.Length > _options.MaxDescriptionLength)
@@ -309,11 +406,11 @@ public sealed class EmailIntakeProcessor(
             Title = EmailParsing.Truncate(string.IsNullOrWhiteSpace(email.Subject) ? $"Email from {email.FromAddress}" : email.Subject, _options.MaxTitleLength),
             Description = string.IsNullOrWhiteSpace(body) ? "(The email has no text.)" : body,
             CustomerId = customerId,
-            DepartmentId = domain.DepartmentId,
-            CaseType = domain.CaseType,
-            Subcategory = domain.SubCategory,
-            Severity = domain.Priority,
-            PreferredLanguage = domain.PreferredLanguage,
+            DepartmentId = defaults.DepartmentId,
+            CaseType = defaults.CaseType,
+            Subcategory = defaults.SubCategory,
+            Severity = defaults.Priority,
+            PreferredLanguage = defaults.PreferredLanguage,
             SourceChannel = "Email",
             PreferredCommunicationChannel = "Email",
             CommunicationChannel = "Email",
@@ -327,7 +424,7 @@ public sealed class EmailIntakeProcessor(
             email.Status = EmailStatuses.CaseCreated;
             email.StatusNote = null;
             email.Verification = SenderVerification.Verified;
-            email.VerificationNote = $"{EmailParsing.DomainOf(email.FromAddress)} is verified ({domain.OrganisationName}).";
+            email.VerificationNote = VerifiedNote(email, domain);
             email.VerifiedDomainId = domain.Id;
             email.NextAttemptAt = null;
             email.AckStatus = mailbox.SendAcknowledgement ? AcknowledgementStatuses.NotSent : AcknowledgementStatuses.Skipped;
@@ -336,7 +433,7 @@ public sealed class EmailIntakeProcessor(
             {
                 CaseId = newCase.Id, EventType = EventType.Other, Channel = "Email", IsInternal = true, CreatedAt = DateTime.UtcNow, UserId = systemUser,
                 Module = "EmailIntake", ActionType = "EMAIL_CASE_CREATED",
-                Message = $"Created from an email from {Sender(email)} to {mailbox.Address} ({domain.OrganisationName}).",
+                Message = $"Created from an email from {Sender(email)} to {mailbox.Address} ({OrganisationOf(domain)}).",
             });
             await db.SaveChangesAsync(ct);
         });
@@ -356,7 +453,7 @@ public sealed class EmailIntakeProcessor(
         }
     }
 
-    private async Task LinkToCaseAsync(InboundEmail email, MimeMessage message, Guid caseId, EmailVerifiedDomain? domain, CancellationToken ct)
+    private async Task LinkToCaseAsync(InboundEmail email, MimeMessage message, Guid caseId, EmailVerifiedDomain? domain, string? refusal, CancellationToken ct)
     {
         var systemUser = await SystemUserAsync(ct);
         var excerpt = EmailParsing.Truncate(email.BodyText, 4000);
@@ -371,8 +468,8 @@ public sealed class EmailIntakeProcessor(
         email.StatusNote = "A reply on an existing case's email thread; added to that case.";
         email.Verification = domain != null ? SenderVerification.Verified : SenderVerification.NotVerified;
         email.VerifiedDomainId = domain?.Id;
-        email.VerificationNote = domain != null ? $"{EmailParsing.DomainOf(email.FromAddress)} is verified ({domain.OrganisationName})."
-            : "The sender's domain is not verified, but the email answers this case's thread.";
+        email.VerificationNote = domain != null ? VerifiedNote(email, domain)
+            : (refusal ?? "The sender's domain is not verified") + " The email answers this case's thread, so it was added to the case.";
         email.NextAttemptAt = null;
         email.AckStatus = AcknowledgementStatuses.Skipped;   // replies are not acknowledged again
         await db.SaveChangesAsync(ct);
@@ -399,7 +496,7 @@ public sealed class EmailIntakeProcessor(
     /// The case's customer: the Case Management customer with the sender's email address, or a new one for them (name and email
     /// only — the rest can be filled in on the case). Never a Customer 360 lookup: an email address does not identify a bank customer.
     /// </summary>
-    private async Task<Guid> CustomerForAsync(InboundEmail email, EmailVerifiedDomain domain, CancellationToken ct)
+    private async Task<Guid> CustomerForAsync(InboundEmail email, EmailVerifiedDomain domain, EmailCaseDetails defaults, CancellationToken ct)
     {
         var address = email.FromAddress;
         var existing = await db.Customers.AsNoTracking().Where(c => c.Email != null && c.Email.ToLower() == address)
@@ -408,11 +505,11 @@ public sealed class EmailIntakeProcessor(
 
         var customer = new Customer
         {
-            FullName = EmailParsing.Truncate(email.FromName ?? address.Split('@')[0], 200),
+            FullName = EmailParsing.Truncate(email.SenderAlias ?? email.FromName ?? address.Split('@')[0], 200),
             Email = address,
             PhoneNumber = string.Empty,
-            PreferredLanguage = string.IsNullOrWhiteSpace(domain.PreferredLanguage) ? "English" : domain.PreferredLanguage,
-            CustomerSegment = domain.OrganisationName,
+            PreferredLanguage = string.IsNullOrWhiteSpace(defaults.PreferredLanguage) ? "English" : defaults.PreferredLanguage,
+            CustomerSegment = OrganisationOf(domain),
             CreatedAt = DateTime.UtcNow,
         };
         db.Customers.Add(customer);
@@ -605,9 +702,9 @@ public sealed class EmailIntakeProcessor(
 
     private static string Sender(InboundEmail e) => string.IsNullOrWhiteSpace(e.FromName) ? e.FromAddress : $"{e.FromName} <{e.FromAddress}>";
 
-    private static void SetNotVerified(InboundEmail email, string note)
+    private static void SetNotVerified(InboundEmail email, string note, string verification = SenderVerification.NotVerified)
     {
-        email.Verification = SenderVerification.NotVerified;
+        email.Verification = verification;
         email.VerificationNote = note;
         email.VerifiedDomainId = null;
         email.Status = EmailStatuses.NotVerified;
@@ -631,3 +728,6 @@ public sealed class EmailIntakeProcessor(
         catch (Exception ex) { logger.LogDebug(ex, "Inbox live update not published."); }
     }
 }
+
+/// <summary>A check that could not be completed now (DNS unavailable) and is worth trying again later.</summary>
+public sealed class TransientCheckException(string message) : Exception(message);

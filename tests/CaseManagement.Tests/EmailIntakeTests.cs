@@ -33,6 +33,9 @@ public class EmailIntakeTests : IDisposable
     private readonly EmailMailbox mailbox;
     private readonly IMailboxSecretProtector secrets;
     private Func<CreateCaseDto, Exception?> createFails = _ => null;
+    private EmailAuthenticationResult authResult = new(EmailAuthenticity.None, "dkim=none; dmarc=none (no policy published)");
+    private readonly EmailVerifiedDomain sbi;
+    private readonly EmailOrganisation sbiOrg;
     private int casesCreated;
 
     public EmailIntakeTests()
@@ -46,11 +49,22 @@ public class EmailIntakeTests : IDisposable
             ImapHost = "imap.rma.test", SmtpHost = "smtp.rma.test", IsEnabled = true, SendAcknowledgement = true, CreatedAt = DateTime.UtcNow,
         };
         db.EmailMailboxes.Add(mailbox);
-        db.EmailVerifiedDomains.Add(new EmailVerifiedDomain
+        sbiOrg = new EmailOrganisation { Name = "State Bank of India", NameKey = "state bank of india", CreatedAt = DateTime.UtcNow };
+        db.EmailOrganisations.Add(sbiOrg);
+        sbi = new EmailVerifiedDomain
         {
-            Domain = "sbi.co.in", OrganisationName = "State Bank of India", CaseType = "Complaint", DepartmentId = department,
-            SubCategory = "Cards", Priority = "High", PreferredLanguage = "English", CreatedAt = DateTime.UtcNow,
-        });
+            Domain = "sbi.co.in", OrganisationId = sbiOrg.Id, OrganisationName = "State Bank of India", CreatedAt = DateTime.UtcNow,
+        };
+        db.EmailVerifiedDomains.Add(sbi);
+        // Case Settings, which email cases take their case type, department, sub-category, priority and language from.
+        var team = new Team { Name = "Cards Team", Code = "CARDS", IsActive = true, CreatedAt = DateTime.UtcNow };
+        db.Teams.Add(team);
+        db.Departments.Add(new Department { Id = department, Name = "Cards", Code = "CARDS", IsActive = true, CreatedAt = DateTime.UtcNow });
+        db.TeamDepartments.Add(new TeamDepartment { TeamId = team.Id, DepartmentId = department });
+        db.DepartmentSubCategories.Add(new DepartmentSubCategory { DepartmentId = department, Name = "Cards", Code = "CARDS", IsActive = true, CreatedAt = DateTime.UtcNow });
+        db.CaseTypeConfigs.Add(new CaseTypeConfig { Code = "Complaint", Name = "Complaint", IsActive = true, CreatedAt = DateTime.UtcNow });
+        db.PrioritySlaRules.Add(new PrioritySlaRule { Priority = "High", DisplayOrder = 1, IsActive = true, CreatedAt = DateTime.UtcNow });
+        db.LookupValues.Add(new LookupValue { TypeCode = "PREFERRED_LANGUAGE", Value = "English", Label = "English", IsActive = true });
         db.SaveChanges();
     }
 
@@ -80,8 +94,23 @@ public class EmailIntakeTests : IDisposable
                 uploads.Add((caseId, file.FileName));
                 return Task.FromResult(new CaseAttachmentDto { FileName = file.FileName });
             });
-        return new EmailIntakeProcessor(db, cases.Object, attachments.Object, store, mail, secrets, Options.Create(new EmailIntakeOptions()),
+        return new EmailIntakeProcessor(db, cases.Object, attachments.Object, store, mail, secrets, new FakeAuthenticator(() => authResult), Options.Create(new EmailIntakeOptions()),
             NullLogger<EmailIntakeProcessor>.Instance);
+    }
+
+    private sealed class FakeAuthenticator(Func<EmailAuthenticationResult> result) : IEmailAuthenticator
+    {
+        public Task<EmailAuthenticationResult> CheckAsync(MimeMessage message, string fromDomain, CancellationToken ct) => Task.FromResult(result());
+    }
+
+    private void UseSpecificSenders(params (string Address, string Alias)[] senders)
+    {
+        var d = db.EmailVerifiedDomains.Single(x => x.Id == sbi.Id);
+        d.VerificationPolicy = VerificationPolicies.SpecificSenders;
+        foreach (var (address, alias) in senders)
+            db.EmailVerifiedSenders.Add(new EmailVerifiedSender { VerifiedDomainId = d.Id, Address = address, DisplayName = alias, CreatedAt = DateTime.UtcNow });
+        db.SaveChanges();
+        db.ChangeTracker.Clear();
     }
 
     private sealed class FakeMailbox : IMailboxClient
@@ -215,8 +244,9 @@ public class EmailIntakeTests : IDisposable
     public async Task Checking_again_after_the_domain_is_verified_creates_the_case_once_however_often_it_is_pressed()
     {
         var email = await Receive(Email("ops@hdfc.example"));
-        db.EmailVerifiedDomains.Add(new EmailVerifiedDomain { Domain = "hdfc.example", OrganisationName = "HDFC", CaseType = "Complaint",
-            DepartmentId = department, SubCategory = "Cards", Priority = "High", PreferredLanguage = "English", CreatedAt = DateTime.UtcNow });
+        var orgHDFC = new EmailOrganisation { Name = "HDFC", NameKey = "hdfc", CreatedAt = DateTime.UtcNow };
+        db.EmailOrganisations.Add(orgHDFC);
+        db.EmailVerifiedDomains.Add(new EmailVerifiedDomain { Domain = "hdfc.example", OrganisationId = orgHDFC.Id, OrganisationName = "HDFC", CreatedAt = DateTime.UtcNow });
         await db.SaveChangesAsync();
 
         await Processor().ProcessAsync(email.Id, manual: true, default);
@@ -257,8 +287,9 @@ public class EmailIntakeTests : IDisposable
     public async Task A_ticket_number_in_the_subject_links_only_for_the_organisation_whose_case_it_is()
     {
         await Receive(Email("ravi@sbi.co.in"));
-        db.EmailVerifiedDomains.Add(new EmailVerifiedDomain { Domain = "other.example", OrganisationName = "Other", CaseType = "Complaint",
-            DepartmentId = department, SubCategory = "Cards", Priority = "High", PreferredLanguage = "English", CreatedAt = DateTime.UtcNow });
+        var orgOther = new EmailOrganisation { Name = "Other", NameKey = "other", CreatedAt = DateTime.UtcNow };
+        db.EmailOrganisations.Add(orgOther);
+        db.EmailVerifiedDomains.Add(new EmailVerifiedDomain { Domain = "other.example", OrganisationId = orgOther.Id, OrganisationName = "Other", CreatedAt = DateTime.UtcNow });
         await db.SaveChangesAsync();
 
         var sameOrg = await Receive(Email("new.person@sbi.co.in", "Update on [Ticket C-00001]"));
@@ -272,11 +303,12 @@ public class EmailIntakeTests : IDisposable
     [Fact]
     public async Task An_email_that_failed_its_domains_sender_check_is_not_verified_even_from_a_verified_domain()
     {
-        var email = await Receive(Email("ceo@sbi.co.in", also: m =>
-            m.Headers.Insert(0, new Header(HeaderId.AuthenticationResults, "mx.rma.test; spf=fail smtp.mailfrom=sbi.co.in; dmarc=fail header.from=sbi.co.in"))));
+        // The receiving server's "dmarc=fail" is read by EmailAuthenticator (see EmailVerifiedDomainsTests); here, its verdict.
+        authResult = new(EmailAuthenticity.Fail, "dkim=none; dmarc=fail (receiving server)");
+        var email = await Receive(Email("ceo@sbi.co.in"));
 
         Assert.Equal(EmailStatuses.NotVerified, email.Status);
-        Assert.Contains("DMARC", email.VerificationNote);
+        Assert.Contains("may be forged", email.VerificationNote);
         Assert.Empty(db.Cases);
     }
 
@@ -371,4 +403,128 @@ public class EmailIntakeTests : IDisposable
     [InlineData("localhost", "")]
     public void A_domain_is_stored_in_one_form_and_nonsense_is_refused(string input, string expected) =>
         Assert.Equal(expected, EmailParsing.NormalizeDomain(input));
+
+    // ───────────── verification policies, sender identity and authenticity ─────────────
+
+    [Fact]
+    public async Task Under_specific_senders_a_listed_sender_is_verified_and_shown_by_the_configured_name()
+    {
+        UseSpecificSenders(("tushar@sbi.co.in", "Tushar"), ("mukul@sbi.co.in", "Mukul"));
+
+        var email = await Receive(Email("tushar@sbi.co.in"));
+
+        Assert.Equal(EmailStatuses.CaseCreated, email.Status);
+        Assert.Equal(SenderVerification.Verified, email.Verification);
+        Assert.Equal("Tushar", email.SenderAlias);
+        Assert.Equal(sbiOrg.Id, email.OrganisationId);
+        Assert.Equal("Tushar", (await db.Customers.SingleAsync(c => c.Email == "tushar@sbi.co.in")).FullName);   // the alias, not the From line's "Ravi Kumar"
+    }
+
+    [Fact]
+    public async Task Under_specific_senders_an_unlisted_address_at_the_domain_is_not_verified_but_its_organisation_is_still_known()
+    {
+        UseSpecificSenders(("tushar@sbi.co.in", "Tushar"));
+
+        var email = await Receive(Email("unknown@sbi.co.in"));
+
+        Assert.Equal(EmailStatuses.NotVerified, email.Status);
+        Assert.Equal(SenderVerification.NotListed, email.Verification);
+        Assert.Equal(sbiOrg.Id, email.OrganisationId);
+        Assert.Contains("not on State Bank of India's list", email.VerificationNote);
+        Assert.Equal(0, casesCreated);
+    }
+
+    [Fact]
+    public async Task Under_entire_domain_any_sender_is_verified_and_named_by_the_email_itself()
+    {
+        var email = await Receive(Email("anyone@sbi.co.in"));
+
+        Assert.Equal(EmailStatuses.CaseCreated, email.Status);
+        Assert.Null(email.SenderAlias);
+        Assert.Equal("Ravi Kumar", (await db.Customers.SingleAsync(c => c.Email == "anyone@sbi.co.in")).FullName);
+    }
+
+    [Fact]
+    public async Task A_forged_email_is_not_verified_even_from_a_listed_sender_and_creates_no_case()
+    {
+        UseSpecificSenders(("tushar@sbi.co.in", "Tushar"));
+        authResult = new(EmailAuthenticity.Fail, "dkim=none; dmarc=fail p=reject");
+
+        var email = await Receive(Email("tushar@sbi.co.in"));
+
+        Assert.Equal(EmailStatuses.NotVerified, email.Status);
+        Assert.Equal(SenderVerification.NotVerified, email.Verification);
+        Assert.Equal(EmailAuthenticity.Fail, email.Authenticity);
+        Assert.Contains("may be forged", email.VerificationNote);
+        Assert.Equal(0, casesCreated);
+    }
+
+    [Fact]
+    public async Task A_forged_reply_is_never_added_to_the_case_whose_thread_it_claims_to_answer()
+    {
+        var first = await Receive(Email("ravi@sbi.co.in", id: "first@sbi.co.in"));
+        authResult = new(EmailAuthenticity.Fail, "dkim=fail d=sbi.co.in; dmarc=fail p=reject");
+
+        var forged = await Receive(Email("ravi@sbi.co.in", id: "forged@evil.test", inReplyTo: "first@sbi.co.in"));
+
+        Assert.NotNull(first.CaseId);
+        Assert.Equal(EmailStatuses.NotVerified, forged.Status);
+        Assert.Null(forged.CaseId);
+    }
+
+    [Fact]
+    public async Task A_domain_that_requires_a_signature_refuses_unsigned_mail_and_retries_when_the_signature_cannot_be_checked()
+    {
+        db.EmailVerifiedDomains.Single(x => x.Id == sbi.Id).RequireAuthentication = true;
+        db.SaveChanges();
+        db.ChangeTracker.Clear();
+
+        var unsigned = await Receive(Email("ravi@sbi.co.in"));
+        authResult = new(EmailAuthenticity.Unknown, "dkim=temperror d=sbi.co.in; dmarc=temperror");
+        var unchecked_ = await Receive(Email("ravi@sbi.co.in", subject: "Second"));
+        authResult = new(EmailAuthenticity.Pass, "dkim=pass d=sbi.co.in; dmarc=pass");
+        var signed = await Receive(Email("ravi@sbi.co.in", subject: "Third"));
+
+        Assert.Equal(EmailStatuses.NotVerified, unsigned.Status);
+        Assert.Contains("requires a valid signature", unsigned.VerificationNote);
+        Assert.Equal(EmailStatuses.Failed, unchecked_.Status);
+        Assert.NotNull(unchecked_.NextAttemptAt);        // tried again later, not refused
+        Assert.Equal(EmailStatuses.CaseCreated, signed.Status);
+    }
+
+    [Fact]
+    public async Task An_email_from_an_unknown_domain_has_no_organisation_and_is_not_checked_for_a_signature()
+    {
+        var email = await Receive(Email("someone@elsewhere.test"));
+
+        Assert.Equal(EmailStatuses.NotVerified, email.Status);
+        Assert.Null(email.OrganisationId);
+        Assert.Equal(EmailAuthenticity.NotChecked, email.Authenticity);
+    }
+
+    [Fact]
+    public async Task An_email_case_takes_its_details_from_case_settings_and_waits_while_case_settings_cannot_supply_them()
+    {
+        db.CaseTypeConfigs.RemoveRange(db.CaseTypeConfigs);
+        db.SaveChanges();
+        db.ChangeTracker.Clear();
+        CreateCaseDto? used = null;
+        createFails = dto => { used = dto; return null; };
+
+        var waiting = await Receive(Email("ravi@sbi.co.in"));
+        var (statusBefore, noteBefore, retryAt) = (waiting.Status, waiting.StatusNote, waiting.NextAttemptAt);
+
+        db.CaseTypeConfigs.Add(new CaseTypeConfig { Code = "Complaint", Name = "Complaint", IsActive = true, CreatedAt = DateTime.UtcNow });
+        db.PrioritySlaRules.Add(new PrioritySlaRule { Priority = "Critical", DisplayOrder = 0, IsActive = true, CreatedAt = DateTime.UtcNow });
+        db.PrioritySlaRules.Add(new PrioritySlaRule { Priority = "Medium", DisplayOrder = 2, IsActive = true, CreatedAt = DateTime.UtcNow });
+        await db.SaveChangesAsync();
+        await Processor().ProcessAsync(waiting.Id, manual: true, default);
+
+        Assert.Equal(EmailStatuses.Failed, statusBefore);
+        Assert.Contains("Case Settings", noteBefore);
+        Assert.NotNull(retryAt);                                // tried again by itself
+        Assert.Equal(EmailStatuses.CaseCreated, (await db.InboundEmails.AsNoTracking().SingleAsync()).Status);
+        Assert.Equal(("Complaint", department, "Cards", "Medium", "English"),     // "Medium" preferred over the first priority
+            (used!.CaseType, used.DepartmentId, used.Subcategory, used.Severity, used.PreferredLanguage));
+    }
 }

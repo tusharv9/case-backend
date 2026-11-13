@@ -57,15 +57,15 @@ public class EmailMaintenanceController(EmailIntakeAdminService admin, EmailInta
     public async Task<IActionResult> Mailboxes(CancellationToken ct) => Ok(await admin.MailboxesAsync(ct));
 
     [HttpPost("mailboxes")]
-    public async Task<IActionResult> CreateMailbox([FromBody] SaveMailboxDto dto, CancellationToken ct) => Ok(await admin.CreateMailboxAsync(dto, ct));
+    public async Task<IActionResult> CreateMailbox([FromBody] SaveMailboxDto dto, CancellationToken ct) => Ok(await admin.CreateMailboxAsync(dto, CurrentUserId, ct));
 
     [HttpPut("mailboxes/{id:guid}")]
-    public async Task<IActionResult> UpdateMailbox(Guid id, [FromBody] SaveMailboxDto dto, CancellationToken ct) => Ok(await admin.UpdateMailboxAsync(id, dto, ct));
+    public async Task<IActionResult> UpdateMailbox(Guid id, [FromBody] SaveMailboxDto dto, CancellationToken ct) => Ok(await admin.UpdateMailboxAsync(id, dto, CurrentUserId, ct));
 
     [HttpDelete("mailboxes/{id:guid}")]
     public async Task<IActionResult> DeleteMailbox(Guid id, CancellationToken ct)
     {
-        await admin.DeleteMailboxAsync(id, ct);
+        await admin.DeleteMailboxAsync(id, CurrentUserId, ct);
         return NoContent();
     }
 
@@ -97,19 +97,19 @@ public class EmailMaintenanceController(EmailIntakeAdminService admin, EmailInta
     public async Task<IActionResult> Domains(CancellationToken ct) => Ok(await admin.DomainsAsync(ct));
 
     [HttpPost("domains")]
-    public async Task<IActionResult> CreateDomain([FromBody] SaveVerifiedDomainDto dto, CancellationToken ct) => Ok(await admin.SaveDomainAsync(null, dto, ct));
+    public async Task<IActionResult> CreateDomain([FromBody] SaveVerifiedDomainDto dto, CancellationToken ct) => Ok(await admin.SaveDomainAsync(null, dto, CurrentUserId, ct));
 
     [HttpPut("domains/{id:guid}")]
-    public async Task<IActionResult> UpdateDomain(Guid id, [FromBody] SaveVerifiedDomainDto dto, CancellationToken ct) => Ok(await admin.SaveDomainAsync(id, dto, ct));
+    public async Task<IActionResult> UpdateDomain(Guid id, [FromBody] SaveVerifiedDomainDto dto, CancellationToken ct) => Ok(await admin.SaveDomainAsync(id, dto, CurrentUserId, ct));
 
     [HttpDelete("domains/{id:guid}")]
     public async Task<IActionResult> DeleteDomain(Guid id, CancellationToken ct)
     {
-        await admin.DeleteDomainAsync(id, ct);
+        await admin.DeleteDomainAsync(id, CurrentUserId, ct);
         return NoContent();
     }
 
-    /// <summary>The case types, departments (with sub-categories), priorities and languages a verified domain can use.</summary>
-    [HttpGet("case-options")]
-    public async Task<IActionResult> CaseOptions(CancellationToken ct) => Ok(await admin.CaseOptionsAsync(ct));
+    /// <summary>The organisations verified domains belong to (for the domain form's organisation field).</summary>
+    [HttpGet("organisations")]
+    public async Task<IActionResult> Organisations(CancellationToken ct) => Ok(await admin.OrganisationsAsync(ct));
 }

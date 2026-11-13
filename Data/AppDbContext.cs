@@ -55,6 +55,8 @@ public class AppDbContext : DbContext
     public DbSet<EmailMailbox> EmailMailboxes { get; set; } = null!;
     public DbSet<EmailVerifiedDomain> EmailVerifiedDomains { get; set; } = null!;
     public DbSet<InboundEmail> InboundEmails { get; set; } = null!;
+    public DbSet<EmailOrganisation> EmailOrganisations { get; set; } = null!;
+    public DbSet<EmailVerifiedSender> EmailVerifiedSenders { get; set; } = null!;
 
     // Bookkeeping for one-time seed steps (see DbSeeder)
     public DbSet<SeedHistoryEntry> SeedHistory { get; set; } = null!;
@@ -299,11 +301,25 @@ public class AppDbContext : DbContext
             e.HasIndex(d => d.Domain).IsUnique();
             e.Property(d => d.Domain).HasMaxLength(253);
             e.Property(d => d.OrganisationName).HasMaxLength(200);
-            e.Property(d => d.CaseType).HasMaxLength(100);
-            e.Property(d => d.SubCategory).HasMaxLength(200);
-            e.Property(d => d.Priority).HasMaxLength(100);
-            e.Property(d => d.PreferredLanguage).HasMaxLength(100);
-            e.HasOne(d => d.Department).WithMany().HasForeignKey(d => d.DepartmentId).OnDelete(DeleteBehavior.Restrict);
+            e.Property(d => d.VerificationPolicy).HasMaxLength(20).HasDefaultValue(VerificationPolicies.EntireDomain);
+            // An organisation that still has domains cannot be deleted.
+            e.HasOne(d => d.Organisation).WithMany().HasForeignKey(d => d.OrganisationId).OnDelete(DeleteBehavior.Restrict);
+            e.HasIndex(d => d.OrganisationId);
+        });
+        modelBuilder.Entity<EmailOrganisation>(e =>
+        {
+            e.HasIndex(o => o.NameKey).IsUnique();
+            e.Property(o => o.Name).HasMaxLength(200);
+            e.Property(o => o.NameKey).HasMaxLength(200);
+        });
+        modelBuilder.Entity<EmailVerifiedSender>(e =>
+        {
+            e.HasIndex(s => s.Address).IsUnique();
+            e.HasIndex(s => s.VerifiedDomainId);
+            e.Property(s => s.Address).HasMaxLength(254);
+            e.Property(s => s.DisplayName).HasMaxLength(100);
+            e.Property(s => s.Description).HasMaxLength(500);
+            e.HasOne(s => s.VerifiedDomain).WithMany(d => d.Senders).HasForeignKey(s => s.VerifiedDomainId).OnDelete(DeleteBehavior.Cascade);
         });
         modelBuilder.Entity<InboundEmail>(e =>
         {
@@ -322,6 +338,12 @@ public class AppDbContext : DbContext
             e.Property(m => m.AckStatus).HasMaxLength(20);
             e.HasOne(m => m.Mailbox).WithMany().HasForeignKey(m => m.MailboxId).OnDelete(DeleteBehavior.Restrict);
             e.HasOne(m => m.VerifiedDomain).WithMany().HasForeignKey(m => m.VerifiedDomainId).OnDelete(DeleteBehavior.SetNull);
+            e.HasOne(m => m.Organisation).WithMany().HasForeignKey(m => m.OrganisationId).OnDelete(DeleteBehavior.SetNull);
+            e.HasOne(m => m.VerifiedSender).WithMany().HasForeignKey(m => m.VerifiedSenderId).OnDelete(DeleteBehavior.SetNull);
+            e.HasIndex(m => m.OrganisationId);
+            e.Property(m => m.SenderAlias).HasMaxLength(100);
+            e.Property(m => m.Authenticity).HasMaxLength(20).HasDefaultValue(EmailAuthenticity.NotChecked);
+            e.Property(m => m.AuthenticationDetail).HasMaxLength(500);
             e.HasOne(m => m.Case).WithMany().HasForeignKey(m => m.CaseId).OnDelete(DeleteBehavior.SetNull);
         });
 

@@ -391,6 +391,8 @@ builder.Services.AddScoped<IDashboardService, DashboardService>();
 builder.Services.Configure<CaseManagement.Api.Services.EmailIntake.EmailIntakeOptions>(builder.Configuration.GetSection(CaseManagement.Api.Services.EmailIntake.EmailIntakeOptions.SectionName));
 builder.Services.AddSingleton<CaseManagement.Api.Services.EmailIntake.IMailboxSecretProtector, CaseManagement.Api.Services.EmailIntake.MailboxSecretProtector>();
 builder.Services.AddSingleton<CaseManagement.Api.Services.EmailIntake.IMailboxClient, CaseManagement.Api.Services.EmailIntake.MailKitMailboxClient>();
+builder.Services.AddSingleton<CaseManagement.Api.Services.EmailIntake.IDnsTxtResolver, CaseManagement.Api.Services.EmailIntake.DnsClientTxtResolver>();
+builder.Services.AddSingleton<CaseManagement.Api.Services.EmailIntake.IEmailAuthenticator, CaseManagement.Api.Services.EmailIntake.EmailAuthenticator>();
 builder.Services.AddScoped<CaseManagement.Api.Services.EmailIntake.EmailIntakeProcessor>();
 builder.Services.AddScoped<CaseManagement.Api.Services.EmailIntake.EmailIntakeAdminService>();
 builder.Services.AddHostedService<CaseManagement.Api.Services.EmailIntake.EmailIntakeWorker>();

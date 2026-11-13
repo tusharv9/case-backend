@@ -959,6 +959,9 @@ namespace CaseManagement.Api.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<Guid?>("CreatedByUserId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("ImapHost")
                         .IsRequired()
                         .HasMaxLength(253)
@@ -1029,6 +1032,9 @@ namespace CaseManagement.Api.Migrations
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<Guid?>("UpdatedByUserId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("Username")
                         .HasMaxLength(254)
                         .HasColumnType("character varying(254)");
@@ -1045,21 +1051,55 @@ namespace CaseManagement.Api.Migrations
                     b.ToTable("EmailMailboxes");
                 });
 
+            modelBuilder.Entity("CaseManagement.Api.Models.EmailOrganisation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("CreatedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("NameKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("UpdatedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("NameKey")
+                        .IsUnique();
+
+                    b.ToTable("EmailOrganisations");
+                });
+
             modelBuilder.Entity("CaseManagement.Api.Models.EmailVerifiedDomain", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
-                    b.Property<string>("CaseType")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)");
-
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<Guid>("DepartmentId")
+                    b.Property<Guid?>("CreatedByUserId")
                         .HasColumnType("uuid");
 
                     b.Property<string>("Domain")
@@ -1073,37 +1113,86 @@ namespace CaseManagement.Api.Migrations
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean");
 
+                    b.Property<Guid>("OrganisationId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("OrganisationName")
                         .IsRequired()
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
 
-                    b.Property<string>("PreferredLanguage")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)");
-
-                    b.Property<string>("Priority")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)");
-
-                    b.Property<string>("SubCategory")
-                        .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)");
+                    b.Property<bool>("RequireAuthentication")
+                        .HasColumnType("boolean");
 
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.HasKey("Id");
+                    b.Property<Guid?>("UpdatedByUserId")
+                        .HasColumnType("uuid");
 
-                    b.HasIndex("DepartmentId");
+                    b.Property<string>("VerificationPolicy")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("EntireDomain");
+
+                    b.HasKey("Id");
 
                     b.HasIndex("Domain")
                         .IsUnique();
 
+                    b.HasIndex("OrganisationId");
+
                     b.ToTable("EmailVerifiedDomains");
+                });
+
+            modelBuilder.Entity("CaseManagement.Api.Models.EmailVerifiedSender", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Address")
+                        .IsRequired()
+                        .HasMaxLength(254)
+                        .HasColumnType("character varying(254)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("CreatedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("UpdatedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("VerifiedDomainId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Address")
+                        .IsUnique();
+
+                    b.HasIndex("VerifiedDomainId");
+
+                    b.ToTable("EmailVerifiedSenders");
                 });
 
             modelBuilder.Entity("CaseManagement.Api.Models.EscalationLevelConfig", b =>
@@ -1301,6 +1390,17 @@ namespace CaseManagement.Api.Migrations
                     b.Property<int>("Attempts")
                         .HasColumnType("integer");
 
+                    b.Property<string>("AuthenticationDetail")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("Authenticity")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("NotChecked");
+
                     b.Property<string>("BodyText")
                         .IsRequired()
                         .HasColumnType("text");
@@ -1344,6 +1444,9 @@ namespace CaseManagement.Api.Migrations
                     b.Property<DateTime?>("NextAttemptAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<Guid?>("OrganisationId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("RawKey")
                         .HasColumnType("text");
 
@@ -1352,6 +1455,10 @@ namespace CaseManagement.Api.Migrations
 
                     b.Property<string>("References")
                         .HasColumnType("text");
+
+                    b.Property<string>("SenderAlias")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
 
                     b.Property<DateTime?>("SentAt")
                         .HasColumnType("timestamp with time zone");
@@ -1392,6 +1499,9 @@ namespace CaseManagement.Api.Migrations
                     b.Property<Guid?>("VerifiedDomainId")
                         .HasColumnType("uuid");
 
+                    b.Property<Guid?>("VerifiedSenderId")
+                        .HasColumnType("uuid");
+
                     b.Property<int>("Version")
                         .IsConcurrencyToken()
                         .HasColumnType("integer");
@@ -1409,9 +1519,13 @@ namespace CaseManagement.Api.Migrations
                     b.HasIndex("MessageKey")
                         .IsUnique();
 
+                    b.HasIndex("OrganisationId");
+
                     b.HasIndex("ReceivedAt");
 
                     b.HasIndex("VerifiedDomainId");
+
+                    b.HasIndex("VerifiedSenderId");
 
                     b.HasIndex("Status", "ReceivedAt");
 
@@ -2290,13 +2404,24 @@ namespace CaseManagement.Api.Migrations
 
             modelBuilder.Entity("CaseManagement.Api.Models.EmailVerifiedDomain", b =>
                 {
-                    b.HasOne("CaseManagement.Api.Models.Department", "Department")
+                    b.HasOne("CaseManagement.Api.Models.EmailOrganisation", "Organisation")
                         .WithMany()
-                        .HasForeignKey("DepartmentId")
+                        .HasForeignKey("OrganisationId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
-                    b.Navigation("Department");
+                    b.Navigation("Organisation");
+                });
+
+            modelBuilder.Entity("CaseManagement.Api.Models.EmailVerifiedSender", b =>
+                {
+                    b.HasOne("CaseManagement.Api.Models.EmailVerifiedDomain", "VerifiedDomain")
+                        .WithMany("Senders")
+                        .HasForeignKey("VerifiedDomainId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("VerifiedDomain");
                 });
 
             modelBuilder.Entity("CaseManagement.Api.Models.EscalationLevelConfig", b =>
@@ -2322,16 +2447,30 @@ namespace CaseManagement.Api.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
+                    b.HasOne("CaseManagement.Api.Models.EmailOrganisation", "Organisation")
+                        .WithMany()
+                        .HasForeignKey("OrganisationId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.HasOne("CaseManagement.Api.Models.EmailVerifiedDomain", "VerifiedDomain")
                         .WithMany()
                         .HasForeignKey("VerifiedDomainId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("CaseManagement.Api.Models.EmailVerifiedSender", "VerifiedSender")
+                        .WithMany()
+                        .HasForeignKey("VerifiedSenderId")
                         .OnDelete(DeleteBehavior.SetNull);
 
                     b.Navigation("Case");
 
                     b.Navigation("Mailbox");
 
+                    b.Navigation("Organisation");
+
                     b.Navigation("VerifiedDomain");
+
+                    b.Navigation("VerifiedSender");
                 });
 
             modelBuilder.Entity("CaseManagement.Api.Models.LinkedCase", b =>
@@ -2531,6 +2670,11 @@ namespace CaseManagement.Api.Migrations
             modelBuilder.Entity("CaseManagement.Api.Models.Department", b =>
                 {
                     b.Navigation("TeamLinks");
+                });
+
+            modelBuilder.Entity("CaseManagement.Api.Models.EmailVerifiedDomain", b =>
+                {
+                    b.Navigation("Senders");
                 });
 
             modelBuilder.Entity("CaseManagement.Api.Models.LookupType", b =>
