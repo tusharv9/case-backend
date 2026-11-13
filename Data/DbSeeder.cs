@@ -12,7 +12,7 @@ public enum SeedMode
     /// (lookups, field layouts, case types, severities/SLA defaults, business hours, escalation
     /// levels). No users, teams, customers or routing rules.</summary>
     Bootstrap,
-    /// <summary>Bootstrap plus sample customers and skill rules. Never teams, departments or their mappings: those are
+    /// <summary>Bootstrap plus sample customers. Never teams, departments or their mappings: those are
     /// always created by an administrator.</summary>
     Development
 }
@@ -59,7 +59,6 @@ public static class DbSeeder
         // team–department mapping is created by an administrator. (The former sample-team steps were removed; a database
         // that ran them keeps what they created, as ordinary, editable records.)
         new("development.sample-customers.v1", SeedKind.Development, ctx => { SeedPassportCustomer(ctx); SeedAccountNumberCustomer(ctx); }),
-        new("development.skill-rules.v1", SeedKind.Development, EnsureDevSkillRules),
         new("development.customer360-standardization.v1", SeedKind.Development, EnsureCustomer360Standardization),
 
         new("legacy.first-response-backfill.v1", SeedKind.LegacyOnly, EnsureFirstResponseAndEscalationMatrix),
@@ -1059,25 +1058,6 @@ public static class DbSeeder
         {
             throw new InvalidOperationException($"Seed step 'EnsureAssignmentAndTransferReasons' failed: {ex.Message}", ex);
         }
-    }
-
-    /// <summary>DEVELOPMENT DATA: sample (banking) skill rules. A new installation starts with none and defines its own.</summary>
-    private static void EnsureDevSkillRules(AppDbContext context)
-    {
-        if (context.SkillRules.Any()) return;
-        var now = DateTime.UtcNow;
-        (string Skill, string Field, string Value)[] rules =
-        {
-            ("Fraud", "Title", "fraud"), ("Fraud", "Title", "unauthorised"), ("Fraud", "Title", "stolen"),
-            ("Loans", "Title", "loan"), ("Loans", "Title", "financing"),
-            ("Cards", "Title", "card"), ("Cards", "Title", "atm"),
-            ("Social", "Channel", "Social"), ("Voice", "Channel", "Voice"), ("Email", "Channel", "Email"),
-        };
-        context.SkillRules.AddRange(rules.Select(r => new SkillRule
-        {
-            Id = Guid.NewGuid(), SkillName = r.Skill, MatchField = r.Field, MatchType = r.Field == "Channel" ? "Equals" : "Contains", MatchValue = r.Value, IsActive = true, CreatedAt = now
-        }));
-        context.SaveChanges();
     }
 
     private static void EnsureCustomer360Standardization(AppDbContext context)

@@ -551,15 +551,12 @@ public class ConfigurationEndToEndTests
         Assert.Contains(vocab.GetProperty("channels").EnumerateArray(), c => c.GetString() == "Voice");
         Assert.Contains(vocab.GetProperty("priorities").EnumerateArray(), c => c.GetString() == "Critical");
 
-        // Skills: rules are replaced as a set and validated.
-        var (bad, _) = await env.Send(HttpMethod.Put, "/api/skills/rules", env.Admin, new[] { new { skillName = "X", matchField = "Mood", matchType = "Contains", matchValue = "angry" } });
-        Assert.Equal(HttpStatusCode.BadRequest, bad);
-        var (good, saved) = await env.Send(HttpMethod.Put, "/api/skills/rules", env.Admin, new[] { new { skillName = "Cards", matchField = "Title", matchType = "Contains", matchValue = "card" } });
-        Assert.Equal(HttpStatusCode.OK, good);
-        Assert.Equal("Cards", saved[0].GetProperty("skillName").GetString());
+        // Skill-based assignment was removed: the algorithm is refused and its endpoints are gone.
+        Assert.Equal(HttpStatusCode.BadRequest, (await env.Send(HttpMethod.Put, "/api/routing-rules/assignment-config", env.Admin, new { algorithm = "SkillBased", maxConcurrentCapacity = 5 })).Status);
+        Assert.Equal(HttpStatusCode.NotFound, (await env.Send(HttpMethod.Get, "/api/skills/rules", env.Admin)).Status);
 
-        // Agents cannot manage teams, skills or routing.
-        Assert.Equal(HttpStatusCode.Forbidden, (await env.Send(HttpMethod.Put, "/api/skills/rules", env.Agent, Array.Empty<object>())).Status);
+        // Agents cannot manage teams or routing.
+        Assert.Equal(HttpStatusCode.Forbidden, (await env.Send(HttpMethod.Put, "/api/routing-rules/assignment-config", env.Agent, new { algorithm = "RoundRobin", maxConcurrentCapacity = 5 })).Status);
     }
 
     // ------------------------------------------------------------------------------------- attachments, dashboard, timeline

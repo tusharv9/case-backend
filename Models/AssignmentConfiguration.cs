@@ -8,7 +8,7 @@ public class AssignmentConfiguration : AuditableEntity
     public Guid? TeamId { get; set; }
     public Team? Team { get; set; }
     
-    // "RoundRobin", "SkillBased", "LeastOccupancy"
+    // "RoundRobin", "LeastOccupancy"
     public string Algorithm { get; set; } = "RoundRobin";
     
     public int MaxConcurrentCapacity { get; set; } = 5;

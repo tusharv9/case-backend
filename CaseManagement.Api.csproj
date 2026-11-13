@@ -8,10 +8,17 @@
     <DefaultItemExcludes>$(DefaultItemExcludes);tests/**</DefaultItemExcludes>
   </PropertyGroup>
 
+  <!-- The platform's shared proxy edge, plus the migrate-only and healthcheck startup modes. Builds only inside the OmniConnect checkout
+       (Backend/Shared), so the Docker build context is Backend/ — see Dockerfile. -->
+  <ItemGroup>
+    <ProjectReference Include="..\Shared\OmniConnect.Hosting\OmniConnect.Hosting.csproj" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="DotNetEnv" Version="3.2.0" />
     <PackageReference Include="FluentValidation.AspNetCore" Version="11.3.1" />
     <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="12.1.1" />
+    <PackageReference Include="MailKit" Version="5.0.0" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.9" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.8" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.9">

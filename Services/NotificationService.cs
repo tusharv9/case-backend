@@ -76,6 +76,20 @@ public class NotificationService : INotificationService
         return Task.CompletedTask;
     }
 
+    public Task CreateBulkReassignedNotificationAsync(Guid recipientUserId, IReadOnlyList<(Guid CaseId, string CaseNumber)> cases, CancellationToken ct = default)
+    {
+        if (cases.Count == 0) return Task.CompletedTask;
+        if (cases.Count == 1) return CreateNotificationAsync(recipientUserId, "CASE_REASSIGNED", "", "", cases[0].CaseId, cases[0].CaseNumber, ct: ct);
+
+        var (actorId, actorName) = Actor();
+        const int shown = 5;
+        var numbers = cases.Select(c => c.CaseNumber).Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
+        var list = string.Join(", ", numbers.Take(shown)) + (numbers.Count > shown ? $" and {numbers.Count - shown} more" : "");
+        Enqueue(new CaseNotificationRequest(CaseNotificationKinds.ReassignedMany, [recipientUserId], ActorExternalId: actorId, ActorName: actorName,
+            Values: new Dictionary<string, string?> { ["count"] = cases.Count.ToString(), ["cases"] = list }));
+        return Task.CompletedTask;
+    }
+
     public async Task PublishSlaBreachNotificationsAsync(IReadOnlyList<SlaBreachCandidate> breached, DateTime now, CancellationToken ct = default)
     {
         if (breached.Count == 0) return;

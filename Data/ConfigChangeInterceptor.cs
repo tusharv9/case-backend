@@ -17,7 +17,7 @@ public sealed class ConfigChangeInterceptor : SaveChangesInterceptor
     {
         typeof(FieldConfiguration), typeof(LookupType), typeof(LookupValue), typeof(Country), typeof(CaseTypeConfig),
         typeof(DepartmentSubCategory), typeof(Team), typeof(PrioritySlaRule), typeof(PriorityCategoryMapping),
-        typeof(BusinessHour), typeof(PublicHoliday), typeof(BusinessCalendarSetting), typeof(TeamMember), typeof(AssignmentConfiguration), typeof(SkillRule), typeof(AgentSkill), typeof(RoutingRule), typeof(EscalationLevelConfig),
+        typeof(BusinessHour), typeof(PublicHoliday), typeof(BusinessCalendarSetting), typeof(TeamMember), typeof(AssignmentConfiguration), typeof(RoutingRule), typeof(EscalationLevelConfig),
         typeof(ManualAssignmentSettings), typeof(ManualAssignmentCrossTeam),
         typeof(Department), typeof(TeamDepartment), typeof(TeamSettings), typeof(TeamCustomAttribute),
     };

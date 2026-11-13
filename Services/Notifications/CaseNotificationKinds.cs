@@ -32,7 +32,9 @@ public static class CaseNotificationKinds
     public const string Mentioned = "case.mentioned";
     public const string CollaboratorAdded = "case.collaborator_added";
     public const string SwarmRequested = "case.swarm_requested";
+    public const string SwarmAccepted = "case.swarm_accepted";
     public const string SwarmDeclined = "case.swarm_declined";
+    public const string ReassignedMany = "case.reassigned_many";
     public const string SlaBreached = "case.sla_breached";
     public const string SlaBreachedMany = "case.sla_breached_many";
     public const string SlaReminder = "case.sla_reminder";
@@ -94,9 +96,15 @@ public static class CaseNotificationKinds
         new(SwarmRequested, "Asked to help on a case", "When you are asked to help (swarm) on a case.", "The person asked",
             Message: "{actor} {verb:asked} for help on case {record}", SubjectMessage: "{actor} {verb:asked} you to help on case {record}",
             Context: CaseContext, Tone: "update", Icon: "Users"),
+        new(SwarmAccepted, "Help request accepted", "When someone accepts your request for help on a case and joins it.", "The person who asked",
+            Message: "{actor} {verb:joined} case {record} to help", SubjectMessage: "{actor} {verb:accepted} your help request on case {record}",
+            Context: CaseContext, Tone: "enable", Icon: "Users"),
         new(SwarmDeclined, "Help request declined", "When someone declines your request for help on a case.", "The person who asked",
             Message: "{actor} {verb:declined} the help request on case {record}", SubjectMessage: "{actor} {verb:declined} your help request on case {record}",
             Context: CaseContext, Tone: "disable", Icon: "XCircle"),
+        new(ReassignedMany, "Several cases reassigned to you", "When a bulk reassign moves several cases to one agent (one notification for the whole batch).", "The new owner",
+            Message: "{actor} {verb:reassigned} {count} cases to {person}", SubjectMessage: "{actor} {verb:reassigned} {count} cases to you",
+            Context: "{cases}", Tone: "create", Icon: "ArrowRight"),
         new(SlaBreached, "SLA breached", "When a case you own goes past its SLA.", "The case owner",
             Severity: "Critical", Message: "Case {record} has {verb:breached} its SLA", SubjectMessage: "Your case {record} has {verb:breached} its SLA",
             Context: CaseContext, Tone: "delete", Icon: "Clock"),
@@ -132,6 +140,7 @@ public static class CaseNotificationKinds
         ["USER_MENTIONED"] = Mentioned,
         ["CASE_COLLABORATOR_ADDED"] = CollaboratorAdded,
         ["CASE_SWARM_REQUESTED"] = SwarmRequested,
+        ["CASE_SWARM_ACCEPTED"] = SwarmAccepted,
         ["CASE_SWARM_DECLINED"] = SwarmDeclined,
         ["Nudge"] = Nudge,
     };

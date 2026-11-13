@@ -40,6 +40,7 @@ public class TeamLeadRemovalAndDepartedUserTests : IDisposable
         public Task PublishSlaBreachNotificationsAsync(IReadOnlyList<SlaBreachCandidate> breached, DateTime now, CancellationToken ct = default) => Task.CompletedTask;
         public Task<int> PurgeExpiredAsync(DateTime nowUtc, CancellationToken ct = default) => Task.FromResult(0);
         public Task CreateConfigChangedNotificationAsync(string title, string message, CancellationToken ct = default) => Task.CompletedTask;
+        public Task CreateBulkReassignedNotificationAsync(Guid recipientUserId, IReadOnlyList<(Guid CaseId, string CaseNumber)> cases, CancellationToken ct = default) => Task.CompletedTask;
     }
 
     private sealed class FixedStatuses(Dictionary<string, string> answer) : IHostUserStatusClient

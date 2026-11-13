@@ -18,7 +18,7 @@ using Microsoft.EntityFrameworkCore;
 /// <item>resets round-robin pointers that point at them (the next case starts from the top of the team);</item>
 /// <item>marks them inactive — never deleted — so pickers stop offering them; their history stays.</item>
 /// </list>
-/// <para>Kept: every team, every user row, every case and who holds it, co-workers on cases, skills and all audit history.
+/// <para>Kept: every team, every user row, every case and who holds it, co-workers on cases and all audit history.
 /// A Host user's membership is never touched, so running it again later changes nothing they set up.</para>
 /// <para>Dry run by default; <c>--apply</c> makes the change in one transaction with an audit event per team.</para>
 /// </remarks>

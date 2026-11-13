@@ -157,4 +157,35 @@ public class CentralNotificationsTests : IDisposable
         Assert.Equal(CaseNotificationKinds.SlaBreachedMany, request.Kind);
         Assert.Equal("3", request.Values!["count"]);
     }
+
+    [Fact]
+    public async Task An_accepted_help_request_tells_the_person_who_asked()
+    {
+        await Service().CreateNotificationAsync(owner, "CASE_SWARM_ACCEPTED", "Swarm Accepted", "x", caseId, "C-01001");
+
+        Assert.Equal(CaseNotificationKinds.SwarmAccepted, Assert.Single(sink.Requests).Kind);
+    }
+
+    [Fact]
+    public async Task A_bulk_reassign_of_one_case_names_that_case()
+    {
+        await Service().CreateBulkReassignedNotificationAsync(owner, new[] { (caseId, "C-01001") });
+
+        var request = Assert.Single(sink.Requests);
+        Assert.Equal(CaseNotificationKinds.Reassigned, request.Kind);
+        Assert.Equal(caseId, request.CaseId);
+    }
+
+    [Fact]
+    public async Task A_bulk_reassign_of_several_cases_is_one_notification_with_the_count_and_the_case_numbers()
+    {
+        var cases = Enumerable.Range(1, 7).Select(i => (Guid.NewGuid(), $"C-0{i}")).ToList();
+
+        await Service().CreateBulkReassignedNotificationAsync(owner, cases);
+
+        var request = Assert.Single(sink.Requests);
+        Assert.Equal(CaseNotificationKinds.ReassignedMany, request.Kind);
+        Assert.Equal("7", request.Values!["count"]);
+        Assert.Equal("C-01, C-02, C-03, C-04, C-05 and 2 more", request.Values["cases"]);
+    }
 }

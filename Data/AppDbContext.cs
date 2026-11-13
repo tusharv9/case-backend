@@ -49,9 +49,12 @@ public class AppDbContext : DbContext
     public DbSet<TeamDepartment> TeamDepartments { get; set; } = null!;
     public DbSet<TeamSettings> TeamSettings { get; set; } = null!;
     public DbSet<TeamCustomAttribute> TeamCustomAttributes { get; set; } = null!;
-    public DbSet<AgentSkill> AgentSkills { get; set; } = null!;
-    public DbSet<SkillRule> SkillRules { get; set; } = null!;
     public DbSet<TeamAssignmentPointer> TeamAssignmentPointers { get; set; } = null!;
+
+    // Email intake: mailboxes read for new cases, the sender domains whose emails become cases, and every email read.
+    public DbSet<EmailMailbox> EmailMailboxes { get; set; } = null!;
+    public DbSet<EmailVerifiedDomain> EmailVerifiedDomains { get; set; } = null!;
+    public DbSet<InboundEmail> InboundEmails { get; set; } = null!;
 
     // Bookkeeping for one-time seed steps (see DbSeeder)
     public DbSet<SeedHistoryEntry> SeedHistory { get; set; } = null!;
@@ -276,6 +279,52 @@ public class AppDbContext : DbContext
             .IsDescending(false, true);
 
         // One row per case: what the SLA monitor already said about its current breach. Goes with the case.
+        // Email intake. Addresses, domains and message keys are stored lower-case, so plain unique indexes are case-insensitive.
+        modelBuilder.Entity<EmailMailbox>(e =>
+        {
+            e.HasIndex(m => m.Address).IsUnique();
+            e.Property(m => m.Version).IsConcurrencyToken();
+            e.Property(m => m.Name).HasMaxLength(100);
+            e.Property(m => m.Address).HasMaxLength(254);
+            e.Property(m => m.Username).HasMaxLength(254);
+            e.Property(m => m.ImapHost).HasMaxLength(253);
+            e.Property(m => m.SmtpHost).HasMaxLength(253);
+            e.Property(m => m.ImapSecurity).HasMaxLength(20);
+            e.Property(m => m.SmtpSecurity).HasMaxLength(20);
+            e.Property(m => m.Status).HasMaxLength(20);
+            e.Property(m => m.LastError).HasMaxLength(1000);
+        });
+        modelBuilder.Entity<EmailVerifiedDomain>(e =>
+        {
+            e.HasIndex(d => d.Domain).IsUnique();
+            e.Property(d => d.Domain).HasMaxLength(253);
+            e.Property(d => d.OrganisationName).HasMaxLength(200);
+            e.Property(d => d.CaseType).HasMaxLength(100);
+            e.Property(d => d.SubCategory).HasMaxLength(200);
+            e.Property(d => d.Priority).HasMaxLength(100);
+            e.Property(d => d.PreferredLanguage).HasMaxLength(100);
+            e.HasOne(d => d.Department).WithMany().HasForeignKey(d => d.DepartmentId).OnDelete(DeleteBehavior.Restrict);
+        });
+        modelBuilder.Entity<InboundEmail>(e =>
+        {
+            e.HasIndex(m => m.MessageKey).IsUnique();
+            e.Property(m => m.Version).IsConcurrencyToken();
+            e.HasIndex(m => new { m.Status, m.ReceivedAt });
+            e.HasIndex(m => m.ReceivedAt);
+            e.HasIndex(m => m.CaseId);
+            e.HasIndex(m => m.InternetMessageId);
+            e.HasIndex(m => m.AckMessageId);
+            e.Property(m => m.MessageKey).HasMaxLength(998);
+            e.Property(m => m.FromAddress).HasMaxLength(254);
+            e.Property(m => m.Kind).HasMaxLength(20);
+            e.Property(m => m.Verification).HasMaxLength(20);
+            e.Property(m => m.Status).HasMaxLength(20);
+            e.Property(m => m.AckStatus).HasMaxLength(20);
+            e.HasOne(m => m.Mailbox).WithMany().HasForeignKey(m => m.MailboxId).OnDelete(DeleteBehavior.Restrict);
+            e.HasOne(m => m.VerifiedDomain).WithMany().HasForeignKey(m => m.VerifiedDomainId).OnDelete(DeleteBehavior.SetNull);
+            e.HasOne(m => m.Case).WithMany().HasForeignKey(m => m.CaseId).OnDelete(DeleteBehavior.SetNull);
+        });
+
         modelBuilder.Entity<CaseSlaAlert>(e =>
         {
             e.HasKey(a => a.CaseId);
@@ -540,16 +589,6 @@ public class AppDbContext : DbContext
             .HasIndex(ac => ac.TeamId)
             .IsUnique()
             .HasFilter("\"TeamId\" IS NOT NULL");
-
-        modelBuilder.Entity<AgentSkill>()
-            .HasIndex(s => new { s.UserId, s.SkillName })
-            .IsUnique();
-
-        modelBuilder.Entity<AgentSkill>()
-            .HasOne(s => s.User)
-            .WithMany()
-            .HasForeignKey(s => s.UserId)
-            .OnDelete(DeleteBehavior.Cascade);
 
         modelBuilder.Entity<TeamAssignmentPointer>()
             .HasKey(p => p.TeamId);

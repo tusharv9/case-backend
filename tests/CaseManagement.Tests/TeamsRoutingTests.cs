@@ -11,7 +11,7 @@ using Moq;
 namespace CaseManagement.Tests;
 
 /// <summary>
-/// Teams, membership, routing, assignment, skills and the Team Monitor, on a real migrated PostgreSQL database.
+/// Teams, membership, routing, assignment and the Team Monitor, on a real migrated PostgreSQL database.
 /// Team membership (TeamMembers) is the only thing that makes someone eligible for a team's cases.
 /// </summary>
 public class TeamsRoutingTests
@@ -56,7 +56,7 @@ public class TeamsRoutingTests
             var cache = new ConfigCache(new MemoryCache(new MemoryCacheOptions()));
             var strategies = new IAssignmentStrategy[]
             {
-                new RoundRobinAssignmentStrategy(ctx), new LeastOccupancyAssignmentStrategy(), new SkillBasedAssignmentStrategy(ctx, new SkillService(ctx, cache)),
+                new RoundRobinAssignmentStrategy(ctx), new LeastOccupancyAssignmentStrategy(),
             };
             return new RoutingEngineService(ctx, strategies, new AgentPoolService(ctx));
         }
@@ -166,7 +166,7 @@ public class TeamsRoutingTests
     [PostgresFact]
     public async Task EveryAlgorithm_RespectsCapacity_AndUnassignedCasesAreHeldByTheLeadWithAReason()
     {
-        foreach (var algorithm in new[] { "RoundRobin", "LeastOccupancy", "SkillBased" })
+        foreach (var algorithm in new[] { "RoundRobin", "LeastOccupancy" })
         {
             await using var w = await World.CreateAsync();
             await w.SetAlgorithm(algorithm, capacity: 1);
@@ -207,41 +207,6 @@ public class TeamsRoutingTests
             await ctx.SaveChangesAsync();
         }
         Assert.Equal(w.B, (await w.RouteAndStoreAsync()).Case.OwnerId);
-    }
-
-    [PostgresFact]
-    public async Task SkillBased_UsesTheConfiguredSkillRules_NotKeywordsInCode()
-    {
-        await using var w = await World.CreateAsync();
-        await w.SetAlgorithm("SkillBased");
-        await using (var ctx = w.Ctx())
-        {
-            var skills = new SkillService(ctx, new ConfigCache(new MemoryCache(new MemoryCacheOptions())));
-            await skills.ReplaceRulesAsync(new[] { new SkillRuleDto { SkillName = "Mortgages", MatchField = "Title", MatchType = "Contains", MatchValue = "mortgage" } }, w.Admin);
-            await skills.ReplaceAgentSkillsAsync(w.C, new[] { new AgentSkillDto { SkillName = "mortgages", ProficiencyLevel = 3 } }, w.Admin);
-            await skills.ReplaceAgentSkillsAsync(w.A, new[] { new AgentSkillDto { SkillName = "Fraud", ProficiencyLevel = 5 } }, w.Admin);
-        }
-
-        // A mortgage case goes to the agent with that skill even though the agent with a "fraud" skill is more proficient overall.
-        var (mortgage, d1) = await w.RouteAndStoreAsync(title: "Mortgage rate question");
-        Assert.Equal(w.C, mortgage.OwnerId);
-        Assert.Contains("matched skills: Mortgages", d1.RoutingLogMessage);
-
-        // The old hard-coded "fraud" keyword means nothing now: no rule asks for it, so work is shared by load.
-        var (fraud, d2) = await w.RouteAndStoreAsync(title: "Suspected fraud on my account");
-        Assert.Contains("no skills required", d2.RoutingLogMessage);
-        Assert.NotEqual(w.C, fraud.OwnerId);   // C already holds the mortgage case; least loaded wins
-    }
-
-    [PostgresFact]
-    public async Task SkillRules_AreValidated()
-    {
-        await using var w = await World.CreateAsync();
-        await using var ctx = w.Ctx();
-        var skills = new SkillService(ctx, new ConfigCache(new MemoryCache(new MemoryCacheOptions())));
-        await Assert.ThrowsAsync<InvalidOperationException>(() => skills.ReplaceRulesAsync(new[] { new SkillRuleDto { SkillName = "X", MatchField = "Mood", MatchValue = "angry" } }, w.Admin));
-        await Assert.ThrowsAsync<InvalidOperationException>(() => skills.ReplaceRulesAsync(new[] { new SkillRuleDto { SkillName = "", MatchField = "Title", MatchValue = "x" } }, w.Admin));
-        await Assert.ThrowsAsync<InvalidOperationException>(() => skills.ReplaceAgentSkillsAsync(w.A, new[] { new AgentSkillDto { SkillName = "Fraud", ProficiencyLevel = 9 } }, w.Admin));
     }
 
     // ------------------------------------------------------------------------------------------ concurrency
@@ -366,7 +331,7 @@ public class TeamsRoutingTests
         Assert.Contains("Critical", vocab.Priorities);
         Assert.Contains("Complaint", vocab.CaseTypes);
         Assert.Contains(vocab.Departments, d => d.Id == w.Team);
-        Assert.Equal(new[] { "RoundRobin", "SkillBased", "LeastOccupancy" }, vocab.Algorithms);
+        Assert.Equal(new[] { "RoundRobin", "LeastOccupancy" }, vocab.Algorithms);   // skill-based assignment was removed
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => engine.CreateRuleAsync(Rule("bad", w.Team, new RuleConditionsDto { Priority = "Whenever" }), w.Admin));
         await Assert.ThrowsAsync<InvalidOperationException>(() => engine.CreateRuleAsync(Rule("bad", w.Team, new RuleConditionsDto { Channel = "Carrier Pigeon" }), w.Admin));

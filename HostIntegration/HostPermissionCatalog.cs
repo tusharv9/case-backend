@@ -82,6 +82,15 @@ public static class HostPermissionCatalog
         [
             new("case-audit", "Case Audit Trail", "FileText", 10, "View"),
         ]),
+        new("email", "Email Inbox", 55,
+        [
+            new("View", "View the email inbox", "See emails received in the company mailboxes and the case each became.", Permissions.EmailInboxView),
+            new("Manage", "Manage email maintenance", "Configure mailboxes and verified sender domains, and check an email again.", Permissions.EmailManage),
+        ],
+        [
+            new("inbox", "Inbox", "Mail", 10, "View"),
+            new("email-maintenance", "Maintenance", "Server", 20, "Manage"),
+        ]),
         new("settings", "Case Configuration", 60,
         [
             new("Manage", "Manage case configuration", "Change forms, lists, SLA, routing and assignment settings.", Permissions.ConfigManage),

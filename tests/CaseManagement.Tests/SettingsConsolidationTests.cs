@@ -96,7 +96,7 @@ public class SettingsConsolidationTests
     // ------------------------------------------------------------------------------------------ renames follow the name
 
     [PostgresFact]
-    public async Task RenamingACaseType_UpdatesItsCases_RoutingRules_AndExactSkillRules()
+    public async Task RenamingACaseType_UpdatesItsCases_AndRoutingRules()
     {
         await using var w = await PriorityConfigurationTests.World.CreateAsync();
         var complaint = await FreshAsync(w, ctx => ctx.CaseTypeConfigs.SingleAsync(c => c.Name == "Complaint"));
@@ -104,7 +104,6 @@ public class SettingsConsolidationTests
         await using (var ctx = w.Db.NewContext())
         {
             ctx.RoutingRules.Add(new RoutingRule { Id = Guid.NewGuid(), Name = "Complaints", ConditionsJson = "{\"matchType\":\"ALL\",\"caseType\":\"Complaint\"}", TargetTeamId = w.DeptA, CreatedAt = DateTime.UtcNow });
-            ctx.SkillRules.Add(new SkillRule { Id = Guid.NewGuid(), SkillName = "Care", MatchField = "CaseType", MatchType = "Equals", MatchValue = "Complaint", IsActive = true, CreatedAt = DateTime.UtcNow });
             await ctx.SaveChangesAsync();
         }
 
@@ -112,7 +111,6 @@ public class SettingsConsolidationTests
 
         Assert.Equal("Grievance", await FreshAsync(w, ctx => ctx.Cases.Where(c => c.Id == caseId).Select(c => c.CaseType).SingleAsync()));
         Assert.Contains("\"Grievance\"", await FreshAsync(w, ctx => ctx.RoutingRules.Where(r => r.Name == "Complaints").Select(r => r.ConditionsJson).SingleAsync()));
-        Assert.Equal("Grievance", await FreshAsync(w, ctx => ctx.SkillRules.Where(r => r.SkillName == "Care").Select(r => r.MatchValue).SingleAsync()));
     }
 
     [PostgresFact]

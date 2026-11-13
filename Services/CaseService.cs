@@ -161,7 +161,7 @@ public class CaseService : ICaseService
         });
     }
 
-    public async Task<Case> CreateCaseAsync(CreateCaseDto dto, Guid createdByUserId)
+    public async Task<Case> CreateCaseAsync(CreateCaseDto dto, Guid createdByUserId, Func<Case, Task>? withinTransaction = null)
     {
         // Everything the form submitted is checked against the administrator's configuration first; what comes
         // back is canonical (configured spelling, resolved records), so nothing downstream guesses or defaults.
@@ -248,7 +248,7 @@ public class CaseService : ICaseService
         //    assignments per team for the life of this transaction, so concurrent cases cannot be handed to the same
         //    "least loaded" agent, and the round-robin pointer commits (or rolls back) together with the case.
         RoutingDecisionResult? routingDecision = null;
-        // Routing rules and skills may match on the customer's segment. A Customer 360 customer's comes from the profile
+        // Routing rules may match on the customer's segment. A Customer 360 customer's comes from the profile
         // just read, held in memory for this decision only — never attached to the context, so nothing about them is saved.
         var customer = _routingEngine == null ? null
             : validated.Customer360 is { } c360 ? new Customer { FullName = c360.FullName, CustomerSegment = c360.CustomerSegment }
@@ -283,6 +283,7 @@ public class CaseService : ICaseService
                     UserId = createdByUserId
                 });
             }
+            if (withinTransaction != null) await withinTransaction(newCase);
         });
 
         // No agent could take it and the creator chose the team's supervisor: tell them why it is theirs.

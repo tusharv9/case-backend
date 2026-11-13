@@ -22,6 +22,12 @@ public interface INotificationService
     /// </summary>
     Task PublishSlaBreachNotificationsAsync(IReadOnlyList<SlaBreachCandidate> breached, DateTime now, CancellationToken ct = default);
 
+    /// <summary>
+    /// Tells someone that a bulk reassign gave them cases: for one case the usual "case reassigned to you" (naming it), for
+    /// several one notification with the count and the case numbers. Never throws.
+    /// </summary>
+    Task CreateBulkReassignedNotificationAsync(Guid recipientUserId, IReadOnlyList<(Guid CaseId, string CaseNumber)> cases, CancellationToken ct = default);
+
     /// <summary>Tells the people who manage Case Settings that configuration changed. <paramref name="message"/> is the detail line.</summary>
     Task CreateConfigChangedNotificationAsync(string title, string message, CancellationToken ct = default);
 }

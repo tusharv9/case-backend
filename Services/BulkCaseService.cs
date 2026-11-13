@@ -163,9 +163,9 @@ public class BulkCaseService(
         {
             try
             {
-                await notifications.CreateNotificationAsync(choice.UserId, "CASE_REASSIGNED", "Cases Assigned to You",
-                    $"{actorName} assigned you {result.Succeeded} case{(result.Succeeded == 1 ? "" : "s")} of {departmentName} ({choice.TeamName}).",
-                    null, null, "High", 0, ct);
+                // One notification naming the case, or one for the whole batch with the count and the case numbers.
+                await notifications.CreateBulkReassignedNotificationAsync(choice.UserId,
+                    result.Items.Where(i => i.Succeeded).Select(i => (i.CaseId, i.CaseNumber ?? string.Empty)).ToList(), ct);
             }
             catch (Exception ex) { logger.LogWarning(ex, "Bulk reassign notification failed."); }
         }

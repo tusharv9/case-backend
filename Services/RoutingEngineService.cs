@@ -174,7 +174,7 @@ public class RoutingEngineService : IRoutingEngineService
 
     // ------------------------------------------------------------------------------------ assignment settings
 
-    private static readonly string[] Algorithms = { "RoundRobin", "SkillBased", "LeastOccupancy" };
+    private static readonly string[] Algorithms = { "RoundRobin", "LeastOccupancy" };
 
     private static AssignmentConfigDto ToDto(AssignmentConfiguration c, bool isOverride) => new()
     {

@@ -656,7 +656,7 @@ public class ConfigurableSettingsService : IConfigurableSettingsService
             IsActive = dto.IsActive
         };
 
-        // A rename must follow the name everywhere that stores it as text, in the same transaction (cases, routing and skill rules).
+        // A rename must follow the name everywhere that stores it as text, in the same transaction (cases and routing rules).
         var updated = await InTransactionAsync(async () =>
         {
             var result = await _repository.UpdateCaseTypeAsync(id, entity, ct);
@@ -665,7 +665,6 @@ public class ConfigurableSettingsService : IConfigurableSettingsService
                 await _context.Cases.Where(c => c.CaseType.ToLower() == existing.Name.ToLower())
                     .ExecuteUpdateAsync(u => u.SetProperty(c => c.CaseType, result.Name), ct);
                 await RenameInRoutingRulesAsync(c => c.CaseType, (c, v) => c.CaseType = v, existing.Name, result.Name, ct);
-                await RenameInSkillRulesAsync("CaseType", existing.Name, result.Name, ct);
                 await _context.SaveChangesAsync(ct);
             }
             return result;
@@ -789,14 +788,11 @@ public class ConfigurableSettingsService : IConfigurableSettingsService
                 // Cases of THIS department keep pointing at the renamed sub-category.
                 await _context.Cases.Where(c => c.DepartmentId == existing.DepartmentId && c.Subcategory != null && c.Subcategory.ToLower() == existing.Name.ToLower())
                     .ExecuteUpdateAsync(u => u.SetProperty(c => c.Subcategory, result.Name), ct);
-                // Routing and skill rules match a sub-category by NAME across departments: rename them only when no other
+                // Routing rules match a sub-category by NAME across departments: rename them only when no other
                 // sub-category still uses the old name, otherwise they would silently stop applying there.
                 var nameStillUsed = await _context.DepartmentSubCategories.AnyAsync(sc => sc.Id != id && sc.Name.ToLower() == existing.Name.ToLower(), ct);
                 if (!nameStillUsed)
-                {
                     await RenameInRoutingRulesAsync(c => c.Category, (c, v) => c.Category = v, existing.Name, result.Name, ct);
-                    await RenameInSkillRulesAsync("Subcategory", existing.Name, result.Name, ct);
-                }
                 await _context.SaveChangesAsync(ct);
             }
             return result;
@@ -1077,15 +1073,6 @@ public class ConfigurableSettingsService : IConfigurableSettingsService
             rule.ConditionsJson = System.Text.Json.JsonSerializer.Serialize(conditions);
             rule.UpdatedAt = DateTime.UtcNow;
         }
-    }
-
-    /// <summary>Skill rules that require an EXACT value follow a rename ("contains" rules match text and are left alone).</summary>
-    private async Task RenameInSkillRulesAsync(string matchField, string oldName, string newName, CancellationToken ct)
-    {
-        var rules = await _context.SkillRules
-            .Where(r => r.MatchField == matchField && r.MatchType == "Equals" && r.MatchValue.ToLower() == oldName.ToLower())
-            .ToListAsync(ct);
-        foreach (var r in rules) { r.MatchValue = newName; r.UpdatedAt = DateTime.UtcNow; }
     }
 
     private static string? ConditionPriority(string conditionsJson)

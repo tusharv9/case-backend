@@ -52,7 +52,7 @@ public class UpdateRoutingRuleDto
 public class AssignmentConfigDto
 {
     public Guid? TeamId { get; set; }                // null = the global default
-    public string Algorithm { get; set; } = string.Empty;  // RoundRobin | SkillBased | LeastOccupancy
+    public string Algorithm { get; set; } = string.Empty;  // RoundRobin | LeastOccupancy
     public int MaxConcurrentCapacity { get; set; }
 
     /// <summary>True when this team has its own settings; false when it follows the global default.</summary>
@@ -85,22 +85,6 @@ public class RoutingDecisionResult
     /// <summary>Set when no agent could take the case: why, and who is holding it meanwhile (the team lead, if the team has one).</summary>
     public string? HeldReason { get; set; }
     public Guid? HeldByUserId { get; set; }
-}
-
-public class SkillRuleDto
-{
-    public Guid? Id { get; set; }
-    public string SkillName { get; set; } = string.Empty;
-    public string MatchField { get; set; } = "Title";
-    public string MatchType { get; set; } = "Contains";
-    public string MatchValue { get; set; } = string.Empty;
-    public bool IsActive { get; set; } = true;
-}
-
-public class AgentSkillDto
-{
-    public string SkillName { get; set; } = string.Empty;
-    public int ProficiencyLevel { get; set; } = 1;
 }
 
 /// <summary>What a routing rule can look at, and the values that are valid for each — so editors never hard-code option lists.</summary>

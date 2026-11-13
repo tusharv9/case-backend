@@ -71,7 +71,7 @@ public partial class AssignmentEligibilityTests
             var cache = new ConfigCache(new MemoryCache(new MemoryCacheOptions()));
             var strategies = new IAssignmentStrategy[]
             {
-                new RoundRobinAssignmentStrategy(ctx), new LeastOccupancyAssignmentStrategy(), new SkillBasedAssignmentStrategy(ctx, new SkillService(ctx, cache)),
+                new RoundRobinAssignmentStrategy(ctx), new LeastOccupancyAssignmentStrategy(),
             };
             return new RoutingEngineService(ctx, strategies, new AgentPoolService(ctx));
         }

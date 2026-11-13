@@ -5,7 +5,10 @@ using CaseManagement.Api.Models;
 
 public interface ICaseService
 {
-    Task<Case> CreateCaseAsync(CreateCaseDto dto, Guid createdByUserId);
+    /// <param name="withinTransaction">Optional work saved in the same transaction as the new case (it commits or rolls back with
+    /// it) — e.g. email intake recording which email the case came from, so a case can never exist without that link. It may run
+    /// more than once when the database connection is retried, so it must be safe to repeat.</param>
+    Task<Case> CreateCaseAsync(CreateCaseDto dto, Guid createdByUserId, Func<Case, Task>? withinTransaction = null);
     Task<CaseDetailDto?> GetCaseDetailsAsync(Guid caseId, CancellationToken ct = default);
     Task<IEnumerable<SearchCaseHitDto>> SearchCasesAsync(string query, int limit, CancellationToken ct = default);
     /// <summary>Every case of one customer (local or Customer 360), newest first, masked.</summary>

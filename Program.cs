@@ -16,6 +16,11 @@ using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.ResponseCompression;
 using CaseManagement.Api.Configuration;
 using System.Text.Json.Serialization;
+using OmniConnect.Hosting;
+
+// The container healthcheck runs this same binary (dotnet CaseManagement.Api.dll --healthcheck <url>): it must come before
+// anything else, so a probe never loads .env or boots a second copy of the service (OmniConnect.Hosting).
+ContainerHealthProbe.RunIfRequested(args);
 
 // Load .env before configuration is read — the OmniConnect convention for secrets such as the platform's
 // Jwt__SigningKeyPublic, so none of them is committed to appsettings. Only the working directory (dotnet run
@@ -374,7 +379,6 @@ builder.Services.AddScoped<ITeamMonitoringService, TeamMonitoringService>();
 builder.Services.Configure<TeamMonitoringOptions>(builder.Configuration.GetSection(TeamMonitoringOptions.SectionName));
 builder.Services.AddScoped<IAssignmentStrategy, RoundRobinAssignmentStrategy>();
 builder.Services.AddScoped<IAssignmentStrategy, LeastOccupancyAssignmentStrategy>();
-builder.Services.AddScoped<IAssignmentStrategy, SkillBasedAssignmentStrategy>();
 builder.Services.Configure<CaseManagement.Api.Configuration.NotificationOptions>(builder.Configuration.GetSection(CaseManagement.Api.Configuration.NotificationOptions.SectionName));
 builder.Services.AddSingleton<IAttachmentStore, LocalDiskAttachmentStore>();
 builder.Services.AddScoped<IAttachmentService, AttachmentService>();
@@ -382,9 +386,16 @@ builder.Services.AddScoped<IMentionService, MentionService>();
 builder.Services.AddScoped<ICaseCollaborationService, CaseCollaborationService>();
 builder.Services.AddScoped<IBulkCaseService, BulkCaseService>();
 builder.Services.AddScoped<IDashboardService, DashboardService>();
+
+// Email intake: mailboxes read for new cases (Inbox / Maintenance). The worker is off where EmailIntake:Enabled=false.
+builder.Services.Configure<CaseManagement.Api.Services.EmailIntake.EmailIntakeOptions>(builder.Configuration.GetSection(CaseManagement.Api.Services.EmailIntake.EmailIntakeOptions.SectionName));
+builder.Services.AddSingleton<CaseManagement.Api.Services.EmailIntake.IMailboxSecretProtector, CaseManagement.Api.Services.EmailIntake.MailboxSecretProtector>();
+builder.Services.AddSingleton<CaseManagement.Api.Services.EmailIntake.IMailboxClient, CaseManagement.Api.Services.EmailIntake.MailKitMailboxClient>();
+builder.Services.AddScoped<CaseManagement.Api.Services.EmailIntake.EmailIntakeProcessor>();
+builder.Services.AddScoped<CaseManagement.Api.Services.EmailIntake.EmailIntakeAdminService>();
+builder.Services.AddHostedService<CaseManagement.Api.Services.EmailIntake.EmailIntakeWorker>();
 builder.Services.AddScoped<IAssignmentEligibilityService, AssignmentEligibilityService>();
 builder.Services.AddScoped<IAgentPoolService>(sp => new AgentPoolService(sp.GetRequiredService<IAssignmentEligibilityService>()));
-builder.Services.AddScoped<ISkillService, SkillService>();
 builder.Services.AddScoped<IRoutingEngineService, RoutingEngineService>();
 builder.Services.AddScoped<IAssignmentSettingsService, AssignmentSettingsService>();
 
@@ -445,7 +456,7 @@ StartupChecks.Warn(app, allowedOrigins, originPatterns.Length);
 // DatabaseInitializer (EF migrations + one-time seed steps), which runs in the background so the
 // process answers /health immediately, and can be run as a deployment step:
 //     dotnet CaseManagement.Api.dll --migrate-only
-if (args.Contains("--migrate-only"))
+if (MigrationMode.IsRequested(args))
 {
     var initialised = await app.Services
         .GetRequiredService<DatabaseInitializer>()
@@ -525,26 +536,11 @@ if (args.Contains("--reset-team-membership"))
     return 0;
 }
 
-// Forward headers from reverse proxies (Render, load balancers)
-var forwardedHeadersOptions = new ForwardedHeadersOptions
-{
-    ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor |
-                       Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedProto
-};
-forwardedHeadersOptions.KnownIPNetworks.Clear();
-forwardedHeadersOptions.KnownProxies.Clear();
-app.UseForwardedHeaders(forwardedHeadersOptions);
-
-// The OmniConnect edge (nginx in production, the host dev server locally) publishes this service under
-// its own prefix. UsePathBase also accepts the unprefixed path, so the standalone frontend's /api proxy,
-// server-to-server callers and /health keep working unchanged.
-var pathBase = (app.Configuration["Hosting:PathBase"] ?? "/api/casemanagement-service").Trim().TrimEnd('/');
-if (pathBase.Length > 0)
-{
-    if (!pathBase.StartsWith('/') || pathBase.Contains("//") || pathBase.Contains('?'))
-        throw new InvalidOperationException($"Hosting:PathBase '{pathBase}' is not a plain path such as /api/casemanagement-service.");
-    app.UsePathBase(pathBase);
-}
+// The platform edge, shared by every OmniConnect service (OmniConnect.Hosting): believe X-Forwarded-For/-Proto from the
+// reverse proxy (ForwardedHeaders:KnownNetworks narrows that to the proxy's network), then strip the prefix the service is
+// published under. UsePathBase also accepts the unprefixed path, so the standalone frontend's /api proxy, server-to-server
+// callers and /health keep working unchanged. An explicitly empty Hosting:PathBase turns the prefix off.
+app.UsePlatformEdge(defaultPathBase: "/api/casemanagement-service");
 
 app.UseCors("ReactPolicy");
 if (securityOptions.RateLimit.Enabled) app.UseRateLimiter();
@@ -562,6 +558,8 @@ app.UseAuthorization();
 
 // Liveness: the process is up (answers immediately, even while the database is still being prepared).
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", timestamp = DateTime.UtcNow }));
+// The liveness path the other OmniConnect services answer, so one container healthcheck shape fits all of them.
+app.MapGet("/health/live", () => Results.Ok(new { status = "healthy", timestamp = DateTime.UtcNow }));
 
 // Readiness: the database is migrated/seeded and the API can serve requests.
 app.MapGet("/ready", (DatabaseInitializationState state) =>

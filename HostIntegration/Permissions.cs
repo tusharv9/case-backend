@@ -46,6 +46,12 @@ public static class Permissions
     public const string MonitoringNudge = "monitoring.nudge";
     public const string AuditView = "audit.view";
 
+    /// <summary>See the email Inbox: emails read from the company mailboxes and the case each became.</summary>
+    public const string EmailInboxView = "email.inbox.view";
+
+    /// <summary>Email Maintenance: configure mailboxes (address, password, servers) and verified sender domains; re-check an email.</summary>
+    public const string EmailManage = "email.manage";
+
     /// <summary>
     /// See unmasked customer data. Deliberately NOT implied by the "*" wildcard: masking is deny-by-default,
     /// so seeing raw PII must be granted by name.
@@ -57,7 +63,7 @@ public static class Permissions
     public static readonly string[] All =
     {
         CasesRead, CasesCreate, CasesWrite, CasesTransfer, CasesResolve, CasesAssign, CasesViewAll, CasesSupervise, CustomersRead, CustomersWrite, ConfigManage,
-        TeamsManage, MonitoringView, MonitoringNudge, AuditView, PiiUnmask
+        TeamsManage, MonitoringView, MonitoringNudge, AuditView, EmailInboxView, EmailManage, PiiUnmask
     };
 
     /// <summary>
