@@ -223,6 +223,20 @@ public class TicketSlaTests : IDisposable
     }
 
     [Fact]
+    public async Task A_ticket_already_late_before_ticket_slas_existed_is_marked_late_without_an_alert()
+    {
+        var queue = await QueueLedBySomeone();
+        var received = DateTime.UtcNow.AddHours(-3);
+        await TicketIn(queue.Mailbox, received, target: null);   // from before the feature: no target was taken on arrival
+
+        await Monitor().RunAsync(TicketSlaClock.RoundTheClock, DateTime.UtcNow, default);
+
+        var stored = await db.Tickets.AsNoTracking().SingleAsync();
+        Assert.Equal((30, true, received.AddMinutes(30)), (stored.AssignTargetMinutes, stored.SlaBreachNotified, stored.SlaBreachedAt));
+        Assert.Empty(sink.Sent);   // release day must not alert every lead about every ticket already waiting
+    }
+
+    [Fact]
     public async Task Handled_tickets_and_tickets_without_a_target_are_never_reported()
     {
         var queue = await QueueLedBySomeone();

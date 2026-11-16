@@ -35,6 +35,9 @@ public sealed class TicketSlaMonitor(AppDbContext db, ICaseNotificationSink? sin
 
             foreach (var t in batch)
             {
+                // A ticket with no target yet arrived before ticket SLAs existed: it gets one now (it counts as Overdue), but if it is
+                // already late it is not alerted — the day this ships must not tell every lead about every ticket already waiting.
+                var arrivedBeforeTicketSlas = t.AssignTargetMinutes == null;
                 var target = targets.Of(t);
                 t.AssignTargetMinutes ??= target;
                 if (target <= 0) continue;
@@ -42,7 +45,7 @@ public sealed class TicketSlaMonitor(AppDbContext db, ICaseNotificationSink? sin
                 if (clock.Evaluate(t.ReceivedAt, target, null, nowUtc).State != TicketSlaStates.Breached) continue;
                 t.SlaBreachedAt ??= t.AssignDueAt ?? nowUtc;
                 t.SlaBreachNotified = true;
-                late.Add((t.Id, t.MailboxId, t.TicketNumber));
+                if (!arrivedBeforeTicketSlas) late.Add((t.Id, t.MailboxId, t.TicketNumber));
             }
 
             await db.SaveChangesAsync(ct);
