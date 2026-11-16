@@ -17,6 +17,8 @@ public sealed class InboxEmailListItemDto
     public string Status { get; set; } = string.Empty;
     public string? CaseNumber { get; set; }
     public Guid? CaseId { get; set; }
+    public string? TicketNumber { get; set; }
+    public Guid? TicketId { get; set; }
     public int AttachmentCount { get; set; }
     public string AckStatus { get; set; } = string.Empty;
 }
@@ -48,6 +50,8 @@ public sealed class InboxEmailDetailDto
     public int Attempts { get; set; }
     public string? CaseNumber { get; set; }
     public Guid? CaseId { get; set; }
+    public string? TicketNumber { get; set; }
+    public Guid? TicketId { get; set; }
     public string AckStatus { get; set; } = string.Empty;
     public DateTime? AckSentAt { get; set; }
     public string? AckError { get; set; }
@@ -60,6 +64,7 @@ public sealed class InboxCountsDto
 {
     public int All { get; set; }
     public int CaseCreated { get; set; }
+    public int TicketCreated { get; set; }
     public int NotVerified { get; set; }
     public int Failed { get; set; }
     public int Other { get; set; }
@@ -89,6 +94,13 @@ public sealed class MailboxDto
     public int EmailCount { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime? UpdatedAt { get; set; }
+    public List<Guid> TeamIds { get; set; } = new();
+    public List<string> TeamNames { get; set; } = new();
+    public Guid? DefaultDepartmentId { get; set; }
+    public string? DefaultCaseType { get; set; }
+    public string? DefaultSubCategory { get; set; }
+    public string? DefaultPriority { get; set; }
+    public string? DefaultPreferredLanguage { get; set; }
 }
 
 public sealed class SaveMailboxDto
@@ -106,6 +118,13 @@ public sealed class SaveMailboxDto
     public string SmtpSecurity { get; set; } = "StartTls";
     public bool IsEnabled { get; set; } = true;
     public bool SendAcknowledgement { get; set; } = true;
+    /// <summary>The teams that see this mailbox's emails and tickets. Null keeps the stored teams; empty = not restricted.</summary>
+    public List<Guid>? TeamIds { get; set; }
+    public Guid? DefaultDepartmentId { get; set; }
+    public string? DefaultCaseType { get; set; }
+    public string? DefaultSubCategory { get; set; }
+    public string? DefaultPriority { get; set; }
+    public string? DefaultPreferredLanguage { get; set; }
 }
 
 public sealed class TestMailboxDto
@@ -167,4 +186,18 @@ public sealed class SaveVerifiedDomainDto
     public bool RequireAuthentication { get; set; }
     /// <summary>The whole sender list (replaced as a set). Kept, though not used, while the policy is "entire domain".</summary>
     public List<VerifiedSenderDto> Senders { get; set; } = new();
+}
+
+/// <summary>What the mailbox form offers for its tickets: the active case types, departments (with their sub-categories), priorities, languages and teams.</summary>
+public sealed class EmailCaseOptionsDto
+{
+    public List<OptionDto> CaseTypes { get; set; } = new();
+    public List<DepartmentOptionDto> Departments { get; set; } = new();
+    public List<string> Priorities { get; set; } = new();
+    public List<string> Languages { get; set; } = new();
+
+    public sealed record OptionDto(string Value, string Label);
+    public sealed record DepartmentOptionDto(Guid Id, string Name, bool HasTeam, List<string> SubCategories);
+    /// <summary>The active teams a mailbox can be linked to.</summary>
+    public List<OptionDto> Teams { get; set; } = new();
 }

@@ -91,6 +91,16 @@ public static class HostPermissionCatalog
             new("inbox", "Inbox", "Mail", 10, "View"),
             new("email-maintenance", "Maintenance", "Server", 20, "Manage"),
         ]),
+        new("tickets", "Tickets", 57,
+        [
+            new("View", "View tickets", "See the tickets of the mailboxes the person's teams are linked to.", Permissions.TicketsView),
+            new("Create", "Raise tickets", "Raise a ticket by hand into a mailbox's queue.", Permissions.TicketsCreate),
+            new("Assign", "Assign tickets", "Assign a ticket to a team or agent (it becomes a case), or close it without a case.", Permissions.TicketsAssign),
+            new("ViewAll", "See every mailbox's tickets", "See the emails and tickets of every mailbox, not only those linked to the person's teams.", Permissions.TicketsViewAll),
+        ],
+        [
+            new("tickets", "Tickets", "Headset", 10, "View"),
+        ]),
         new("settings", "Case Configuration", 60,
         [
             new("Manage", "Manage case configuration", "Change forms, lists, SLA, routing and assignment settings.", Permissions.ConfigManage),

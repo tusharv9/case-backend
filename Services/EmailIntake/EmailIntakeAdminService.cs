@@ -8,8 +8,33 @@ using CaseManagement.Api.Services.Teams;
 using Microsoft.EntityFrameworkCore;
 
 /// <summary>The Inbox (reading what arrived) and Maintenance (mailboxes and verified domains) behind the email intake screens.</summary>
-public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProtector secrets, IMailboxClient mail, IAttachmentStore store)
+public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProtector secrets, IMailboxClient mail, IAttachmentStore store,
+    HostIntegration.IMailboxAccessScope? access = null)
 {
+    /// <summary>The emails of the mailboxes the caller may see (all of them for background work and tests).</summary>
+    private IQueryable<InboundEmail> VisibleEmails()
+    {
+        var query = db.InboundEmails.AsNoTracking();
+        if (access == null || access.SeesAll) return query;
+        var visible = access.VisibleMailboxIds();
+        return query.Where(e => visible.Contains(e.MailboxId));
+    }
+
+    /// <summary>The mailboxes the caller may see, for the Inbox and Tickets filters and the Raise Ticket form (no connection details).</summary>
+    public async Task<List<AccessibleMailboxDto>> AccessibleMailboxesAsync(CancellationToken ct)
+    {
+        var query = db.EmailMailboxes.AsNoTracking();
+        if (access != null && !access.SeesAll)
+        {
+            var visible = access.VisibleMailboxIds();
+            query = query.Where(m => visible.Contains(m.Id));
+        }
+        return await query.OrderBy(m => m.Name)
+            .Select(m => new AccessibleMailboxDto(m.Id, m.Name, m.Address, m.DefaultDepartmentId, m.DefaultCaseType, m.DefaultSubCategory,
+                m.DefaultPriority, m.DefaultPreferredLanguage))
+            .ToListAsync(ct);
+    }
+
     /// <summary>Free email providers: anyone can have an address there, so a whole provider can never be a verified domain.</summary>
     public static readonly HashSet<string> PublicEmailDomains = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -24,14 +49,14 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
-        var query = Filter(db.InboundEmails.AsNoTracking(), filter);
+        var query = Filter(VisibleEmails(), filter);
         if (mailboxId is { } mb) query = query.Where(e => e.MailboxId == mb);
         if (!string.IsNullOrWhiteSpace(search))
         {
             var s = search.Trim().ToLower();
             query = query.Where(e => e.Subject.ToLower().Contains(s) || e.FromAddress.Contains(s) || (e.FromName != null && e.FromName.ToLower().Contains(s))
                 || (e.SenderAlias != null && e.SenderAlias.ToLower().Contains(s)) || (e.Organisation != null && e.Organisation.NameKey.Contains(s))
-                || (e.Case != null && e.Case.CaseNumber.ToLower().Contains(s)));
+                || (e.Case != null && e.Case.CaseNumber.ToLower().Contains(s)) || (e.Ticket != null && e.Ticket.TicketNumber.ToLower().Contains(s)));
         }
 
         var total = await query.CountAsync(ct);
@@ -43,6 +68,7 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
                 OrganisationName = e.Organisation != null ? e.Organisation.Name : e.VerifiedDomain != null ? e.VerifiedDomain.OrganisationName : null,
                 SenderAlias = e.SenderAlias, Authenticity = e.Authenticity,
                 Status = e.Status, CaseNumber = e.Case != null ? e.Case.CaseNumber : null, CaseId = e.CaseId, AttachmentCount = e.AttachmentCount, AckStatus = e.AckStatus,
+                TicketId = e.TicketId, TicketNumber = e.Ticket != null ? e.Ticket.TicketNumber : null,
             }).ToListAsync(ct);
         return new PagedResponseDto<InboxEmailListItemDto> { Items = items, TotalCount = total, Page = page, PageSize = pageSize };
     }
@@ -50,6 +76,7 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
     public static IQueryable<InboundEmail> Filter(IQueryable<InboundEmail> query, string? filter) => (filter ?? "all").ToLowerInvariant() switch
     {
         "case-created" => query.Where(e => e.Status == EmailStatuses.CaseCreated || e.Status == EmailStatuses.LinkedToCase),
+        "ticket-created" => query.Where(e => e.Status == EmailStatuses.TicketCreated || e.Status == EmailStatuses.LinkedToTicket),
         "not-verified" => query.Where(e => e.Status == EmailStatuses.NotVerified),
         "failed" => query.Where(e => e.Status == EmailStatuses.Failed),
         "other" => query.Where(e => e.Status == EmailStatuses.Ignored || e.Status == EmailStatuses.Received || e.Status == EmailStatuses.Processing),
@@ -58,7 +85,7 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
 
     public async Task<InboxCountsDto> CountsAsync(Guid? mailboxId, CancellationToken ct)
     {
-        var query = db.InboundEmails.AsNoTracking();
+        var query = VisibleEmails();
         if (mailboxId is { } mb) query = query.Where(e => e.MailboxId == mb);
         var byStatus = await query.GroupBy(e => e.Status).Select(g => new { g.Key, Count = g.Count() }).ToListAsync(ct);
         int Of(params string[] s) => byStatus.Where(x => s.Contains(x.Key)).Sum(x => x.Count);
@@ -66,6 +93,7 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
         {
             All = byStatus.Sum(x => x.Count),
             CaseCreated = Of(EmailStatuses.CaseCreated, EmailStatuses.LinkedToCase),
+            TicketCreated = Of(EmailStatuses.TicketCreated, EmailStatuses.LinkedToTicket),
             NotVerified = Of(EmailStatuses.NotVerified),
             Failed = Of(EmailStatuses.Failed),
             Other = Of(EmailStatuses.Ignored, EmailStatuses.Received, EmailStatuses.Processing),
@@ -74,7 +102,7 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
 
     public async Task<InboxEmailDetailDto> GetAsync(Guid id, CancellationToken ct)
     {
-        var e = await db.InboundEmails.AsNoTracking().Include(x => x.Mailbox).Include(x => x.VerifiedDomain).Include(x => x.Organisation).Include(x => x.Case)
+        var e = await VisibleEmails().Include(x => x.Mailbox).Include(x => x.VerifiedDomain).Include(x => x.Organisation).Include(x => x.Case).Include(x => x.Ticket)
             .FirstOrDefaultAsync(x => x.Id == id, ct) ?? throw new KeyNotFoundException("Email not found.");
         return new InboxEmailDetailDto
         {
@@ -84,6 +112,7 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
             Kind = e.Kind, Verification = e.Verification, VerificationNote = e.VerificationNote, OrganisationName = e.Organisation?.Name ?? e.VerifiedDomain?.OrganisationName,
             SenderAlias = e.SenderAlias, Authenticity = e.Authenticity, AuthenticationDetail = e.AuthenticationDetail,
             Status = e.Status, StatusNote = e.StatusNote, Attempts = e.Attempts, CaseNumber = e.Case?.CaseNumber, CaseId = e.CaseId,
+            TicketId = e.TicketId, TicketNumber = e.Ticket?.TicketNumber,
             AckStatus = e.AckStatus, AckSentAt = e.AckSentAt, AckError = e.AckError, HasOriginal = e.RawKey != null,
             CanRecheck = e.RawKey != null && (e.Status is EmailStatuses.NotVerified or EmailStatuses.Failed),
         };
@@ -91,7 +120,7 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
 
     public async Task<(Stream Content, string FileName)> OpenOriginalAsync(Guid id, CancellationToken ct)
     {
-        var e = await db.InboundEmails.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, ct) ?? throw new KeyNotFoundException("Email not found.");
+        var e = await VisibleEmails().FirstOrDefaultAsync(x => x.Id == id, ct) ?? throw new KeyNotFoundException("Email not found.");
         if (e.RawKey == null) throw new KeyNotFoundException("The original of this email was not kept (it was too large to read).");
         return (await store.OpenReadAsync(e.RawKey, ct), $"email-{e.ReceivedAt:yyyyMMdd-HHmm}-{e.Id.ToString()[..8]}.eml");
     }
@@ -101,7 +130,7 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
     public async Task<List<MailboxDto>> MailboxesAsync(CancellationToken ct)
     {
         var counts = await db.InboundEmails.AsNoTracking().GroupBy(e => e.MailboxId).Select(g => new { g.Key, Count = g.Count() }).ToDictionaryAsync(x => x.Key, x => x.Count, ct);
-        var list = await db.EmailMailboxes.AsNoTracking().OrderBy(m => m.Name).ToListAsync(ct);
+        var list = await db.EmailMailboxes.AsNoTracking().Include(m => m.Teams).ThenInclude(t => t.Team).OrderBy(m => m.Name).ToListAsync(ct);
         return list.Select(m => ToDto(m, counts.GetValueOrDefault(m.Id))).ToList();
     }
 
@@ -110,23 +139,27 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
         var errors = ValidateMailbox(dto, requirePassword: true);
         var address = dto.Address.Trim().ToLowerInvariant();
         if (await db.EmailMailboxes.AnyAsync(m => m.Address == address, ct)) errors.Add(new FieldError("address", "This mailbox is already configured."));
+        errors.AddRange(await ValidateTicketSettingsAsync(dto, ct));
         if (errors.Count > 0) throw new FieldValidationException(errors);
 
         var mailbox = new EmailMailbox { CreatedAt = DateTime.UtcNow, CreatedByUserId = Actor(actingUserId) };
         Apply(mailbox, dto);
+        ApplyTeams(mailbox, dto);
         db.EmailMailboxes.Add(mailbox);
         Audit(actingUserId, "MAILBOX_CREATED", "EmailMailbox", $"Mailbox {mailbox.Address} added.", null, Snapshot(mailbox, passwordChanged: true));
         await db.SaveChangesAsync(ct);
-        return ToDto(mailbox, 0);
+        return await ReloadAsync(mailbox.Id, ct);
     }
 
     public async Task<MailboxDto> UpdateMailboxAsync(Guid id, SaveMailboxDto dto, Guid actingUserId, CancellationToken ct)
     {
-        var mailbox = await db.EmailMailboxes.FirstOrDefaultAsync(m => m.Id == id, ct) ?? throw new KeyNotFoundException("Mailbox not found.");
+        var mailbox = await db.EmailMailboxes.Include(m => m.Teams).FirstOrDefaultAsync(m => m.Id == id, ct) ?? throw new KeyNotFoundException("Mailbox not found.");
         var errors = ValidateMailbox(dto, requirePassword: mailbox.PasswordEncrypted == null);
         var address = dto.Address.Trim().ToLowerInvariant();
         if (await db.EmailMailboxes.AnyAsync(m => m.Id != id && m.Address == address, ct)) errors.Add(new FieldError("address", "This mailbox is already configured."));
+        errors.AddRange(await ValidateTicketSettingsAsync(dto, ct));
         if (errors.Count > 0) throw new FieldValidationException(errors);
+        ApplyTeams(mailbox, dto);
 
         // A different mailbox (address, server or sign-in): start reading it from now, not from the old one's position.
         var newUser = string.IsNullOrWhiteSpace(dto.Username) ? null : dto.Username.Trim();
@@ -147,7 +180,49 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
         mailbox.UpdatedByUserId = Actor(actingUserId);
         Audit(actingUserId, "MAILBOX_UPDATED", "EmailMailbox", $"Mailbox {mailbox.Address} changed.", before, Snapshot(mailbox, passwordChanged: !string.IsNullOrEmpty(dto.Password)));
         await db.SaveChangesAsync(ct);
-        return ToDto(mailbox, await db.InboundEmails.CountAsync(e => e.MailboxId == id, ct));
+        return await ReloadAsync(id, ct);
+    }
+
+    private async Task<MailboxDto> ReloadAsync(Guid id, CancellationToken ct)
+    {
+        var saved = await db.EmailMailboxes.AsNoTracking().Include(m => m.Teams).ThenInclude(t => t.Team).FirstAsync(m => m.Id == id, ct);
+        return ToDto(saved, await db.InboundEmails.CountAsync(e => e.MailboxId == id, ct));
+    }
+
+    /// <summary>The Tickets settings: active teams, and defaults that exist (each default is optional).</summary>
+    private async Task<List<FieldError>> ValidateTicketSettingsAsync(SaveMailboxDto dto, CancellationToken ct)
+    {
+        var errors = new List<FieldError>();
+        if (dto.TeamIds is { Count: > 0 } ids)
+        {
+            var distinct = ids.Distinct().ToList();
+            var active = await db.Teams.AsNoTracking().Where(t => distinct.Contains(t.Id) && t.IsActive).CountAsync(ct);
+            if (active != distinct.Count) errors.Add(new("teamIds", "Choose active teams only."));
+        }
+        if (dto.DefaultDepartmentId is { } dept && !await db.Departments.AsNoTracking().AnyAsync(d => d.Id == dept && d.IsActive, ct))
+            errors.Add(new("defaultDepartmentId", "Choose an active department, or leave it empty."));
+        void Max(string field, string? value, int max) { if (value?.Trim().Length > max) errors.Add(new(field, $"At most {max} characters.")); }
+        Max("defaultCaseType", dto.DefaultCaseType, 100);
+        Max("defaultSubCategory", dto.DefaultSubCategory, 200);
+        Max("defaultPriority", dto.DefaultPriority, 100);
+        Max("defaultPreferredLanguage", dto.DefaultPreferredLanguage, 100);
+        return errors;
+    }
+
+    private static void ApplyTeams(EmailMailbox m, SaveMailboxDto dto)
+    {
+        m.DefaultDepartmentId = dto.DefaultDepartmentId;
+        m.DefaultCaseType = Blank(dto.DefaultCaseType);
+        m.DefaultSubCategory = Blank(dto.DefaultSubCategory);
+        m.DefaultPriority = Blank(dto.DefaultPriority);
+        m.DefaultPreferredLanguage = Blank(dto.DefaultPreferredLanguage);
+        if (dto.TeamIds == null) return;
+        var wanted = dto.TeamIds.Distinct().ToHashSet();
+        m.Teams.RemoveAll(t => !wanted.Contains(t.TeamId));
+        foreach (var teamId in wanted.Where(t => m.Teams.All(x => x.TeamId != t)))
+            m.Teams.Add(new EmailMailboxTeam { MailboxId = m.Id, TeamId = teamId });
+
+        static string? Blank(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
     }
 
     /// <summary>What the emails this mailbox received since <paramref name="since"/> became, counted by status ("Check now").</summary>
@@ -163,6 +238,9 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
         // Deleting a mailbox also removes the emails it received from the Inbox (one save, so both go or neither does). The
         // cases those emails created are not touched: a case keeps its own copy of the subject, text and attachments.
         var mailbox = await db.EmailMailboxes.FirstOrDefaultAsync(m => m.Id == id, ct) ?? throw new KeyNotFoundException("Mailbox not found.");
+        // Tickets are a record of requests (and may have become cases); they are never deleted with their queue.
+        if (await db.Tickets.AnyAsync(t => t.MailboxId == id, ct))
+            throw new InvalidOperationException("This mailbox has tickets, so it cannot be deleted. Switch it off instead: it stops being read and its tickets stay.");
         var emails = await db.InboundEmails.Where(e => e.MailboxId == id).ToListAsync(ct);
         var originals = emails.Where(e => e.RawKey != null).Select(e => e.RawKey!).ToList();
         db.InboundEmails.RemoveRange(emails);
@@ -247,6 +325,10 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
         ImapHost = m.ImapHost, ImapPort = m.ImapPort, ImapSecurity = m.ImapSecurity, SmtpHost = m.SmtpHost, SmtpPort = m.SmtpPort, SmtpSecurity = m.SmtpSecurity,
         IsEnabled = m.IsEnabled, SendAcknowledgement = m.SendAcknowledgement, Status = m.IsEnabled ? m.Status : "Disabled",
         LastSyncAt = m.LastSyncAt, LastSuccessAt = m.LastSuccessAt, LastError = m.LastError, EmailCount = emails, CreatedAt = m.CreatedAt, UpdatedAt = m.UpdatedAt,
+        TeamIds = m.Teams.Select(t => t.TeamId).ToList(),
+        TeamNames = m.Teams.Where(t => t.Team != null).Select(t => t.Team!.Name).OrderBy(n => n).ToList(),
+        DefaultDepartmentId = m.DefaultDepartmentId, DefaultCaseType = m.DefaultCaseType, DefaultSubCategory = m.DefaultSubCategory,
+        DefaultPriority = m.DefaultPriority, DefaultPreferredLanguage = m.DefaultPreferredLanguage,
     };
 
     private static bool IsEmail(string? value)
@@ -260,7 +342,7 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
 
     public async Task<List<VerifiedDomainDto>> DomainsAsync(CancellationToken ct)
     {
-        var counts = await db.InboundEmails.AsNoTracking().Where(e => e.Status == EmailStatuses.CaseCreated && e.VerifiedDomainId != null)
+        var counts = await db.InboundEmails.AsNoTracking().Where(e => (e.Status == EmailStatuses.CaseCreated || e.Status == EmailStatuses.TicketCreated) && e.VerifiedDomainId != null)
             .GroupBy(e => e.VerifiedDomainId!.Value).Select(g => new { g.Key, Count = g.Count() }).ToDictionaryAsync(x => x.Key, x => x.Count, ct);
         var list = await db.EmailVerifiedDomains.AsNoTracking().Include(d => d.Organisation).Include(d => d.Senders)
             .ToListAsync(ct);
@@ -377,7 +459,7 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
 
         var saved = await db.EmailVerifiedDomains.AsNoTracking().Include(d => d.Organisation).Include(d => d.Senders)
             .FirstAsync(d => d.Id == domain.Id, ct);
-        return ToDto(saved, await db.InboundEmails.CountAsync(e => e.VerifiedDomainId == domain.Id && e.Status == EmailStatuses.CaseCreated, ct));
+        return ToDto(saved, await db.InboundEmails.CountAsync(e => e.VerifiedDomainId == domain.Id && (e.Status == EmailStatuses.CaseCreated || e.Status == EmailStatuses.TicketCreated), ct));
     }
 
     /// <summary>
@@ -474,4 +556,25 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
     };
 
     private static string CollapseSpaces(string value) => System.Text.RegularExpressions.Regex.Replace(value.Trim(), @"\s+", " ");
+
+    public async Task<EmailCaseOptionsDto> CaseOptionsAsync(CancellationToken ct)
+    {
+        var types = await db.CaseTypeConfigs.AsNoTracking().Where(c => c.IsActive).OrderBy(c => c.DisplayOrder).ThenBy(c => c.Name)
+            .Select(c => new EmailCaseOptionsDto.OptionDto(c.Code, c.Name)).ToListAsync(ct);
+        var departments = await db.Departments.AsNoTracking().Where(d => d.IsActive).OrderBy(d => d.DisplayOrder).ThenBy(d => d.Name).ToListAsync(ct);
+        var subs = await db.DepartmentSubCategories.AsNoTracking().Where(s => s.IsActive && s.DepartmentId != null)
+            .OrderBy(s => s.DisplayOrder).ThenBy(s => s.Name).ToListAsync(ct);
+        var deptOptions = new List<EmailCaseOptionsDto.DepartmentOptionDto>();
+        foreach (var d in departments)
+        {
+            var team = await DepartmentTeams.TeamOfAsync(db, d.Id, ct);
+            deptOptions.Add(new(d.Id, d.Name, team is { IsActive: true }, subs.Where(s => s.DepartmentId == d.Id).Select(s => s.Name).ToList()));
+        }
+        var priorities = await db.PrioritySlaRules.AsNoTracking().Where(p => p.IsActive).OrderBy(p => p.DisplayOrder).Select(p => p.Priority).ToListAsync(ct);
+        var languages = await db.LookupValues.AsNoTracking().Where(v => v.TypeCode == "PREFERRED_LANGUAGE" && v.IsActive)
+            .OrderBy(v => v.DisplayOrder).Select(v => v.Value).ToListAsync(ct);
+        var teams = await db.Teams.AsNoTracking().Where(t => t.IsActive).OrderBy(t => t.Name)
+            .Select(t => new EmailCaseOptionsDto.OptionDto(t.Id.ToString(), t.Name)).ToListAsync(ct);
+        return new EmailCaseOptionsDto { CaseTypes = types, Departments = deptOptions, Priorities = priorities, Languages = languages, Teams = teams };
+    }
 }

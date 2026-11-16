@@ -29,7 +29,8 @@ public sealed record CaseNotificationRequest(
     string? EventKey = null,
     IReadOnlyDictionary<string, string?>? Values = null,
     string? Body = null,
-    string? Severity = null);
+    string? Severity = null,
+    string? Link = null);
 
 /// <summary>Where notifications are handed: the dispatcher in production, a list in tests.</summary>
 public interface ICaseNotificationSink
@@ -209,7 +210,7 @@ public sealed class CaseNotificationDispatcher(IServiceScopeFactory scopes, IOpt
             Kind: $"remote.{AppKey}.{CaseNotificationKinds.Module}:{r.Kind}",
             EventId: r.EventKey is { Length: > 0 } key ? DeterministicGuid($"{r.Kind}:{key}") : Guid.NewGuid(),
             Body: r.Body,
-            Link: r.CaseId is { } id ? $"/apps/{AppKey}/case-management/{id}" : null,
+            Link: r.Link is { Length: > 0 } page ? $"/apps/{AppKey}/{page}" : r.CaseId is { } id ? $"/apps/{AppKey}/case-management/{id}" : null,
             EntityType: r.CaseId != null ? "Case" : null,
             EntityId: r.CaseId?.ToString(),
             SubjectUserIds: subjects,

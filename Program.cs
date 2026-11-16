@@ -324,6 +324,7 @@ builder.Services.AddScoped<IConfigurableSettingsRepository, ConfigurableSettings
 // Register Services
 builder.Services.AddScoped<ICaseService, CaseService>();
 builder.Services.AddScoped<ICaseAccessScope, CaseAccessScope>();
+builder.Services.AddScoped<IMailboxAccessScope, MailboxAccessScope>();
 
 // The Host's user directory, read with the caller's token, for choosing team members (HostIntegration/HostUsers.cs).
 builder.Services.Configure<AuthServiceOptions>(builder.Configuration.GetSection(AuthServiceOptions.SectionName));
@@ -395,7 +396,11 @@ builder.Services.AddSingleton<CaseManagement.Api.Services.EmailIntake.IDnsTxtRes
 builder.Services.AddSingleton<CaseManagement.Api.Services.EmailIntake.IEmailAuthenticator, CaseManagement.Api.Services.EmailIntake.EmailAuthenticator>();
 builder.Services.AddScoped<CaseManagement.Api.Services.EmailIntake.EmailIntakeProcessor>();
 builder.Services.AddScoped<CaseManagement.Api.Services.EmailIntake.EmailIntakeAdminService>();
+builder.Services.AddScoped<CaseManagement.Api.Services.Tickets.TicketService>();
 builder.Services.AddHostedService<CaseManagement.Api.Services.EmailIntake.EmailIntakeWorker>();
+// Push: IMAP IDLE per mailbox, so new mail is read as it arrives (the poll above stays as the fallback). EmailIntake:IdleEnabled.
+builder.Services.AddSingleton<CaseManagement.Api.Services.EmailIntake.IMailboxWatcher, CaseManagement.Api.Services.EmailIntake.MailKitMailboxClient>();
+builder.Services.AddHostedService<CaseManagement.Api.Services.EmailIntake.EmailIntakeIdleWorker>();
 builder.Services.AddScoped<IAssignmentEligibilityService, AssignmentEligibilityService>();
 builder.Services.AddScoped<IAgentPoolService>(sp => new AgentPoolService(sp.GetRequiredService<IAssignmentEligibilityService>()));
 builder.Services.AddScoped<IRoutingEngineService, RoutingEngineService>();

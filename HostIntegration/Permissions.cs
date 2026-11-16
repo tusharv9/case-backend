@@ -52,6 +52,18 @@ public static class Permissions
     /// <summary>Email Maintenance: configure mailboxes (address, password, servers) and verified sender domains; re-check an email.</summary>
     public const string EmailManage = "email.manage";
 
+    /// <summary>See Tickets: requests waiting to be assigned, for the mailboxes the person's teams are linked to.</summary>
+    public const string TicketsView = "tickets.view";
+
+    /// <summary>Raise a ticket by hand (a phone call, a walk-in) into a mailbox's queue.</summary>
+    public const string TicketsCreate = "tickets.create";
+
+    /// <summary>Assign a ticket to a team or agent (it becomes a case), or close it without a case.</summary>
+    public const string TicketsAssign = "tickets.assign";
+
+    /// <summary>See every mailbox's emails and tickets, not only those linked to the person's teams.</summary>
+    public const string TicketsViewAll = "tickets.viewall";
+
     /// <summary>
     /// See unmasked customer data. Deliberately NOT implied by the "*" wildcard: masking is deny-by-default,
     /// so seeing raw PII must be granted by name.
@@ -63,7 +75,8 @@ public static class Permissions
     public static readonly string[] All =
     {
         CasesRead, CasesCreate, CasesWrite, CasesTransfer, CasesResolve, CasesAssign, CasesViewAll, CasesSupervise, CustomersRead, CustomersWrite, ConfigManage,
-        TeamsManage, MonitoringView, MonitoringNudge, AuditView, EmailInboxView, EmailManage, PiiUnmask
+        TeamsManage, MonitoringView, MonitoringNudge, AuditView, EmailInboxView, EmailManage, TicketsView, TicketsCreate, TicketsAssign,
+        TicketsViewAll, PiiUnmask
     };
 
     /// <summary>

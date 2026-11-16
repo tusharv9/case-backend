@@ -47,6 +47,38 @@ public class EmailMailbox : AuditableEntity
     /// <summary>Who added and last changed the mailbox (Case Management user ids; plain values, so removing a user never blocks).</summary>
     public Guid? CreatedByUserId { get; set; }
     public Guid? UpdatedByUserId { get; set; }
+
+    /// <summary>
+    /// No longer read: every new email opens a ticket (there is no automatic case any more). Kept only because the column
+    /// exists in the database; always <see cref="MailboxIntakeModes.Tickets"/>.
+    /// </summary>
+    public string IntakeMode { get; set; } = MailboxIntakeModes.Tickets;
+
+    // What the Assign drawer starts from for this mailbox's tickets. All optional; the person assigning can change each one.
+    public Guid? DefaultDepartmentId { get; set; }
+    public string? DefaultCaseType { get; set; }
+    public string? DefaultSubCategory { get; set; }
+    public string? DefaultPriority { get; set; }
+    public string? DefaultPreferredLanguage { get; set; }
+
+    /// <summary>The teams whose members see this mailbox's emails and tickets (<see cref="HostIntegration.MailboxAccessScope"/>).</summary>
+    public List<EmailMailboxTeam> Teams { get; set; } = new();
+}
+
+/// <summary>A team allowed to see a mailbox: its active members and its lead see that mailbox's emails and tickets.</summary>
+public class EmailMailboxTeam
+{
+    public Guid MailboxId { get; set; }
+    public EmailMailbox? Mailbox { get; set; }
+    public Guid TeamId { get; set; }
+    public Team? Team { get; set; }
+}
+
+public static class MailboxIntakeModes
+{
+    public const string Tickets = "Tickets";
+    public const string AutoCase = "AutoCase";
+    public static readonly string[] All = [Tickets, AutoCase];
 }
 
 /// <summary>
@@ -67,7 +99,7 @@ public class EmailOrganisation : AuditableEntity
 }
 
 /// <summary>
-/// A sender domain whose emails become cases by themselves. The domain identifies the organisation; its <see cref="VerificationPolicy"/> decides which
+/// A sender domain whose emails open verified tickets. The domain identifies the organisation; its <see cref="VerificationPolicy"/> decides which
 /// of its senders are verified — everyone, or only the listed <see cref="Senders"/>.
 /// </summary>
 public class EmailVerifiedDomain : AuditableEntity
@@ -162,6 +194,9 @@ public class InboundEmail : AuditableEntity
     public string? StatusNote { get; set; }
     public Guid? CaseId { get; set; }
     public Case? Case { get; set; }
+    /// <summary>The ticket this email opened, or the ticket whose thread it replies to.</summary>
+    public Guid? TicketId { get; set; }
+    public Ticket? Ticket { get; set; }
     public int Attempts { get; set; }
     public DateTime? NextAttemptAt { get; set; }
     /// <summary>Bumped on every claim, so two workers (or a worker and a person) can never process the same email at once.</summary>
@@ -239,6 +274,10 @@ public static class EmailStatuses
     public const string CaseCreated = "CaseCreated";
     /// <summary>A reply on an email thread that already has a case: added to that case, no new case.</summary>
     public const string LinkedToCase = "LinkedToCase";
+    /// <summary>The mailbox is in Tickets mode: the email opened a ticket that waits for a person to assign it.</summary>
+    public const string TicketCreated = "TicketCreated";
+    /// <summary>A reply on a ticket's thread before the ticket became a case: added to the ticket.</summary>
+    public const string LinkedToTicket = "LinkedToTicket";
     public const string NotVerified = "NotVerified";
     public const string Ignored = "Ignored";
     public const string Failed = "Failed";

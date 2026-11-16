@@ -161,7 +161,15 @@ public class CaseService : ICaseService
         });
     }
 
-    public async Task<Case> CreateCaseAsync(CreateCaseDto dto, Guid createdByUserId, Func<Case, Task>? withinTransaction = null)
+    public Task<Case> CreateCaseAsync(CreateCaseDto dto, Guid createdByUserId, Func<Case, Task>? withinTransaction = null) =>
+        CreateCaseCoreAsync(dto, createdByUserId, withinTransaction, chosenOwnerId: null, slaStartUtc: null, callerMayAssignAnyCase: false);
+
+    public Task<Case> CreateCaseForTicketAsync(CreateCaseDto dto, Guid createdByUserId, Guid? ownerId, DateTime slaStartUtc, bool callerMayAssignAnyCase,
+        Func<Case, Task>? withinTransaction = null) =>
+        CreateCaseCoreAsync(dto, createdByUserId, withinTransaction, ownerId, slaStartUtc, callerMayAssignAnyCase);
+
+    private async Task<Case> CreateCaseCoreAsync(CreateCaseDto dto, Guid createdByUserId, Func<Case, Task>? withinTransaction,
+        Guid? chosenOwnerId, DateTime? slaStartUtc, bool callerMayAssignAnyCase)
     {
         // Everything the form submitted is checked against the administrator's configuration first; what comes
         // back is canonical (configured spelling, resolved records), so nothing downstream guesses or defaults.
@@ -230,7 +238,9 @@ public class CaseService : ICaseService
         }
 
         // 3. Start the SLA clock: targets are snapshotted from the rule, due dates are computed in business time.
-        (await GetClockAsync()).Start(newCase, slaRule, now);
+        // A ticket's customer has been waiting since their request arrived, not since someone assigned it.
+        var slaStart = slaStartUtc is { } s && s < now ? s : now;
+        (await GetClockAsync()).Start(newCase, slaRule, slaStart);
 
         foreach (var (key, value) in validated.CustomAttributes)
         {
@@ -256,7 +266,30 @@ public class CaseService : ICaseService
 
         await ExecuteInTransactionAsync(async () =>
         {
-            if (_routingEngine != null)
+            if (chosenOwnerId is { } chosen)
+            {
+                // A person picked the agent (ticket assignment). The team is still the department's; the choice is judged by
+                // the same Assign & Reassign rules, under the same team lock, as assigning an existing case by hand.
+                var team = await DepartmentTeams.TeamOfAsync(_context, validated.Department.Id)
+                           ?? throw new FieldValidationException(new[] { new FieldError("departmentId", DepartmentTeams.NoTeamMessage(validated.Department.Name)) });
+                if (!team.IsActive)
+                    throw new FieldValidationException(new[] { new FieldError("departmentId", DepartmentTeams.InactiveTeamMessage(validated.Department.Name, team.Name)) });
+                newCase.TeamId = team.Id;
+                await TeamAssignmentLock.AcquireAsync(_context, team.Id);
+                var policy = await _eligibility.GetManualPolicyAsync();
+                var (eligibility, verdict) = await _eligibility.CheckAsync(team.Id, chosen, policy);
+                if (!verdict.IsEligible)
+                    throw new AssignmentNotAllowedException(verdict.Reason.ToString(), verdict.Explain(eligibility.Team.Name));
+                if (verdict.IsCrossTeam && !callerMayAssignAnyCase)
+                    throw new AssignmentForbiddenException((verdict with { Reason = IneligibilityReason.NeedsAssignPermission }).Explain(eligibility.Team.Name));
+                newCase.OwnerId = chosen;
+                routingDecision = new RoutingDecisionResult
+                {
+                    TargetTeamId = team.Id, TargetTeamName = team.Name, AssignedUserId = chosen,
+                    RoutingLogMessage = $"Assigned by hand to {verdict.User.Name} ({team.Name}).",
+                };
+            }
+            else if (_routingEngine != null)
             {
                 routingDecision = await _routingEngine.RouteAndAssignCaseAsync(newCase, customer);
                 // Decided under the team lock, so an agent freed up since the creator was asked is still preferred.

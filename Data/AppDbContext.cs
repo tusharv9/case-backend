@@ -57,6 +57,9 @@ public class AppDbContext : DbContext
     public DbSet<InboundEmail> InboundEmails { get; set; } = null!;
     public DbSet<EmailOrganisation> EmailOrganisations { get; set; } = null!;
     public DbSet<EmailVerifiedSender> EmailVerifiedSenders { get; set; } = null!;
+    public DbSet<EmailMailboxTeam> EmailMailboxTeams { get; set; } = null!;
+    public DbSet<Ticket> Tickets { get; set; } = null!;
+    public DbSet<TicketAttachment> TicketAttachments { get; set; } = null!;
 
     // Bookkeeping for one-time seed steps (see DbSeeder)
     public DbSet<SeedHistoryEntry> SeedHistory { get; set; } = null!;
@@ -345,6 +348,59 @@ public class AppDbContext : DbContext
             e.Property(m => m.Authenticity).HasMaxLength(20).HasDefaultValue(EmailAuthenticity.NotChecked);
             e.Property(m => m.AuthenticationDetail).HasMaxLength(500);
             e.HasOne(m => m.Case).WithMany().HasForeignKey(m => m.CaseId).OnDelete(DeleteBehavior.SetNull);
+            e.HasIndex(m => m.TicketId);
+            e.HasOne(m => m.Ticket).WithMany().HasForeignKey(m => m.TicketId).OnDelete(DeleteBehavior.SetNull);
+        });
+
+        // Tickets: requests waiting to be triaged into cases (Models/Ticket.cs). The mailbox is the queue; its teams see it.
+        modelBuilder.Entity<EmailMailbox>(e =>
+        {
+            e.Property(m => m.IntakeMode).HasMaxLength(20).HasDefaultValue(MailboxIntakeModes.Tickets);
+            e.Property(m => m.DefaultCaseType).HasMaxLength(100);
+            e.Property(m => m.DefaultSubCategory).HasMaxLength(200);
+            e.Property(m => m.DefaultPriority).HasMaxLength(100);
+            e.Property(m => m.DefaultPreferredLanguage).HasMaxLength(100);
+        });
+        modelBuilder.Entity<EmailMailboxTeam>(e =>
+        {
+            e.HasKey(x => new { x.MailboxId, x.TeamId });
+            e.HasIndex(x => x.TeamId);
+            e.HasOne(x => x.Mailbox).WithMany(m => m.Teams).HasForeignKey(x => x.MailboxId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(x => x.Team).WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
+        });
+        modelBuilder.Entity<Ticket>(e =>
+        {
+            e.HasIndex(t => t.Sequence).IsUnique();
+            e.HasIndex(t => t.TicketNumber).IsUnique();
+            e.HasIndex(t => new { t.Status, t.ReceivedAt });
+            e.HasIndex(t => new { t.MailboxId, t.ReceivedAt });
+            e.HasIndex(t => t.CaseId);
+            e.HasIndex(t => t.InboundEmailId);
+            e.Property(t => t.Version).IsConcurrencyToken();
+            e.Property(t => t.TicketNumber).HasMaxLength(20);
+            e.Property(t => t.Source).HasMaxLength(20);
+            e.Property(t => t.RequesterName).HasMaxLength(200);
+            e.Property(t => t.RequesterEmail).HasMaxLength(254);
+            e.Property(t => t.RequesterPhone).HasMaxLength(50);
+            e.Property(t => t.Subject).HasMaxLength(500);
+            e.Property(t => t.Description).HasMaxLength(20000);
+            e.Property(t => t.Priority).HasMaxLength(100);
+            e.Property(t => t.CaseType).HasMaxLength(100);
+            e.Property(t => t.SubCategory).HasMaxLength(200);
+            e.Property(t => t.SenderVerification).HasMaxLength(20);
+            e.Property(t => t.SenderNote).HasMaxLength(1000);
+            e.Property(t => t.Status).HasMaxLength(20);
+            e.Property(t => t.CloseReason).HasMaxLength(500);
+            e.HasOne(t => t.Mailbox).WithMany().HasForeignKey(t => t.MailboxId).OnDelete(DeleteBehavior.Restrict);
+            e.HasOne(t => t.Case).WithMany().HasForeignKey(t => t.CaseId).OnDelete(DeleteBehavior.SetNull);
+        });
+        modelBuilder.Entity<TicketAttachment>(e =>
+        {
+            e.HasIndex(a => a.TicketId);
+            e.Property(a => a.FileName).HasMaxLength(255);
+            e.Property(a => a.ContentType).HasMaxLength(200);
+            e.Property(a => a.StorageKey).HasMaxLength(500);
+            e.HasOne(a => a.Ticket).WithMany(t => t.Attachments).HasForeignKey(a => a.TicketId).OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<CaseSlaAlert>(e =>

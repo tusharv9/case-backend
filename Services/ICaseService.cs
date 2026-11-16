@@ -9,6 +9,15 @@ public interface ICaseService
     /// it) — e.g. email intake recording which email the case came from, so a case can never exist without that link. It may run
     /// more than once when the database connection is retried, so it must be safe to repeat.</param>
     Task<Case> CreateCaseAsync(CreateCaseDto dto, Guid createdByUserId, Func<Case, Task>? withinTransaction = null);
+
+    /// <summary>
+    /// <see cref="CreateCaseAsync"/> for a ticket being assigned: <paramref name="ownerId"/> (when given) is the person chosen
+    /// instead of automatic routing — judged by the same Assign &amp; Reassign rules as a manual assignment, cross-team only with
+    /// <paramref name="callerMayAssignAnyCase"/> — and the SLA clock starts at <paramref name="slaStartUtc"/> (when the request
+    /// arrived), not now.
+    /// </summary>
+    Task<Case> CreateCaseForTicketAsync(CreateCaseDto dto, Guid createdByUserId, Guid? ownerId, DateTime slaStartUtc, bool callerMayAssignAnyCase,
+        Func<Case, Task>? withinTransaction = null);
     Task<CaseDetailDto?> GetCaseDetailsAsync(Guid caseId, CancellationToken ct = default);
     Task<IEnumerable<SearchCaseHitDto>> SearchCasesAsync(string query, int limit, CancellationToken ct = default);
     /// <summary>Every case of one customer (local or Customer 360), newest first, masked.</summary>

@@ -40,6 +40,7 @@ public static class CaseNotificationKinds
     public const string SlaReminder = "case.sla_reminder";
     public const string Nudge = "agent.nudge";
     public const string SettingsChanged = "settings.changed";
+    public const string TicketReceived = "ticket.received";
 
     /// <summary>The shape AuthService reads (<c>modules[].notifications</c>).</summary>
     public sealed record Declaration(
@@ -118,6 +119,10 @@ public static class CaseNotificationKinds
         new(Nudge, "Nudge from a supervisor", "When a supervisor nudges an agent from Team Monitoring.", "The agent nudged",
             Severity: "Warning", Message: "{actor} {verb:nudged} {person}", SubjectMessage: "{actor} {verb:nudged} you",
             Tone: "update", Icon: "Bell"),
+        // A ticket is named by its number and mailbox only: the subject and sender are the customer's words and address.
+        new(TicketReceived, "New ticket to assign", "When a new email or hand-raised ticket arrives in a mailbox linked to your team.",
+            "The leads of the mailbox's teams", DefaultToAdministrators: true,
+            Message: "New ticket {record} {verb:arrived} in {mailbox}", Context: "Waiting to be assigned", Tone: "create", Icon: "Mail"),
         new(SettingsChanged, "Case settings changed", "When someone changes Case Management configuration (case types and similar).", "People who manage Case Settings",
             Message: "{actor} {verb:changed} Case Management settings", Context: "{detail}", Tone: "update", Icon: "Settings"),
     ];

@@ -88,6 +88,8 @@ public class ExceptionMiddleware
         AssignmentNotAllowedException => (422, ex.Message, null),
         // Nothing was created; the creator decides (cancel, or assign to the team's supervisor).
         TeamUnavailableException => (409, ex.Message, null),
+        // Someone else assigned or closed the ticket first; the message says who.
+        CaseManagement.Api.Services.Tickets.TicketConflictException => (409, ex.Message, null),
         // The agent was nudged moments ago; the body says when they can be nudged again.
         NudgeCooldownException => (429, ex.Message, null),
         FileNotFoundException => (404, ex.Message, null),

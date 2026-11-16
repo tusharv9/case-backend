@@ -9,21 +9,21 @@ using Microsoft.Extensions.Options;
 using MimeKit;
 
 /// <summary>
-/// Email intake: reads each enabled mailbox, stores every new email once, and turns an email from a verified sender domain into a
-/// case — then tells the sender its case number. An email from anyone else is kept and marked "sender not verified".
+/// Email intake: reads each enabled mailbox, stores every new email once, and opens a TICKET for each new request — never a case.
+/// A person assigns the ticket (Tickets), which makes the case. A sender from a verified domain is marked verified, gets that
+/// domain's suggested case details on the ticket, and is told the ticket number; anyone else's ticket is marked not verified.
 /// </summary>
 /// <remarks>
 /// <para><b>Once, whatever happens.</b> An email is stored once (its Message-ID is unique), claimed before it is worked on (a
-/// version check, so the worker and a person pressing "Check again" cannot both act), and its case is written in the same
-/// transaction as the link to it — so there is never a case without its email, or a second case for the same email.</para>
-/// <para><b>Nothing undoes a case.</b> Attachments and the acknowledgement are done after the case is saved; their failures are
-/// recorded on the email (and the acknowledgement retried), never rolled back into the case.</para>
-/// <para><b>A reply is not a new case.</b> An email answering one we already have (In-Reply-To/References, including our own
-/// acknowledgement), or quoting "[Ticket C-01248]" from the same verified organisation, is added to that case's timeline.</para>
+/// version check, so the worker and a person pressing "Check again" cannot both act), and its ticket is written in the same
+/// save as the link to it — so there is never a ticket without its email, or a second ticket for the same email.</para>
+/// <para><b>Nothing undoes a ticket.</b> The acknowledgement is sent after the ticket is saved; its failure is recorded on the
+/// email (and retried), never rolled back into the ticket.</para>
+/// <para><b>A reply is not a new ticket.</b> An email answering one we already have (In-Reply-To/References, including our own
+/// acknowledgement), or quoting its "[Ticket T-00012]", is added to that ticket — or, once the ticket became a case, to the case.</para>
 /// </remarks>
 public sealed class EmailIntakeProcessor(
     AppDbContext db,
-    ICaseService cases,
     IAttachmentService attachments,
     IAttachmentStore store,
     IMailboxClient mail,
@@ -31,7 +31,8 @@ public sealed class EmailIntakeProcessor(
     IEmailAuthenticator authenticator,
     IOptions<EmailIntakeOptions> options,
     ILogger<EmailIntakeProcessor> logger,
-    ILiveEvents? live = null)
+    ILiveEvents? live = null,
+    Notifications.ICaseNotificationSink? notifications = null)
 {
     private readonly EmailIntakeOptions _options = options.Value;
     public const string SystemUserEmail = "email-integration@casemanagement.system";
@@ -188,14 +189,15 @@ public sealed class EmailIntakeProcessor(
     }
 
     /// <summary>
-    /// Decides what one email becomes: ignored (auto-reply, bounce, our own mail), added to the case it answers, a new case (sender's
-    /// domain verified), or "sender not verified". <paramref name="manual"/> is a person pressing "Check again".
+    /// Decides what one email becomes: ignored (auto-reply, bounce, our own mail), added to the case or ticket it answers, or a new
+    /// ticket. <paramref name="manual"/> is a person pressing "Check again".
     /// </summary>
     public async Task<InboundEmail?> ProcessAsync(Guid emailId, bool manual, CancellationToken ct)
     {
         var email = await db.InboundEmails.FirstOrDefaultAsync(e => e.Id == emailId, ct);
         if (email == null) return null;
-        if (email.Status is EmailStatuses.CaseCreated or EmailStatuses.LinkedToCase or EmailStatuses.Ignored) return email;
+        if (email.Status is EmailStatuses.CaseCreated or EmailStatuses.LinkedToCase or EmailStatuses.Ignored
+            or EmailStatuses.TicketCreated or EmailStatuses.LinkedToTicket) return email;
         if (email.RawKey == null) return email;   // too large to read: nothing to work with
         if (email.Status == EmailStatuses.Processing && email.NextAttemptAt > DateTime.UtcNow) return email;   // someone is on it
 
@@ -216,19 +218,9 @@ public sealed class EmailIntakeProcessor(
             var message = await LoadAsync(email, ct);
             await DecideAsync(email, message, ct);
         }
-        catch (FieldValidationException ex)
-        {
-            // The case details configured for the domain no longer pass Create Case's rules: a person must fix them, so no automatic retry.
-            email = await AfterFailureAsync(emailId, "The case could not be created: " + string.Join(" ", ex.Errors.Select(e => e.Message))
-                + " Check Case Settings, then press Check again.", retry: false);
-        }
         catch (TransientCheckException ex)
         {
             email = await AfterFailureAsync(emailId, ex.Message, retry: true);
-        }
-        catch (TeamUnavailableException ex)
-        {
-            email = await AfterFailureAsync(emailId, "The case could not be created: " + ex.Message, retry: true);
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
@@ -249,7 +241,7 @@ public sealed class EmailIntakeProcessor(
     {
         db.ChangeTracker.Clear();
         var fresh = await db.InboundEmails.FirstAsync(e => e.Id == emailId, CancellationToken.None);
-        if (fresh.Status is EmailStatuses.CaseCreated or EmailStatuses.LinkedToCase) return fresh;
+        if (fresh.Status is EmailStatuses.CaseCreated or EmailStatuses.LinkedToCase or EmailStatuses.TicketCreated or EmailStatuses.LinkedToTicket) return fresh;
         Fail(fresh, note, retry);
         return fresh;
     }
@@ -261,9 +253,9 @@ public sealed class EmailIntakeProcessor(
             email.Status = EmailStatuses.Ignored;
             email.StatusNote = email.Kind switch
             {
-                EmailKinds.AutoReply => "An automatic reply (e.g. out of office); no case is created for it.",
-                EmailKinds.Bounce => "A delivery failure notice; no case is created for it.",
-                _ => "Sent by one of our own mailboxes; no case is created for it.",
+                EmailKinds.AutoReply => "An automatic reply (e.g. out of office); no ticket is opened for it.",
+                EmailKinds.Bounce => "A delivery failure notice; no ticket is opened for it.",
+                _ => "Sent by one of our own mailboxes; no ticket is opened for it.",
             };
             email.AckStatus = AcknowledgementStatuses.Skipped;
             return;
@@ -321,56 +313,33 @@ public sealed class EmailIntakeProcessor(
             return;
         }
 
-        if (domain == null)
+        // How the sender stands, for the ticket and the Inbox: verified, not on the domain's list, or not verified (and why).
+        var verification = verified ? SenderVerification.Verified
+            : domain != null && domain.VerificationPolicy == VerificationPolicies.SpecificSenders && email.VerifiedSenderId == null && !forged
+                ? SenderVerification.NotListed : SenderVerification.NotVerified;
+        var note = verified ? VerifiedNote(email, domain!)
+            : refusal ?? (senderDomain.Length == 0 ? "The email has no sender address."
+                : $"{senderDomain} is not a verified domain. Check who sent it before acting on it; add the domain under Maintenance → Verified Domains to mark its senders verified.");
+
+        // A reply on a ticket: added to it while it waits, or to its case once it was assigned. A closed ticket starts a new one.
+        // A forged email is never added to someone's ticket or case: it opens its own ticket, marked not verified.
+        if (!forged && await ThreadTicketAsync(email, ct) is { } threadTicket)
         {
-            SetNotVerified(email, senderDomain.Length == 0
-                ? "The email has no sender address."
-                : $"{senderDomain} is not a verified domain. Add it under Maintenance → Verified Domains, then press Check again.");
-            return;
+            if (threadTicket.Status == TicketStatuses.New)
+            {
+                await LinkToTicketAsync(email, message, threadTicket, verified ? domain : null, verification, note, ct);
+                return;
+            }
+            if (threadTicket is { Status: TicketStatuses.Converted, CaseId: { } ticketCase })
+            {
+                await LinkToCaseAsync(email, message, ticketCase, verified ? domain : null, refusal, ct);
+                return;
+            }
         }
-        if (!verified)
-        {
-            SetNotVerified(email, refusal!, domain.VerificationPolicy == VerificationPolicies.SpecificSenders && email.VerifiedSenderId == null && !forged
-                ? SenderVerification.NotListed : SenderVerification.NotVerified);
-            return;
-        }
 
-        await CreateCaseAsync(email, message, domain, ct);
-    }
-
-    /// <summary>The case details an email cannot supply.</summary>
-    private sealed record EmailCaseDetails(string CaseType, Guid DepartmentId, string SubCategory, string Priority, string PreferredLanguage);
-
-    /// <summary>
-    /// The case type, department, sub-category, priority and language a case from an email starts with, chosen from Case Settings
-    /// as they are today: the first active case type, the first active department that has an active team and an active sub-category (and that sub-category), the
-    /// "Medium"/"Normal" priority (else the middle one of the active priorities) and the first active language. Nothing is
-    /// configured for email specifically: a domain says who wrote, not what about, and an agent sets the real details on the case.
-    /// </summary>
-    private async Task<EmailCaseDetails> CaseDetailsAsync(CancellationToken ct)
-    {
-        var caseType = await db.CaseTypeConfigs.AsNoTracking().Where(c => c.IsActive).OrderBy(c => c.DisplayOrder).ThenBy(c => c.Name)
-            .Select(c => c.Code).FirstOrDefaultAsync(ct);
-        (Guid Id, string Sub)? department = null;
-        var departments = await db.Departments.AsNoTracking().Where(d => d.IsActive).OrderBy(d => d.DisplayOrder).ThenBy(d => d.Name)
-            .Select(d => d.Id).ToListAsync(ct);
-        foreach (var id in departments)
-        {
-            if (await Teams.DepartmentTeams.TeamOfAsync(db, id, ct) is not { IsActive: true }) continue;
-            var sub = await db.DepartmentSubCategories.AsNoTracking().Where(s => s.DepartmentId == id && s.IsActive)
-                .OrderBy(s => s.DisplayOrder).ThenBy(s => s.Name).Select(s => s.Name).FirstOrDefaultAsync(ct);
-            if (sub != null) { department = (id, sub); break; }
-        }
-        var priorities = await db.PrioritySlaRules.AsNoTracking().Where(p => p.IsActive).OrderBy(p => p.DisplayOrder).Select(p => p.Priority).ToListAsync(ct);
-        var priority = priorities.FirstOrDefault(p => p.Equals("Medium", StringComparison.OrdinalIgnoreCase) || p.Equals("Normal", StringComparison.OrdinalIgnoreCase))
-                       ?? (priorities.Count > 0 ? priorities[(priorities.Count - 1) / 2] : null);
-        var language = await db.LookupValues.AsNoTracking().Where(v => v.TypeCode == "PREFERRED_LANGUAGE" && v.IsActive)
-            .OrderBy(v => v.DisplayOrder).Select(v => v.Value).FirstOrDefaultAsync(ct);
-
-        if (caseType == null || department == null || priority == null || language == null)
-            throw new TransientCheckException("The case could not be created: Case Settings needs an active case type, priority and language, and a "
-                + "department with an active team and an active sub-category. The email is tried again automatically.");
-        return new EmailCaseDetails(caseType, department.Value.Id, department.Value.Sub, priority, language);
+        // Anything else is a new request: it becomes a ticket, never a case. A person assigns it (Tickets), which makes the case.
+        var mailbox = await db.EmailMailboxes.AsNoTracking().FirstAsync(m => m.Id == email.MailboxId, ct);
+        await CreateTicketAsync(email, message, mailbox, verified ? domain : null, verification, note, ct);
     }
 
     private static string OrganisationOf(EmailVerifiedDomain domain) => domain.Organisation?.Name ?? domain.OrganisationName;
@@ -390,66 +359,12 @@ public sealed class EmailIntakeProcessor(
         return who + proof;
     }
 
-    private async Task CreateCaseAsync(InboundEmail email, MimeMessage message, EmailVerifiedDomain domain, CancellationToken ct)
-    {
-        var systemUser = await SystemUserAsync(ct);
-        var mailbox = await db.EmailMailboxes.AsNoTracking().FirstAsync(m => m.Id == email.MailboxId, ct);
-        // The case details an email cannot supply; an agent corrects them on the case.
-        var defaults = await CaseDetailsAsync(ct);
-        var customerId = await CustomerForAsync(email, domain, defaults, ct);
-
-        var body = email.BodyText;
-        if (body.Length > _options.MaxDescriptionLength)
-            body = body[..(_options.MaxDescriptionLength - 120)].TrimEnd() + "\n\n[The email continues; the full email is kept with the case in the Inbox.]";
-        var dto = new CreateCaseDto
-        {
-            Title = EmailParsing.Truncate(string.IsNullOrWhiteSpace(email.Subject) ? $"Email from {email.FromAddress}" : email.Subject, _options.MaxTitleLength),
-            Description = string.IsNullOrWhiteSpace(body) ? "(The email has no text.)" : body,
-            CustomerId = customerId,
-            DepartmentId = defaults.DepartmentId,
-            CaseType = defaults.CaseType,
-            Subcategory = defaults.SubCategory,
-            Severity = defaults.Priority,
-            PreferredLanguage = defaults.PreferredLanguage,
-            SourceChannel = "Email",
-            PreferredCommunicationChannel = "Email",
-            CommunicationChannel = "Email",
-            // Nobody in the team free: the team lead holds it, as Create Case offers — an email cannot wait for someone to choose.
-            UnstaffedTeamAction = UnstaffedTeamActions.AssignToSupervisor,
-        };
-
-        var created = await cases.CreateCaseAsync(dto, systemUser, async newCase =>
-        {
-            email.CaseId = newCase.Id;
-            email.Status = EmailStatuses.CaseCreated;
-            email.StatusNote = null;
-            email.Verification = SenderVerification.Verified;
-            email.VerificationNote = VerifiedNote(email, domain);
-            email.VerifiedDomainId = domain.Id;
-            email.NextAttemptAt = null;
-            email.AckStatus = mailbox.SendAcknowledgement ? AcknowledgementStatuses.NotSent : AcknowledgementStatuses.Skipped;
-            email.UpdatedAt = DateTime.UtcNow;
-            db.CaseEvents.Add(new CaseEvent
-            {
-                CaseId = newCase.Id, EventType = EventType.Other, Channel = "Email", IsInternal = true, CreatedAt = DateTime.UtcNow, UserId = systemUser,
-                Module = "EmailIntake", ActionType = "EMAIL_CASE_CREATED",
-                Message = $"Created from an email from {Sender(email)} to {mailbox.Address} ({OrganisationOf(domain)}).",
-            });
-            await db.SaveChangesAsync(ct);
-        });
-
-        // The case is saved. Nothing after this point may undo it or mark the email failed.
-        await AfterCaseSavedAsync("attach the email's files", () => AddAttachmentsAsync(email, message, created.Id, systemUser, ct));
-        if (email.AckStatus == AcknowledgementStatuses.NotSent)
-            await AfterCaseSavedAsync("send the acknowledgement", () => SendAcknowledgementAsync(email, created.CaseNumber, ct));
-    }
-
-    private async Task AfterCaseSavedAsync(string what, Func<Task> step)
+    private async Task AfterSavedAsync(string what, Func<Task> step)
     {
         try { await step(); }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.LogError(ex, "Case created from an email, but could not {What}.", what);
+            logger.LogError(ex, "The email's case or ticket was saved, but could not {What}.", what);
         }
     }
 
@@ -473,7 +388,126 @@ public sealed class EmailIntakeProcessor(
         email.NextAttemptAt = null;
         email.AckStatus = AcknowledgementStatuses.Skipped;   // replies are not acknowledged again
         await db.SaveChangesAsync(ct);
-        await AfterCaseSavedAsync("attach the reply's files", () => AddAttachmentsAsync(email, message, caseId, systemUser, ct));
+        await AfterSavedAsync("attach the reply's files", () => AddAttachmentsAsync(email, message, caseId, systemUser, ct));
+    }
+
+    // ───────────────────────────── tickets ─────────────────────────────
+
+    /// <summary>
+    /// Opens a ticket for the email (Tickets mode): who asked, what they asked, its files, the mailbox's suggested classification.
+    /// Saved in one transaction with the email's link to it, so there is never a ticket without its email or a second ticket for it.
+    /// A verified sender is told the ticket number; anyone else is not answered (we do not mail unknown addresses).
+    /// </summary>
+    private async Task CreateTicketAsync(InboundEmail email, MimeMessage message, EmailMailbox mailbox, EmailVerifiedDomain? domain, string verification, string note, CancellationToken ct)
+    {
+        var systemUser = await SystemUserAsync(ct);
+        var body = email.BodyText;
+        if (body.Length > _options.MaxDescriptionLength)
+            body = body[..(_options.MaxDescriptionLength - 120)].TrimEnd() + "\n\n[The email continues; the full email is kept in the Inbox.]";
+
+        var ticket = new Ticket
+        {
+            Source = TicketSources.Email, MailboxId = mailbox.Id, InboundEmailId = email.Id,
+            RequesterName = EmailParsing.Truncate(email.SenderAlias ?? email.FromName ?? email.FromAddress.Split('@')[0], 200),
+            RequesterEmail = email.FromAddress,
+            Subject = EmailParsing.Truncate(string.IsNullOrWhiteSpace(email.Subject) ? $"Email from {email.FromAddress}" : email.Subject, 500),
+            Description = string.IsNullOrWhiteSpace(body) ? "(The email has no text.)" : body,
+            // A domain says who wrote, not what about: the mailbox's suggestions are the starting point; the assigner decides.
+            CaseType = mailbox.DefaultCaseType,
+            DepartmentId = mailbox.DefaultDepartmentId,
+            SubCategory = mailbox.DefaultSubCategory,
+            Priority = mailbox.DefaultPriority,
+            SenderVerification = verification,
+            SenderNote = EmailParsing.Truncate(note, 1000),
+            ReceivedAt = email.ReceivedAt, CreatedById = systemUser, CreatedAt = DateTime.UtcNow,
+        };
+        ticket.Attachments.AddRange(await StoreAttachmentsAsync(message, ct));
+
+        email.TicketId = ticket.Id;
+        email.Status = EmailStatuses.TicketCreated;
+        email.StatusNote = null;
+        email.Verification = verification;
+        email.VerificationNote = note;
+        email.VerifiedDomainId = domain?.Id;
+        email.NextAttemptAt = null;
+        email.AckStatus = mailbox.SendAcknowledgement && domain != null ? AcknowledgementStatuses.NotSent : AcknowledgementStatuses.Skipped;
+        email.UpdatedAt = DateTime.UtcNow;
+        await TicketNumbers.AddAsync(db, ticket, ct);   // saves the email's changes with it
+
+        PublishTicket(ticket);
+        await Tickets.TicketAlerts.NotifyReceivedAsync(db, notifications, ticket, mailbox.Name, logger, ct);
+        if (email.AckStatus == AcknowledgementStatuses.NotSent)
+            await AfterSavedAsync("send the acknowledgement", () => SendAcknowledgementAsync(email, ticket.TicketNumber, ct));
+    }
+
+    private async Task LinkToTicketAsync(InboundEmail email, MimeMessage message, Ticket ticket, EmailVerifiedDomain? domain, string verification, string note, CancellationToken ct)
+    {
+        var tracked = await db.Tickets.Include(t => t.Attachments).FirstAsync(t => t.Id == ticket.Id, ct);
+        tracked.Attachments.AddRange((await StoreAttachmentsAsync(message, ct)).Select(a => { a.TicketId = tracked.Id; return a; }));
+        tracked.Version++;
+        tracked.UpdatedAt = DateTime.UtcNow;
+        email.TicketId = ticket.Id;
+        email.Status = EmailStatuses.LinkedToTicket;
+        email.StatusNote = $"A reply on ticket {ticket.TicketNumber}'s email thread; added to that ticket.";
+        email.Verification = verification;
+        email.VerifiedDomainId = domain?.Id;
+        email.VerificationNote = verification == SenderVerification.Verified ? note : note + " The email answers this ticket's thread, so it was added to the ticket.";
+        email.NextAttemptAt = null;
+        email.AckStatus = AcknowledgementStatuses.Skipped;
+        await db.SaveChangesAsync(ct);
+        PublishTicket(tracked);
+    }
+
+    /// <summary>The ticket of an email this one answers (one we received, or our acknowledgement), or one quoted as [Ticket T-00012] by the same sender.</summary>
+    private async Task<Ticket?> ThreadTicketAsync(InboundEmail email, CancellationToken ct)
+    {
+        var ids = EmailParsing.ThreadIds(email.InReplyTo, email.References);
+        Guid? ticketId = null;
+        if (ids.Count > 0)
+            ticketId = await db.InboundEmails.AsNoTracking()
+                .Where(e => e.Id != email.Id && e.TicketId != null && ((e.InternetMessageId != null && ids.Contains(e.InternetMessageId)) || (e.AckMessageId != null && ids.Contains(e.AckMessageId))))
+                .OrderBy(e => e.ReceivedAt).Select(e => e.TicketId).FirstOrDefaultAsync(ct);
+        if (ticketId == null && EmailParsing.TicketNumberInSubject(email.Subject) is { } quoted)
+            ticketId = await db.Tickets.AsNoTracking().Where(t => t.TicketNumber == quoted && t.RequesterEmail == email.FromAddress)
+                .Select(t => (Guid?)t.Id).FirstOrDefaultAsync(ct);
+        if (ticketId == null) return null;
+        return await db.Tickets.AsNoTracking().FirstOrDefaultAsync(t => t.Id == ticketId, ct);
+    }
+
+    /// <summary>
+    /// Keeps the email's files for its ticket (they go to the case on assignment, through the case's own file checks). A file
+    /// that cannot be read is left out here; the original email keeps every file.
+    /// </summary>
+    private async Task<List<TicketAttachment>> StoreAttachmentsAsync(MimeMessage message, CancellationToken ct)
+    {
+        var stored = new List<TicketAttachment>();
+        var index = 0;
+        foreach (var entity in EmailParsing.RealAttachments(message))
+        {
+            var name = EmailParsing.AttachmentName(entity, ++index);
+            try
+            {
+                using var content = new MemoryStream();
+                if (entity is MessagePart mp && mp.Message != null) await mp.Message.WriteToAsync(content, ct);
+                else if (entity is MimePart part && part.Content != null) await part.Content.DecodeToAsync(content, ct);
+                if (content.Length == 0) continue;
+                var size = content.Length;
+                content.Position = 0;
+                var key = await store.SaveAsync(content, Path.GetExtension(name), ct);
+                stored.Add(new TicketAttachment { FileName = name, ContentType = entity.ContentType?.MimeType ?? "application/octet-stream", SizeBytes = size, StorageKey = key });
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogWarning(ex, "A file of an email could not be kept for its ticket.");
+            }
+        }
+        return stored;
+    }
+
+    private void PublishTicket(Ticket t)
+    {
+        try { live?.Publish(new LiveEvent("tickets", new { ticketId = t.Id, mailboxId = t.MailboxId, status = t.Status })); }
+        catch (Exception ex) { logger.LogDebug(ex, "Tickets live update not published."); }
     }
 
     /// <summary>The case of an email this one answers: one we received, or our acknowledgement of it.</summary>
@@ -489,33 +523,8 @@ public sealed class EmailIntakeProcessor(
     /// <summary>A case quoted in the subject — only when it was opened from an email of the same verified organisation, so nobody can add to another client's case by naming it.</summary>
     private async Task<Guid?> QuotedCaseAsync(string caseNumber, Guid domainId, CancellationToken ct) =>
         await db.InboundEmails.AsNoTracking()
-            .Where(e => e.Status == EmailStatuses.CaseCreated && e.VerifiedDomainId == domainId && e.Case != null && e.Case.CaseNumber == caseNumber)
+            .Where(e => (e.Status == EmailStatuses.CaseCreated || e.Status == EmailStatuses.TicketCreated) && e.VerifiedDomainId == domainId && e.Case != null && e.Case.CaseNumber == caseNumber)
             .Select(e => e.CaseId).FirstOrDefaultAsync(ct);
-
-    /// <summary>
-    /// The case's customer: the Case Management customer with the sender's email address, or a new one for them (name and email
-    /// only — the rest can be filled in on the case). Never a Customer 360 lookup: an email address does not identify a bank customer.
-    /// </summary>
-    private async Task<Guid> CustomerForAsync(InboundEmail email, EmailVerifiedDomain domain, EmailCaseDetails defaults, CancellationToken ct)
-    {
-        var address = email.FromAddress;
-        var existing = await db.Customers.AsNoTracking().Where(c => c.Email != null && c.Email.ToLower() == address)
-            .OrderBy(c => c.CreatedAt).Select(c => (Guid?)c.Id).FirstOrDefaultAsync(ct);
-        if (existing is { } id) return id;
-
-        var customer = new Customer
-        {
-            FullName = EmailParsing.Truncate(email.SenderAlias ?? email.FromName ?? address.Split('@')[0], 200),
-            Email = address,
-            PhoneNumber = string.Empty,
-            PreferredLanguage = string.IsNullOrWhiteSpace(defaults.PreferredLanguage) ? "English" : defaults.PreferredLanguage,
-            CustomerSegment = OrganisationOf(domain),
-            CreatedAt = DateTime.UtcNow,
-        };
-        db.Customers.Add(customer);
-        await db.SaveChangesAsync(ct);
-        return customer.Id;
-    }
 
     /// <summary>
     /// Adds the email's files to the case through the same checks as a file uploaded on the case (size, type, content). A file
@@ -651,8 +660,11 @@ public sealed class EmailIntakeProcessor(
     public async Task RetryAcknowledgementsAsync(CancellationToken ct)
     {
         var now = DateTime.UtcNow;
-        var due = await db.InboundEmails.Where(e => e.AckStatus == AcknowledgementStatuses.Failed && e.AckNextAttemptAt != null && e.AckNextAttemptAt <= now && e.CaseId != null)
-            .Select(e => new { e.Id, e.Case!.CaseNumber }).Take(50).ToListAsync(ct);
+        var due = await db.InboundEmails.Where(e => e.AckStatus == AcknowledgementStatuses.Failed && e.AckNextAttemptAt != null && e.AckNextAttemptAt <= now
+                && (e.CaseId != null || e.TicketId != null))
+            // An email that opened a ticket is acknowledged with the ticket's number (even after the ticket became a case).
+            .Select(e => new { e.Id, CaseNumber = e.Status == EmailStatuses.TicketCreated && e.Ticket != null ? e.Ticket.TicketNumber : e.Case!.CaseNumber })
+            .Take(50).ToListAsync(ct);
         foreach (var item in due)
         {
             var email = await db.InboundEmails.FirstAsync(e => e.Id == item.Id, ct);
@@ -687,7 +699,10 @@ public sealed class EmailIntakeProcessor(
         return user.Id;
     }
 
-    private MailboxConnection Connect(EmailMailbox m) => new(
+    private MailboxConnection Connect(EmailMailbox m) => ConnectionFor(m, secrets);
+
+    /// <summary>How to reach a mailbox, with its password decrypted for the call. Shared with <see cref="EmailIntakeIdleWorker"/>.</summary>
+    public static MailboxConnection ConnectionFor(EmailMailbox m, IMailboxSecretProtector secrets) => new(
         m.Address, string.IsNullOrWhiteSpace(m.Username) ? m.Address : m.Username!, secrets.Unprotect(m.PasswordEncrypted!),
         m.ImapHost, m.ImapPort, m.ImapSecurity, m.SmtpHost, m.SmtpPort, m.SmtpSecurity);
 
@@ -702,16 +717,6 @@ public sealed class EmailIntakeProcessor(
 
     private static string Sender(InboundEmail e) => string.IsNullOrWhiteSpace(e.FromName) ? e.FromAddress : $"{e.FromName} <{e.FromAddress}>";
 
-    private static void SetNotVerified(InboundEmail email, string note, string verification = SenderVerification.NotVerified)
-    {
-        email.Verification = verification;
-        email.VerificationNote = note;
-        email.VerifiedDomainId = null;
-        email.Status = EmailStatuses.NotVerified;
-        email.StatusNote = "Sender is not verified.";
-        email.NextAttemptAt = null;
-        email.AckStatus = AcknowledgementStatuses.Skipped;
-    }
 
     private void Fail(InboundEmail email, string note, bool retry)
     {

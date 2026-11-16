@@ -962,6 +962,25 @@ namespace CaseManagement.Api.Migrations
                     b.Property<Guid?>("CreatedByUserId")
                         .HasColumnType("uuid");
 
+                    b.Property<string>("DefaultCaseType")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<Guid?>("DefaultDepartmentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("DefaultPreferredLanguage")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("DefaultPriority")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("DefaultSubCategory")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
                     b.Property<string>("ImapHost")
                         .IsRequired()
                         .HasMaxLength(253)
@@ -974,6 +993,13 @@ namespace CaseManagement.Api.Migrations
                         .IsRequired()
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)");
+
+                    b.Property<string>("IntakeMode")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("Tickets");
 
                     b.Property<bool>("IsEnabled")
                         .HasColumnType("boolean");
@@ -1049,6 +1075,21 @@ namespace CaseManagement.Api.Migrations
                         .IsUnique();
 
                     b.ToTable("EmailMailboxes");
+                });
+
+            modelBuilder.Entity("CaseManagement.Api.Models.EmailMailboxTeam", b =>
+                {
+                    b.Property<Guid>("MailboxId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("TeamId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("MailboxId", "TeamId");
+
+                    b.HasIndex("TeamId");
+
+                    b.ToTable("EmailMailboxTeams");
                 });
 
             modelBuilder.Entity("CaseManagement.Api.Models.EmailOrganisation", b =>
@@ -1482,6 +1523,9 @@ namespace CaseManagement.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<Guid?>("TicketId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("ToList")
                         .HasColumnType("text");
 
@@ -1522,6 +1566,8 @@ namespace CaseManagement.Api.Migrations
                     b.HasIndex("OrganisationId");
 
                     b.HasIndex("ReceivedAt");
+
+                    b.HasIndex("TicketId");
 
                     b.HasIndex("VerifiedDomainId");
 
@@ -2070,6 +2116,169 @@ namespace CaseManagement.Api.Migrations
                     b.ToTable("TeamSettings");
                 });
 
+            modelBuilder.Entity("CaseManagement.Api.Models.Ticket", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("CaseId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("CaseType")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("CloseReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("CreatedById")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("DepartmentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasMaxLength(20000)
+                        .HasColumnType("character varying(20000)");
+
+                    b.Property<DateTime?>("HandledAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("HandledById")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("InboundEmailId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("MailboxId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Priority")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<DateTime>("ReceivedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("RequesterEmail")
+                        .IsRequired()
+                        .HasMaxLength(254)
+                        .HasColumnType("character varying(254)");
+
+                    b.Property<string>("RequesterName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("RequesterPhone")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<string>("SenderNote")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<string>("SenderVerification")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<int>("Sequence")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("SubCategory")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("Subject")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("TicketNumber")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CaseId");
+
+                    b.HasIndex("InboundEmailId");
+
+                    b.HasIndex("Sequence")
+                        .IsUnique();
+
+                    b.HasIndex("TicketNumber")
+                        .IsUnique();
+
+                    b.HasIndex("MailboxId", "ReceivedAt");
+
+                    b.HasIndex("Status", "ReceivedAt");
+
+                    b.ToTable("Tickets");
+                });
+
+            modelBuilder.Entity("CaseManagement.Api.Models.TicketAttachment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ContentType")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("FileName")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.Property<long>("SizeBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("StorageKey")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<Guid>("TicketId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TicketId");
+
+                    b.ToTable("TicketAttachments");
+                });
+
             modelBuilder.Entity("CaseManagement.Api.Models.User", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2402,6 +2611,25 @@ namespace CaseManagement.Api.Migrations
                     b.Navigation("Department");
                 });
 
+            modelBuilder.Entity("CaseManagement.Api.Models.EmailMailboxTeam", b =>
+                {
+                    b.HasOne("CaseManagement.Api.Models.EmailMailbox", "Mailbox")
+                        .WithMany("Teams")
+                        .HasForeignKey("MailboxId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("CaseManagement.Api.Models.Team", "Team")
+                        .WithMany()
+                        .HasForeignKey("TeamId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Mailbox");
+
+                    b.Navigation("Team");
+                });
+
             modelBuilder.Entity("CaseManagement.Api.Models.EmailVerifiedDomain", b =>
                 {
                     b.HasOne("CaseManagement.Api.Models.EmailOrganisation", "Organisation")
@@ -2452,6 +2680,11 @@ namespace CaseManagement.Api.Migrations
                         .HasForeignKey("OrganisationId")
                         .OnDelete(DeleteBehavior.SetNull);
 
+                    b.HasOne("CaseManagement.Api.Models.Ticket", "Ticket")
+                        .WithMany()
+                        .HasForeignKey("TicketId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.HasOne("CaseManagement.Api.Models.EmailVerifiedDomain", "VerifiedDomain")
                         .WithMany()
                         .HasForeignKey("VerifiedDomainId")
@@ -2467,6 +2700,8 @@ namespace CaseManagement.Api.Migrations
                     b.Navigation("Mailbox");
 
                     b.Navigation("Organisation");
+
+                    b.Navigation("Ticket");
 
                     b.Navigation("VerifiedDomain");
 
@@ -2630,6 +2865,35 @@ namespace CaseManagement.Api.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("CaseManagement.Api.Models.Ticket", b =>
+                {
+                    b.HasOne("CaseManagement.Api.Models.Case", "Case")
+                        .WithMany()
+                        .HasForeignKey("CaseId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("CaseManagement.Api.Models.EmailMailbox", "Mailbox")
+                        .WithMany()
+                        .HasForeignKey("MailboxId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Case");
+
+                    b.Navigation("Mailbox");
+                });
+
+            modelBuilder.Entity("CaseManagement.Api.Models.TicketAttachment", b =>
+                {
+                    b.HasOne("CaseManagement.Api.Models.Ticket", "Ticket")
+                        .WithMany("Attachments")
+                        .HasForeignKey("TicketId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Ticket");
+                });
+
             modelBuilder.Entity("CaseManagement.Api.Models.UserPreference", b =>
                 {
                     b.HasOne("CaseManagement.Api.Models.User", "User")
@@ -2672,6 +2936,11 @@ namespace CaseManagement.Api.Migrations
                     b.Navigation("TeamLinks");
                 });
 
+            modelBuilder.Entity("CaseManagement.Api.Models.EmailMailbox", b =>
+                {
+                    b.Navigation("Teams");
+                });
+
             modelBuilder.Entity("CaseManagement.Api.Models.EmailVerifiedDomain", b =>
                 {
                     b.Navigation("Senders");
@@ -2701,6 +2970,11 @@ namespace CaseManagement.Api.Migrations
                     b.Navigation("DepartmentLinks");
 
                     b.Navigation("Members");
+                });
+
+            modelBuilder.Entity("CaseManagement.Api.Models.Ticket", b =>
+                {
+                    b.Navigation("Attachments");
                 });
 #pragma warning restore 612, 618
         }

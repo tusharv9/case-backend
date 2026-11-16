@@ -20,6 +20,10 @@ public class EmailIntakeController(EmailIntakeAdminService admin, EmailIntakePro
     [HttpGet("inbox/counts")]
     public async Task<IActionResult> Counts([FromQuery] Guid? mailboxId, CancellationToken ct) => Ok(await admin.CountsAsync(mailboxId, ct));
 
+    /// <summary>The mailboxes the caller may see (for the mailbox filter); no connection details.</summary>
+    [HttpGet("mailboxes")]
+    public async Task<IActionResult> Mailboxes(CancellationToken ct) => Ok(await admin.AccessibleMailboxesAsync(ct));
+
     [HttpGet("emails/{id:guid}")]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct) => Ok(await admin.GetAsync(id, ct));
 
@@ -47,7 +51,7 @@ public class EmailIntakeController(EmailIntakeAdminService admin, EmailIntakePro
     }
 }
 
-/// <summary>Maintenance: the mailboxes read for new cases and the sender domains whose emails become cases.</summary>
+/// <summary>Maintenance: the mailboxes read for new tickets, and the verified sender domains.</summary>
 [ApiController]
 [Route("api/email-maintenance")]
 [RequirePermission(Permissions.EmailManage)]
@@ -84,6 +88,8 @@ public class EmailMaintenanceController(EmailIntakeAdminService admin, EmailInta
         return Ok(new
         {
             read,
+            ticketsCreated = outcome.GetValueOrDefault(EmailStatuses.TicketCreated),
+            linkedToTicket = outcome.GetValueOrDefault(EmailStatuses.LinkedToTicket),
             casesCreated = outcome.GetValueOrDefault(EmailStatuses.CaseCreated),
             linkedToCase = outcome.GetValueOrDefault(EmailStatuses.LinkedToCase),
             notVerified = outcome.GetValueOrDefault(EmailStatuses.NotVerified),
@@ -112,4 +118,8 @@ public class EmailMaintenanceController(EmailIntakeAdminService admin, EmailInta
     /// <summary>The organisations verified domains belong to (for the domain form's organisation field).</summary>
     [HttpGet("organisations")]
     public async Task<IActionResult> Organisations(CancellationToken ct) => Ok(await admin.OrganisationsAsync(ct));
+
+    /// <summary>The teams, departments (with sub-categories), case types, priorities and languages a mailbox's tickets can suggest.</summary>
+    [HttpGet("case-options")]
+    public async Task<IActionResult> CaseOptions(CancellationToken ct) => Ok(await admin.CaseOptionsAsync(ct));
 }

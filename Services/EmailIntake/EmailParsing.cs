@@ -146,6 +146,10 @@ public static partial class EmailParsing
     [GeneratedRegex(@"\[(?:Ticket\s*)?([A-Za-z]{1,6}-\d{4,}(?:-[A-Za-z]\d{2})?)\]", RegexOptions.IgnoreCase)]
     private static partial Regex SubjectCaseNumber();
 
+    /// <summary>A ticket number quoted in a subject as our acknowledgement writes it: "[Ticket T-00012]".</summary>
+    public static string? TicketNumberInSubject(string? subject) =>
+        CaseNumberInSubject(subject) is { } n && n.StartsWith(TicketNumbers.Prefix, StringComparison.Ordinal) ? n : null;
+
     /// <summary>"Re: " + the subject, unless it already starts with a reply prefix.</summary>
     public static string ReplySubject(string subject)
     {

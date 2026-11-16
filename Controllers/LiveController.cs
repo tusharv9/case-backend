@@ -10,10 +10,13 @@ using Microsoft.AspNetCore.Mvc;
 /// <c>{"topic":"agent-status","data":{"userId":"…","status":"Offline"}}</c>. A comment line is sent every 20 seconds so
 /// proxies keep the connection open, and the browser reconnects on its own when it drops.
 /// </summary>
-/// <remarks>Any signed-in Case Management user may listen: an event carries a person's availability, never case data.</remarks>
+/// <remarks>
+/// Any signed-in Case Management user may listen (an Inbox-only user included): an event carries a person's availability
+/// or the id of an email/ticket that changed, never case or email content. The screen re-reads through the scoped endpoints.
+/// </remarks>
 [ApiController]
 [Route("api/live")]
-[RequirePermission(Permissions.CasesRead)]
+[RequirePermission(null)]
 public class LiveController(ILiveEvents live) : BaseApiController
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -22,6 +25,8 @@ public class LiveController(ILiveEvents live) : BaseApiController
     [HttpGet]
     public async Task Stream(CancellationToken ct)
     {
+        // Send each event the moment it is written; a buffered (or compressed) stream reaches the browser late or never.
+        HttpContext.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpResponseBodyFeature>()?.DisableBuffering();
         Response.ContentType = "text/event-stream";
         Response.Headers.CacheControl = "no-cache, no-transform";
         Response.Headers["X-Accel-Buffering"] = "no";   // nginx: send each event as it is written

@@ -8,8 +8,14 @@ public class EmailIntakeOptions
     /// <summary>Read mailboxes on this instance. Switch off where no mailbox should be read (e.g. a developer machine sharing a database).</summary>
     public bool Enabled { get; set; } = true;
 
-    /// <summary>How often each mailbox is read, in seconds.</summary>
+    /// <summary>How often each mailbox is read, in seconds. With <see cref="IdleEnabled"/> this is only the fallback.</summary>
     public int PollSeconds { get; set; } = 60;
+
+    /// <summary>
+    /// Keep one IMAP IDLE connection open per enabled mailbox, so a new email is read within seconds of arriving instead of at
+    /// the next poll. A server without IDLE simply keeps being polled.
+    /// </summary>
+    public bool IdleEnabled { get; set; } = true;
 
     /// <summary>
     /// 32 random bytes, base64, that encrypt mailbox passwords. When empty a key is derived from

@@ -41,9 +41,52 @@ public interface IMailboxClient
     Task<MailboxTestResult> TestAsync(MailboxConnection mailbox, CancellationToken ct);
 }
 
-public sealed class MailKitMailboxClient(ILogger<MailKitMailboxClient> logger) : IMailboxClient
+public enum MailboxWaitResult { NewMail, TimedOut, NotSupported }
+
+/// <summary>Waits for new mail with IMAP IDLE (push), so it is read as it arrives rather than at the next poll.</summary>
+public interface IMailboxWatcher
+{
+    /// <summary>
+    /// Holds an IDLE connection on the mailbox's INBOX until new mail arrives (<see cref="MailboxWaitResult.NewMail"/>) or
+    /// <paramref name="maxWait"/> passes. <see cref="MailboxWaitResult.NotSupported"/> when the server cannot IDLE.
+    /// </summary>
+    Task<MailboxWaitResult> WaitForNewMailAsync(MailboxConnection mailbox, TimeSpan maxWait, CancellationToken ct);
+}
+
+public sealed class MailKitMailboxClient(ILogger<MailKitMailboxClient> logger) : IMailboxClient, IMailboxWatcher
 {
     private const int TimeoutMs = 60_000;
+
+    public async Task<MailboxWaitResult> WaitForNewMailAsync(MailboxConnection mailbox, TimeSpan maxWait, CancellationToken ct)
+    {
+        using var imap = new ImapClient { Timeout = TimeoutMs };
+        Harden(imap, mailbox.ImapHost);
+        await imap.ConnectAsync(mailbox.ImapHost, mailbox.ImapPort, Security(mailbox.ImapSecurity), ct);
+        await imap.AuthenticateAsync(mailbox.Username, mailbox.Password, ct);
+        if (!imap.Capabilities.Contains(ImapCapability.Idle))
+        {
+            await imap.DisconnectAsync(true, ct);
+            return MailboxWaitResult.NotSupported;
+        }
+
+        var inbox = imap.Inbox;
+        await inbox.OpenAsync(FolderAccess.ReadOnly, ct);
+        var initial = inbox.Count;
+        var arrived = false;
+        // Servers drop an IDLE after ~29 minutes (RFC 2177); ending it ourselves sooner keeps the connection healthy.
+        using var done = new CancellationTokenSource(maxWait);
+        void OnCountChanged(object? sender, EventArgs e)
+        {
+            if (inbox.Count <= initial) return;
+            arrived = true;
+            try { done.Cancel(); } catch (ObjectDisposedException) { }
+        }
+        inbox.CountChanged += OnCountChanged;
+        try { await imap.IdleAsync(done.Token, ct); }
+        finally { inbox.CountChanged -= OnCountChanged; }
+        if (imap.IsConnected) await imap.DisconnectAsync(true, ct);
+        return arrived ? MailboxWaitResult.NewMail : MailboxWaitResult.TimedOut;
+    }
 
     public async Task<MailboxCursor> ReadNewAsync(MailboxConnection mailbox, MailboxCursor? cursor, DateTime? since, int max, long maxBytes,
         Func<IncomingMail, MailboxCursor, Task> handle, CancellationToken ct)
