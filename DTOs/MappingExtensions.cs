@@ -66,6 +66,9 @@ ExternalCustomerId = c.ExternalCustomerId,
         return query.Select(c => new CaseDetailDto
         {
             Id = c.Id,
+            RequestReceivedAt = c.RequestReceivedAt,
+            SourceTicketId = c.SourceTicketId,
+            SourceTicketNumber = c.SourceTicketNumber,
             CaseNumber = c.CaseNumber.StartsWith("S-") ? c.CaseNumber : (c.CaseNumber.StartsWith("I-") || c.CaseNumber.StartsWith("E-") ? (c.CaseNumber.StartsWith("E-") ? c.CaseNumber.Replace("E-", "I-") : c.CaseNumber) : c.CaseNumber),
             Title = c.Title,
             Status = c.Status.ToString(),

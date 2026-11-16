@@ -54,6 +54,26 @@ public class Ticket : AuditableEntity
     /// <summary>Bumped on every change, so two people can never convert (or close) the same ticket.</summary>
     public int Version { get; set; }
 
+    // The ticket's own SLA: how long it may wait to be assigned (Services/Tickets/TicketSla.cs). It is the queue's clock; the
+    // case made from the ticket starts its own SLA when it is created, so time spent waiting here is never charged to a team.
+
+    /// <summary>
+    /// Working minutes allowed between arrival and assignment, taken from the priority (or the default) when the ticket arrived,
+    /// so a later configuration change never rewrites it. 0 = no target. Null only on tickets from before ticket SLAs, until the
+    /// monitor fills it in.
+    /// </summary>
+    public int? AssignTargetMinutes { get; set; }
+    /// <summary>When the ticket must be assigned by (working time from arrival). Null when there is no target.</summary>
+    public DateTime? AssignDueAt { get; set; }
+    /// <summary>When the target was missed (the due time), recorded by the monitor.</summary>
+    public DateTime? SlaBreachedAt { get; set; }
+    /// <summary>True once the "not assigned in time" alert has been sent, so it is sent once.</summary>
+    public bool SlaBreachNotified { get; set; }
+    /// <summary>Working minutes the ticket waited before it was assigned or closed.</summary>
+    public double? AssignedWithinMinutes { get; set; }
+    /// <summary>"Met" or "Breached", set when the ticket is assigned or closed (null without a target).</summary>
+    public string? SlaOutcome { get; set; }
+
     public List<TicketAttachment> Attachments { get; set; } = new();
 }
 

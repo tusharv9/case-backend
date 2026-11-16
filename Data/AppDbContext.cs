@@ -261,6 +261,7 @@ public class AppDbContext : DbContext
             entity.Property(c => c.CustomerLookupType).HasMaxLength(60);
             entity.Property(c => c.CustomerLookupKeyEncrypted).HasMaxLength(512);
             entity.Property(c => c.CustomerLookupKeyHash).HasMaxLength(64);
+            entity.Property(c => c.SourceTicketNumber).HasMaxLength(20);
             entity.HasIndex(c => c.CustomerLookupKeyHash).HasDatabaseName("IX_Cases_CustomerLookupKeyHash");
             entity.HasIndex(c => new { c.CustomerType, c.ExternalCustomerId }).HasDatabaseName("IX_Cases_CustomerType_ExternalCustomerId");
             entity.ToTable(t => t.HasCheckConstraint("CK_Cases_CustomerReference",
@@ -391,6 +392,8 @@ public class AppDbContext : DbContext
             e.Property(t => t.SenderNote).HasMaxLength(1000);
             e.Property(t => t.Status).HasMaxLength(20);
             e.Property(t => t.CloseReason).HasMaxLength(500);
+            e.Property(t => t.SlaOutcome).HasMaxLength(20);
+            e.HasIndex(t => new { t.Status, t.AssignDueAt });   // the Overdue filter and count
             e.HasOne(t => t.Mailbox).WithMany().HasForeignKey(t => t.MailboxId).OnDelete(DeleteBehavior.Restrict);
             e.HasOne(t => t.Case).WithMany().HasForeignKey(t => t.CaseId).OnDelete(DeleteBehavior.SetNull);
         });
@@ -505,6 +508,10 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<PrioritySlaRule>()
             .HasIndex(r => r.Priority)
             .IsUnique();
+        // Ticket SLA (assign-within). No model default on purpose: with one, EF would skip an explicit 0 ("no target") on insert
+        // and the database would store the default instead. Existing rows get 30 minutes from the migration itself.
+        modelBuilder.Entity<PrioritySlaRule>().Property(r => r.TicketAssignUnit).HasMaxLength(10);
+        modelBuilder.Entity<BusinessCalendarSetting>().Property(s => s.TicketDefaultAssignUnit).HasMaxLength(10);
 
         // The sub-category code is its business identifier: unique across departments when set.
         modelBuilder.Entity<DepartmentSubCategory>()

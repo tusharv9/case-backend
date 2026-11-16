@@ -88,6 +88,40 @@ public class PriorityConfigurationTests
         }
     }
 
+    /// <summary>
+    /// The ticket SLA lives in the same matrix: saved per priority (0 = no target), left alone when a screen does not send it, and
+    /// never moving the case snapshot version. The no-priority default round-trips on the calendar row.
+    /// </summary>
+    [PostgresFact]
+    public async Task AssignTicketWithin_IsSavedPerPriority_LeftAloneWhenNotSent_AndTheNoPriorityDefaultRoundTrips()
+    {
+        await using var w = await World.CreateAsync();
+        var config = await w.Sla.GetFullConfigurationAsync();
+        Assert.All(config.PriorityRules, r => Assert.Equal(30, r.TicketAssignMinutes));
+        var criticalVersion = (await w.Rule("Critical")).Version;
+
+        var request = new UpdateSlaRoutingConfigRequestDto
+        {
+            PriorityRules = config.PriorityRules, BusinessHours = config.BusinessHours, EscalationLevels = config.EscalationLevels,
+            TicketDefaultAssignValue = 1, TicketDefaultAssignUnit = "hours",
+        };
+        foreach (var rule in request.PriorityRules) { rule.TicketAssignValue = null; rule.TicketAssignUnit = null; }
+        var critical = request.PriorityRules.First(r => r.Priority == "Critical");
+        (critical.TicketAssignValue, critical.TicketAssignUnit) = (15, "Minutes");
+        var low = request.PriorityRules.First(r => r.Priority == "Low");
+        (low.TicketAssignValue, low.TicketAssignUnit) = (0, "Minutes");
+        await w.Sla.UpdateConfigurationAsync(request, w.Actor);
+
+        var after = await w.Sla.GetFullConfigurationAsync();
+        int Minutes(string p) => after.PriorityRules.First(r => r.Priority == p).TicketAssignMinutes;
+        Assert.Equal((15, 0, 30), (Minutes("Critical"), Minutes("Low"), Minutes("High")));
+        Assert.Equal((1, "Hours"), (after.TicketDefaultAssignValue, after.TicketDefaultAssignUnit));
+        Assert.Equal(criticalVersion, (await w.Rule("Critical")).Version);
+
+        (critical.TicketAssignValue, critical.TicketAssignUnit) = (-5, "Minutes");
+        await Assert.ThrowsAsync<InvalidOperationException>(() => w.Sla.UpdateConfigurationAsync(request, w.Actor));
+    }
+
     [PostgresFact]
     public async Task SubCategoryMapping_Wins_OverTheRequestedPriority_AndNothingIsDefaulted()
     {

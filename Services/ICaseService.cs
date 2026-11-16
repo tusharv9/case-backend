@@ -13,10 +13,11 @@ public interface ICaseService
     /// <summary>
     /// <see cref="CreateCaseAsync"/> for a ticket being assigned: <paramref name="ownerId"/> (when given) is the person chosen
     /// instead of automatic routing — judged by the same Assign &amp; Reassign rules as a manual assignment, cross-team only with
-    /// <paramref name="callerMayAssignAnyCase"/> — and the SLA clock starts at <paramref name="slaStartUtc"/> (when the request
-    /// arrived), not now.
+    /// <paramref name="callerMayAssignAnyCase"/>. The case's SLA starts now, when the case is made, like any case: the time the
+    /// ticket waited is the queue's (the ticket SLA), never the team's. <paramref name="origin"/>'s arrival is kept on the case as
+    /// the request time, so the customer's whole wait stays visible.
     /// </summary>
-    Task<Case> CreateCaseForTicketAsync(CreateCaseDto dto, Guid createdByUserId, Guid? ownerId, DateTime slaStartUtc, bool callerMayAssignAnyCase,
+    Task<Case> CreateCaseForTicketAsync(CreateCaseDto dto, Guid createdByUserId, Guid? ownerId, TicketOrigin origin, bool callerMayAssignAnyCase,
         Func<Case, Task>? withinTransaction = null);
     Task<CaseDetailDto?> GetCaseDetailsAsync(Guid caseId, CancellationToken ct = default);
     Task<IEnumerable<SearchCaseHitDto>> SearchCasesAsync(string query, int limit, CancellationToken ct = default);
@@ -56,3 +57,6 @@ public interface ICaseService
     Task<PagedResponseDto<CaseEventDto>> GetCaseTimelineEventsAsync(
         Guid caseId, DateTime? before, int limit = 50, CancellationToken ct = default);
 }
+
+/// <summary>The ticket a case is being made from: which one, its number, and when the customer's request arrived.</summary>
+public sealed record TicketOrigin(Guid TicketId, string TicketNumber, DateTime ReceivedAt);

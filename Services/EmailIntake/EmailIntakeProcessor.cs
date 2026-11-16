@@ -32,7 +32,8 @@ public sealed class EmailIntakeProcessor(
     IOptions<EmailIntakeOptions> options,
     ILogger<EmailIntakeProcessor> logger,
     ILiveEvents? live = null,
-    Notifications.ICaseNotificationSink? notifications = null)
+    Notifications.ICaseNotificationSink? notifications = null,
+    ISlaClockProvider? clocks = null)
 {
     private readonly EmailIntakeOptions _options = options.Value;
     public const string SystemUserEmail = "email-integration@casemanagement.system";
@@ -432,6 +433,8 @@ public sealed class EmailIntakeProcessor(
         email.NextAttemptAt = null;
         email.AckStatus = mailbox.SendAcknowledgement && domain != null ? AcknowledgementStatuses.NotSent : AcknowledgementStatuses.Skipped;
         email.UpdatedAt = DateTime.UtcNow;
+        // The ticket's own SLA (how long it may wait to be assigned) starts from the email's arrival.
+        await Tickets.TicketSla.StartAsync(db, ticket, await Tickets.TicketSla.ClockAsync(clocks, logger, ct), ct);
         await TicketNumbers.AddAsync(db, ticket, ct);   // saves the email's changes with it
 
         PublishTicket(ticket);

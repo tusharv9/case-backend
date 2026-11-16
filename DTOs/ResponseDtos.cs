@@ -74,6 +74,10 @@ public class CaseSummaryDto
 
 public class CaseDetailDto : CaseSummaryDto
 {
+    /// <summary>For a case made from a ticket: when the customer's request arrived (the case's SLA starts when it was made).</summary>
+    public DateTime? RequestReceivedAt { get; set; }
+    public Guid? SourceTicketId { get; set; }
+    public string? SourceTicketNumber { get; set; }
     /// <summary>Who opened the case (the user on its Create event) — never inferred from the owner, who may be someone else.</summary>
     public Guid? CreatedByUserId { get; set; }
     public string? CreatedByName { get; set; }

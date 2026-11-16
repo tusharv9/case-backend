@@ -21,6 +21,36 @@ public sealed class TicketListItemDto
     public Guid? CaseId { get; set; }
     public string? CaseNumber { get; set; }
     public string? CaseOwnerName { get; set; }
+    /// <summary>The ticket's own SLA (how long it may wait to be assigned), as the server's clock reads it now.</summary>
+    public TicketSlaDto? Sla { get; set; }
+}
+
+/// <summary>
+/// A ticket's assign-within SLA. <see cref="State"/> is None, Healthy, Approaching, Breached (waiting past it, or handled after
+/// it) or Met (handled in time). Times are working minutes of the business calendar.
+/// </summary>
+public sealed class TicketSlaDto
+{
+    public int TargetMinutes { get; set; }
+    public double ConsumedMinutes { get; set; }
+    public double ConsumedPercent { get; set; }
+    /// <summary>Negative once it is late.</summary>
+    public double RemainingMinutes { get; set; }
+    /// <summary>When it must be assigned by; null when there is no target or it was handled.</summary>
+    public DateTime? DueAt { get; set; }
+    public string State { get; set; } = string.Empty;
+    public bool IsRunning { get; set; }
+    /// <summary>Waiting outside working hours: the countdown is not moving right now.</summary>
+    public bool IsOutsideHours { get; set; }
+    /// <summary>How long it waited before it was assigned or closed (working minutes); null while it waits.</summary>
+    public double? WaitedMinutes { get; set; }
+
+    public static TicketSlaDto From(Services.Tickets.TicketSlaSnapshot s, double? waited) => new()
+    {
+        TargetMinutes = s.TargetMinutes, ConsumedMinutes = s.ConsumedMinutes, ConsumedPercent = s.ConsumedPercent,
+        RemainingMinutes = s.RemainingMinutes, DueAt = s.DueAt, State = s.State, IsRunning = s.IsRunning,
+        IsOutsideHours = s.IsOutsideHours, WaitedMinutes = waited,
+    };
 }
 
 public sealed class TicketCountsDto
@@ -29,6 +59,8 @@ public sealed class TicketCountsDto
     public int Converted { get; set; }
     public int Closed { get; set; }
     public int All { get; set; }
+    /// <summary>Tickets still waiting past their assign-within time (part of <see cref="New"/>).</summary>
+    public int Overdue { get; set; }
 }
 
 public sealed class TicketMessageDto
@@ -83,6 +115,8 @@ public sealed class TicketDetailDto
     public int Version { get; set; }
     /// <summary>A Case Management customer with the requester's email, offered as the case's customer.</summary>
     public Guid? MatchedCustomerId { get; set; }
+    /// <summary>The ticket's own SLA (how long it may wait to be assigned), as the server's clock reads it now.</summary>
+    public TicketSlaDto? Sla { get; set; }
     public List<TicketAttachmentDto> Attachments { get; set; } = new();
     /// <summary>Replies received on the ticket's email thread, oldest first (the first email is the ticket itself).</summary>
     public List<TicketMessageDto> Replies { get; set; } = new();

@@ -27,19 +27,22 @@ public class SlaMonitorService : ISlaMonitor
     private readonly IEscalationService _escalation;
     private readonly INotificationService _notifications;
     private readonly ILogger<SlaMonitorService> _logger;
+    private readonly Tickets.TicketSlaMonitor? _tickets;
 
     public SlaMonitorService(
         AppDbContext context,
         ISlaClockProvider clockProvider,
         IEscalationService escalation,
         INotificationService notifications,
-        ILogger<SlaMonitorService> logger)
+        ILogger<SlaMonitorService> logger,
+        Tickets.TicketSlaMonitor? tickets = null)
     {
         _context = context;
         _clockProvider = clockProvider;
         _escalation = escalation;
         _notifications = notifications;
         _logger = logger;
+        _tickets = tickets;
     }
 
     public async Task<SlaMonitorReport> RunCycleAsync(DateTime? nowUtc = null, CancellationToken ct = default)
@@ -134,6 +137,19 @@ public class SlaMonitorService : ISlaMonitor
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
             _logger.LogWarning(ex, "Could not back-fill SLA outcomes.");
+        }
+
+        // Tickets still waiting past their assign-within time (the queue's own SLA), under the same lock.
+        if (_tickets != null)
+        {
+            try
+            {
+                await _tickets.RunAsync(Tickets.TicketSlaClock.From(clock), now, ct);
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                _logger.LogWarning(ex, "Could not check ticket SLAs.");
+            }
         }
 
         return new SlaMonitorReport(true, evaluated, reminders, escalations, breached.Count);

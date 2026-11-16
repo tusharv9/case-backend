@@ -65,6 +65,17 @@ namespace CaseManagement.Api.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<int>("TicketDefaultAssignMinutes")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("TicketDefaultAssignUnit")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)");
+
+                    b.Property<int>("TicketDefaultAssignValue")
+                        .HasColumnType("integer");
+
                     b.Property<string>("TimeZoneId")
                         .IsRequired()
                         .HasColumnType("text");
@@ -218,6 +229,9 @@ namespace CaseManagement.Api.Migrations
                     b.Property<string>("PreferredLanguage")
                         .HasColumnType("text");
 
+                    b.Property<DateTime?>("RequestReceivedAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<string>("ResolutionNote")
                         .HasColumnType("text");
 
@@ -255,6 +269,13 @@ namespace CaseManagement.Api.Migrations
                     b.Property<string>("SourceChannel")
                         .IsRequired()
                         .HasColumnType("text");
+
+                    b.Property<Guid?>("SourceTicketId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("SourceTicketNumber")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
 
                     b.Property<string>("Status")
                         .IsRequired()
@@ -1816,6 +1837,17 @@ namespace CaseManagement.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<int>("TicketAssignMinutes")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("TicketAssignUnit")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)");
+
+                    b.Property<int>("TicketAssignValue")
+                        .HasColumnType("integer");
+
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -2122,6 +2154,15 @@ namespace CaseManagement.Api.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<DateTime?>("AssignDueAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int?>("AssignTargetMinutes")
+                        .HasColumnType("integer");
+
+                    b.Property<double?>("AssignedWithinMinutes")
+                        .HasColumnType("double precision");
+
                     b.Property<Guid?>("CaseId")
                         .HasColumnType("uuid");
 
@@ -2192,6 +2233,16 @@ namespace CaseManagement.Api.Migrations
                     b.Property<int>("Sequence")
                         .HasColumnType("integer");
 
+                    b.Property<bool>("SlaBreachNotified")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime?>("SlaBreachedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("SlaOutcome")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
                     b.Property<string>("Source")
                         .IsRequired()
                         .HasMaxLength(20)
@@ -2236,6 +2287,8 @@ namespace CaseManagement.Api.Migrations
                         .IsUnique();
 
                     b.HasIndex("MailboxId", "ReceivedAt");
+
+                    b.HasIndex("Status", "AssignDueAt");
 
                     b.HasIndex("Status", "ReceivedAt");
 

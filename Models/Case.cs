@@ -23,6 +23,14 @@ public class Case : AuditableEntity
     
     // SLA Tracking
     public DateTime SlaStartTime { get; set; }
+    /// <summary>
+    /// When the customer's request arrived, for a case made from a ticket (the ticket's arrival). The case's SLA starts at
+    /// <see cref="SlaStartTime"/>, when the case was made; this keeps the customer's whole wait visible. Null otherwise.
+    /// </summary>
+    public DateTime? RequestReceivedAt { get; set; }
+    /// <summary>The ticket the case was made from, and its number (immutable, kept so the case can name it). Null otherwise.</summary>
+    public Guid? SourceTicketId { get; set; }
+    public string? SourceTicketNumber { get; set; }
     public int SlaTargetHours { get; set; }
     public DateTime? ResolvedAt { get; set; }
     public DateTime? SlaPausedAt { get; set; }

@@ -162,14 +162,14 @@ public class CaseService : ICaseService
     }
 
     public Task<Case> CreateCaseAsync(CreateCaseDto dto, Guid createdByUserId, Func<Case, Task>? withinTransaction = null) =>
-        CreateCaseCoreAsync(dto, createdByUserId, withinTransaction, chosenOwnerId: null, slaStartUtc: null, callerMayAssignAnyCase: false);
+        CreateCaseCoreAsync(dto, createdByUserId, withinTransaction, chosenOwnerId: null, origin: null, callerMayAssignAnyCase: false);
 
-    public Task<Case> CreateCaseForTicketAsync(CreateCaseDto dto, Guid createdByUserId, Guid? ownerId, DateTime slaStartUtc, bool callerMayAssignAnyCase,
+    public Task<Case> CreateCaseForTicketAsync(CreateCaseDto dto, Guid createdByUserId, Guid? ownerId, TicketOrigin origin, bool callerMayAssignAnyCase,
         Func<Case, Task>? withinTransaction = null) =>
-        CreateCaseCoreAsync(dto, createdByUserId, withinTransaction, ownerId, slaStartUtc, callerMayAssignAnyCase);
+        CreateCaseCoreAsync(dto, createdByUserId, withinTransaction, ownerId, origin, callerMayAssignAnyCase);
 
     private async Task<Case> CreateCaseCoreAsync(CreateCaseDto dto, Guid createdByUserId, Func<Case, Task>? withinTransaction,
-        Guid? chosenOwnerId, DateTime? slaStartUtc, bool callerMayAssignAnyCase)
+        Guid? chosenOwnerId, TicketOrigin? origin, bool callerMayAssignAnyCase)
     {
         // Everything the form submitted is checked against the administrator's configuration first; what comes
         // back is canonical (configured spelling, resolved records), so nothing downstream guesses or defaults.
@@ -238,9 +238,16 @@ public class CaseService : ICaseService
         }
 
         // 3. Start the SLA clock: targets are snapshotted from the rule, due dates are computed in business time.
-        // A ticket's customer has been waiting since their request arrived, not since someone assigned it.
-        var slaStart = slaStartUtc is { } s && s < now ? s : now;
-        (await GetClockAsync()).Start(newCase, slaRule, slaStart);
+        // Every case starts now, when it is made — a case made from a ticket included. The time the ticket waited to be assigned
+        // is measured by the ticket's own SLA (Services/Tickets/TicketSla.cs), so a team is never handed a case that is already
+        // breached because nobody assigned it in time. The request's arrival is kept on the case so the whole wait stays visible.
+        (await GetClockAsync()).Start(newCase, slaRule, now);
+        if (origin != null)
+        {
+            newCase.RequestReceivedAt = origin.ReceivedAt;
+            newCase.SourceTicketId = origin.TicketId;
+            newCase.SourceTicketNumber = origin.TicketNumber;
+        }
 
         foreach (var (key, value) in validated.CustomAttributes)
         {

@@ -369,6 +369,7 @@ builder.Services.AddScoped<IFieldTypeChangeChecker, FieldTypeChangeChecker>();
 builder.Services.AddScoped<IBusinessTimeService, BusinessTimeService>();
 builder.Services.AddScoped<IEscalationService, EscalationService>();
 builder.Services.AddScoped<ISlaClockProvider, SlaClockProvider>();
+builder.Services.AddScoped<CaseManagement.Api.Services.Tickets.TicketSlaMonitor>();
 builder.Services.AddScoped<ISlaMonitor, SlaMonitorService>();
 builder.Services.Configure<SlaMonitorOptions>(builder.Configuration.GetSection(SlaMonitorOptions.SectionName));
 builder.Services.AddScoped<ISlaRoutingService, SlaRoutingService>();

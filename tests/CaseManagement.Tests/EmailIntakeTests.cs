@@ -197,6 +197,22 @@ public class EmailIntakeTests : IDisposable
     }
 
     [Fact]
+    public async Task An_email_ticket_starts_its_assign_within_clock_from_the_mailbox_prioritys_target()
+    {
+        var rule = db.PrioritySlaRules.Single(r => r.Priority == "High");
+        rule.TicketAssignValue = 15;
+        rule.TicketAssignMinutes = 15;
+        db.EmailMailboxes.Single(m => m.Id == mailbox.Id).DefaultPriority = "High";
+        db.SaveChanges();
+        db.ChangeTracker.Clear();
+
+        await Receive(Email("someone@gmail.com", "Refund not received", "I was charged twice."));
+
+        var ticket = await db.Tickets.SingleAsync();
+        Assert.Equal((15, ticket.ReceivedAt.AddMinutes(15)), (ticket.AssignTargetMinutes, ticket.AssignDueAt));
+    }
+
+    [Fact]
     public async Task An_email_from_a_verified_domain_opens_a_verified_ticket_not_a_case_and_the_sender_is_told_its_number()
     {
         var email = await Receive(Email("ravi@sbi.co.in"));

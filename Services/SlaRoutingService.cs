@@ -96,6 +96,7 @@ public class SlaRoutingService : ISlaRoutingService
         List<PublicHolidayDto> holidays = new();
         List<EscalationLevelConfig> levelRows = new();
         string timeZoneId = string.Empty;
+        (int Value, string Unit) ticketDefault = (Tickets.TicketSlaTargets.FallbackMinutes, "Minutes");
         List<string> roles = new();
         string? rolesUnavailable = null;
 
@@ -135,7 +136,13 @@ public class SlaRoutingService : ISlaRoutingService
                 .ToListAsync(ct),
             // 5. Escalation Levels
             async db => levelRows = await db.EscalationLevelConfigs.AsNoTracking().OrderBy(l => l.LevelNumber).ToListAsync(ct),
-            async db => timeZoneId = await db.BusinessCalendarSettings.AsNoTracking().Select(t => t.TimeZoneId).FirstOrDefaultAsync(ct) ?? string.Empty);
+            async db =>
+            {
+                var setting = await db.BusinessCalendarSettings.AsNoTracking()
+                    .Select(t => new { t.TimeZoneId, t.TicketDefaultAssignValue, t.TicketDefaultAssignUnit }).FirstOrDefaultAsync(ct);
+                timeZoneId = setting?.TimeZoneId ?? string.Empty;
+                if (setting != null) ticketDefault = (setting.TicketDefaultAssignValue, setting.TicketDefaultAssignUnit);
+            });
         await rolesTask;
         if (_contexts == null) await ReadRoles();
 
@@ -154,6 +161,9 @@ public class SlaRoutingService : ISlaRoutingService
             ExternalResolutionValue = r.ExternalResolutionValue,
             ExternalResolutionUnit = r.ExternalResolutionUnit,
             ExternalResolutionMinutes = r.ExternalResolutionMinutes,
+            TicketAssignValue = r.TicketAssignValue,
+            TicketAssignUnit = r.TicketAssignUnit,
+            TicketAssignMinutes = r.TicketAssignMinutes,
             AppliedSubCategoryIds = r.CategoryMappings.Select(m => m.DepartmentSubCategoryId).ToList()
         }).ToList();
 
@@ -189,6 +199,8 @@ public class SlaRoutingService : ISlaRoutingService
             RolesUnavailableMessage = rolesUnavailable,
             NotificationPriorities = EscalationNotificationPriorities.All.ToList(),
             TimeZoneId = timeZoneId,
+            TicketDefaultAssignValue = ticketDefault.Value,
+            TicketDefaultAssignUnit = ticketDefault.Unit,
             AvailableTimeZones = TimeZoneInfo.GetSystemTimeZones().Select(z => z.Id).Where(id => id.Contains('/')).OrderBy(id => id).ToList(),
             TriggerTypes = EscalationTriggers.All.Select(t => new EscalationTriggerOptionDto
             {
@@ -228,7 +240,11 @@ public class SlaRoutingService : ISlaRoutingService
                         if (!validUnits.Contains(unit, StringComparer.OrdinalIgnoreCase))
                             throw new InvalidOperationException($"{label} unit for '{input.Priority}' must be Minutes or Hours.");
                     }
+                    if (input.TicketAssignValue != null && !Validators.TicketAssignLimits.IsValid(input.TicketAssignValue, input.TicketAssignUnit))
+                        throw new InvalidOperationException($"{Validators.TicketAssignLimits.Message($"Assign ticket within for '{input.Priority}'")}");
                 }
+                if (request.TicketDefaultAssignValue != null && !Validators.TicketAssignLimits.IsValid(request.TicketDefaultAssignValue, request.TicketDefaultAssignUnit))
+                    throw new InvalidOperationException(Validators.TicketAssignLimits.Message("Tickets without a priority"));
 
                 // Names are unique (case-insensitive), and at least one priority stays active for new cases.
                 var duplicateNames = request.PriorityRules
@@ -313,6 +329,18 @@ public class SlaRoutingService : ISlaRoutingService
                     rule.ExternalResolutionUnit = inputRule.ExternalResolutionUnit;
                     rule.ExternalResolutionMinutes = extMinutes;
 
+                    // Ticket SLA: only when sent (a screen that does not know the field leaves it as it is). It is not part of the
+                    // case's snapshot, so it never moves the rule's Version.
+                    if (inputRule.TicketAssignValue is { } ticketValue)
+                    {
+                        var ticketUnit = CanonicalUnit(inputRule.TicketAssignUnit!);
+                        var ticketMinutes = Validators.TicketAssignLimits.Minutes(ticketValue, ticketUnit);
+                        if (rule.TicketAssignMinutes != ticketMinutes || rule.TicketAssignUnit != ticketUnit) rule.UpdatedAt = now;
+                        rule.TicketAssignValue = ticketValue;
+                        rule.TicketAssignUnit = ticketUnit;
+                        rule.TicketAssignMinutes = ticketMinutes;
+                    }
+
                     foreach (var subCategoryId in (inputRule.AppliedSubCategoryIds ?? new()).Distinct())
                     {
                         _context.PriorityCategoryMappings.Add(new PriorityCategoryMapping
@@ -337,6 +365,23 @@ public class SlaRoutingService : ISlaRoutingService
                         setting.TimeZoneId = request.TimeZoneId.Trim();
                         setting.UpdatedAt = now;
                     }
+                }
+
+                // 1c. Assign-within time of tickets without a priority (same row as the time zone).
+                if (request.TicketDefaultAssignValue is { } defaultValue)
+                {
+                    var unit = CanonicalUnit(request.TicketDefaultAssignUnit!);
+                    var setting = _context.BusinessCalendarSettings.Local.FirstOrDefault()
+                                  ?? await _context.BusinessCalendarSettings.FirstOrDefaultAsync(ct);
+                    if (setting == null)
+                    {
+                        setting = new BusinessCalendarSetting { Id = Guid.NewGuid(), CreatedAt = now };
+                        _context.BusinessCalendarSettings.Add(setting);
+                    }
+                    setting.TicketDefaultAssignValue = defaultValue;
+                    setting.TicketDefaultAssignUnit = unit;
+                    setting.TicketDefaultAssignMinutes = Validators.TicketAssignLimits.Minutes(defaultValue, unit);
+                    setting.UpdatedAt = now;
                 }
 
                 // 2. Update Business Hours
@@ -529,6 +574,9 @@ public class SlaRoutingService : ISlaRoutingService
         await _context.SaveChangesAsync(ct);
         return true;
     }
+
+    /// <summary>"Hours" or "Minutes", as stored (the request may send any casing).</summary>
+    private static string CanonicalUnit(string unit) => unit.Equals("Hours", StringComparison.OrdinalIgnoreCase) ? "Hours" : "Minutes";
 
     private static EscalationLevelConfigDto ToDto(EscalationLevelConfig l) => new()
     {

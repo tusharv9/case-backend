@@ -41,6 +41,7 @@ public static class CaseNotificationKinds
     public const string Nudge = "agent.nudge";
     public const string SettingsChanged = "settings.changed";
     public const string TicketReceived = "ticket.received";
+    public const string TicketSlaBreached = "ticket.sla_breached";
 
     /// <summary>The shape AuthService reads (<c>modules[].notifications</c>).</summary>
     public sealed record Declaration(
@@ -123,6 +124,9 @@ public static class CaseNotificationKinds
         new(TicketReceived, "New ticket to assign", "When a new email or hand-raised ticket arrives in a mailbox linked to your team.",
             "The leads of the mailbox's teams", DefaultToAdministrators: true,
             Message: "New ticket {record} {verb:arrived} in {mailbox}", Context: "Waiting to be assigned", Tone: "create", Icon: "Mail"),
+        new(TicketSlaBreached, "Ticket not assigned in time", "When a ticket in a mailbox linked to your team waits past its assign-within time.",
+            "The leads of the mailbox's teams", DefaultToAdministrators: true, Severity: "Warning",
+            Message: "Ticket {record} in {mailbox} {verb:passed} its assign-within time", Context: "Still waiting to be assigned", Tone: "update", Icon: "Mail"),
         new(SettingsChanged, "Case settings changed", "When someone changes Case Management configuration (case types and similar).", "People who manage Case Settings",
             Message: "{actor} {verb:changed} Case Management settings", Context: "{detail}", Tone: "update", Icon: "Settings"),
     ];

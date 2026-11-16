@@ -32,10 +32,26 @@ public sealed class TicketService(
     IAssignmentEligibilityService eligibility,
     ILiveEvents live,
     ICaseNotificationSink notifications,
-    ILogger<TicketService> logger)
+    ILogger<TicketService> logger,
+    ISlaClockProvider? clocks = null)
 {
     public const int MaxFilesPerTicket = 10;
     public const long MaxFileBytes = 25 * 1024 * 1024;
+
+    private Task<TicketSlaClock> ClockAsync(CancellationToken ct) => TicketSla.ClockAsync(clocks, logger, ct);
+
+    /// <summary>
+    /// The ticket's SLA as it reads now. A ticket handled before ticket SLAs existed has none (it never had a target); one still
+    /// waiting without a target yet takes its priority's current one (the monitor stores it on its next pass).
+    /// </summary>
+    private static TicketSlaDto? SlaOf(TicketSlaClock clock, TicketSlaTargets targets, string status, DateTime receivedAt, int? target,
+        string? priority, DateTime? handledAt, double? waited, DateTime now)
+    {
+        var handled = status != TicketStatuses.New;
+        if (handled && target == null) return null;
+        var snapshot = clock.Evaluate(receivedAt, target ?? targets.For(priority), handled ? handledAt ?? now : null, now);
+        return TicketSlaDto.From(snapshot, handled ? waited ?? snapshot.ConsumedMinutes : null);
+    }
 
     private IQueryable<Ticket> Visible()
     {
@@ -51,12 +67,15 @@ public sealed class TicketService(
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
+        var now = DateTime.UtcNow;
         var query = Visible();
-        query = (status ?? "new").ToLowerInvariant() switch
+        var filter = (status ?? "new").ToLowerInvariant();
+        query = filter switch
         {
             "all" => query,
             "converted" => query.Where(t => t.Status == TicketStatuses.Converted),
             "closed" => query.Where(t => t.Status == TicketStatuses.Closed),
+            "overdue" => query.Where(t => t.Status == TicketStatuses.New && t.AssignDueAt != null && t.AssignDueAt <= now),
             _ => query.Where(t => t.Status == TicketStatuses.New),
         };
         if (mailboxId is { } mb) query = query.Where(t => t.MailboxId == mb);
@@ -68,29 +87,43 @@ public sealed class TicketService(
         }
 
         var total = await query.CountAsync(ct);
-        // New tickets oldest first (the longest wait at the top); handled ones newest first.
-        var ordered = string.Equals(status, "new", StringComparison.OrdinalIgnoreCase) || string.IsNullOrEmpty(status)
-            ? query.OrderBy(t => t.ReceivedAt) : query.OrderByDescending(t => t.ReceivedAt);
-        var items = await ordered.Skip((page - 1) * pageSize).Take(pageSize)
-            .Select(t => new TicketListItemDto
+        // Waiting tickets oldest first (the longest wait at the top); handled ones newest first.
+        var ordered = filter is "new" or "overdue" ? query.OrderBy(t => t.ReceivedAt) : query.OrderByDescending(t => t.ReceivedAt);
+        var rows = await ordered.Skip((page - 1) * pageSize).Take(pageSize)
+            .Select(t => new
             {
-                Id = t.Id, TicketNumber = t.TicketNumber, Source = t.Source, RequesterName = t.RequesterName, RequesterEmail = t.RequesterEmail,
-                Subject = t.Subject, Snippet = t.Description.Length > 160 ? t.Description.Substring(0, 160) : t.Description,
-                MailboxId = t.MailboxId, MailboxName = t.Mailbox!.Name, MailboxAddress = t.Mailbox.Address, Priority = t.Priority,
-                SenderVerification = t.SenderVerification, Status = t.Status, ReceivedAt = t.ReceivedAt, AttachmentCount = t.Attachments.Count,
-                ReplyCount = db.InboundEmails.Count(e => e.TicketId == t.Id && e.Status == EmailStatuses.LinkedToTicket),
-                CaseId = t.CaseId, CaseNumber = t.Case != null ? t.Case.CaseNumber : null, CaseOwnerName = t.Case != null ? t.Case.Owner.Name : null,
+                Item = new TicketListItemDto
+                {
+                    Id = t.Id, TicketNumber = t.TicketNumber, Source = t.Source, RequesterName = t.RequesterName, RequesterEmail = t.RequesterEmail,
+                    Subject = t.Subject, Snippet = t.Description.Length > 160 ? t.Description.Substring(0, 160) : t.Description,
+                    MailboxId = t.MailboxId, MailboxName = t.Mailbox!.Name, MailboxAddress = t.Mailbox.Address, Priority = t.Priority,
+                    SenderVerification = t.SenderVerification, Status = t.Status, ReceivedAt = t.ReceivedAt, AttachmentCount = t.Attachments.Count,
+                    ReplyCount = db.InboundEmails.Count(e => e.TicketId == t.Id && e.Status == EmailStatuses.LinkedToTicket),
+                    CaseId = t.CaseId, CaseNumber = t.Case != null ? t.Case.CaseNumber : null, CaseOwnerName = t.Case != null ? t.Case.Owner.Name : null,
+                },
+                t.AssignTargetMinutes, t.HandledAt, t.AssignedWithinMinutes,
             }).ToListAsync(ct);
-        return new PagedResponseDto<TicketListItemDto> { Items = items, TotalCount = total, Page = page, PageSize = pageSize };
+
+        var clock = await ClockAsync(ct);
+        var targets = await TicketSlaTargets.LoadAsync(db, ct);
+        foreach (var r in rows)
+            r.Item.Sla = SlaOf(clock, targets, r.Item.Status, r.Item.ReceivedAt, r.AssignTargetMinutes, r.Item.Priority, r.HandledAt, r.AssignedWithinMinutes, now);
+        return new PagedResponseDto<TicketListItemDto> { Items = rows.Select(r => r.Item).ToList(), TotalCount = total, Page = page, PageSize = pageSize };
     }
 
     public async Task<TicketCountsDto> CountsAsync(Guid? mailboxId, CancellationToken ct)
     {
+        var now = DateTime.UtcNow;
         var query = Visible();
         if (mailboxId is { } mb) query = query.Where(t => t.MailboxId == mb);
         var byStatus = await query.GroupBy(t => t.Status).Select(g => new { g.Key, Count = g.Count() }).ToListAsync(ct);
+        var overdue = await query.CountAsync(t => t.Status == TicketStatuses.New && t.AssignDueAt != null && t.AssignDueAt <= now, ct);
         int Of(string s) => byStatus.Where(x => x.Key == s).Sum(x => x.Count);
-        return new TicketCountsDto { New = Of(TicketStatuses.New), Converted = Of(TicketStatuses.Converted), Closed = Of(TicketStatuses.Closed), All = byStatus.Sum(x => x.Count) };
+        return new TicketCountsDto
+        {
+            New = Of(TicketStatuses.New), Converted = Of(TicketStatuses.Converted), Closed = Of(TicketStatuses.Closed), All = byStatus.Sum(x => x.Count),
+            Overdue = overdue,
+        };
     }
 
     public async Task<TicketDetailDto> GetAsync(Guid id, CancellationToken ct)
@@ -109,6 +142,8 @@ public sealed class TicketService(
         var email = t.RequesterEmail.ToLower();
         var customer = email.Length == 0 ? null : await db.Customers.AsNoTracking().Where(c => c.Email != null && c.Email.ToLower() == email)
             .OrderBy(c => c.CreatedAt).Select(c => (Guid?)c.Id).FirstOrDefaultAsync(ct);
+        var sla = SlaOf(await ClockAsync(ct), await TicketSlaTargets.LoadAsync(db, ct), t.Status, t.ReceivedAt, t.AssignTargetMinutes, t.Priority,
+            t.HandledAt, t.AssignedWithinMinutes, DateTime.UtcNow);
         return new TicketDetailDto
         {
             Id = t.Id, TicketNumber = t.TicketNumber, Source = t.Source, MailboxId = t.MailboxId, MailboxName = t.Mailbox?.Name ?? "",
@@ -118,7 +153,7 @@ public sealed class TicketService(
             SenderVerification = t.SenderVerification, SenderNote = t.SenderNote, Status = t.Status, CloseReason = t.CloseReason,
             CaseId = t.CaseId, CaseNumber = t.Case?.CaseNumber, CaseOwnerName = t.Case?.Owner?.Name, ReceivedAt = t.ReceivedAt,
             CreatedByName = names.GetValueOrDefault(t.CreatedById), HandledByName = t.HandledById is { } h ? names.GetValueOrDefault(h) : null,
-            HandledAt = t.HandledAt, Version = t.Version, MatchedCustomerId = customer,
+            HandledAt = t.HandledAt, Version = t.Version, MatchedCustomerId = customer, Sla = sla,
             Attachments = t.Attachments.OrderBy(a => a.CreatedAt).Select(a => new TicketAttachmentDto { Id = a.Id, FileName = a.FileName, ContentType = a.ContentType, SizeBytes = a.SizeBytes }).ToList(),
             Replies = replies,
         };
@@ -191,6 +226,7 @@ public sealed class TicketService(
                 SizeBytes = file.Length, StorageKey = key,
             });
         }
+        await TicketSla.StartAsync(db, ticket, await ClockAsync(ct), ct);
         await TicketNumbers.AddAsync(db, ticket, ct);
         Publish(ticket);
         await TicketAlerts.NotifyReceivedAsync(db, notifications, ticket, mailbox.Name, logger, ct);
@@ -221,18 +257,24 @@ public sealed class TicketService(
         // Automatic assignment from a ticket must not fail on an empty team: the lead holds it, as for an email's case.
         caseDto.UnstaffedTeamAction ??= UnstaffedTeamActions.AssignToSupervisor;
 
+        var clock = await ClockAsync(ct);
+        var targets = await TicketSlaTargets.LoadAsync(db, ct);
+        var origin = new TicketOrigin(ticket.Id, ticket.TicketNumber, ticket.ReceivedAt);
+
         Case created;
         try
         {
-            created = await cases.CreateCaseForTicketAsync(caseDto, actorId, dto.OwnerId, ticket.ReceivedAt, callerMayAssignAnyCase, async newCase =>
+            created = await cases.CreateCaseForTicketAsync(caseDto, actorId, dto.OwnerId, origin, callerMayAssignAnyCase, async newCase =>
             {
                 var tracked = await db.Tickets.FirstAsync(t => t.Id == ticket.Id, ct);
                 if (tracked.Status != TicketStatuses.New || tracked.Version != dto.Version)
                     throw new TicketConflictException("This ticket was just assigned or closed by someone else.");
+                var handledAt = DateTime.UtcNow;
                 tracked.Status = TicketStatuses.Converted;
                 tracked.CaseId = newCase.Id;
                 tracked.HandledById = actorId;
-                tracked.HandledAt = DateTime.UtcNow;
+                tracked.HandledAt = handledAt;
+                clock.Stop(tracked, targets.Of(tracked), handledAt);   // the ticket's own SLA ends here; the case's begins
                 tracked.Version++;
                 tracked.UpdatedAt = DateTime.UtcNow;
 
@@ -274,10 +316,12 @@ public sealed class TicketService(
         var ticket = visible ? await db.Tickets.FirstOrDefaultAsync(t => t.Id == id, ct) : null;
         if (ticket == null) throw new KeyNotFoundException("Ticket not found.");
         await EnsureOpenAsync(ticket, dto.Version, ct);
+        var handledAt = DateTime.UtcNow;
         ticket.Status = TicketStatuses.Closed;
         ticket.CloseReason = dto.Reason.Trim();
         ticket.HandledById = actorId;
-        ticket.HandledAt = DateTime.UtcNow;
+        ticket.HandledAt = handledAt;
+        (await ClockAsync(ct)).Stop(ticket, (await TicketSlaTargets.LoadAsync(db, ct)).Of(ticket), handledAt);
         ticket.Version++;
         ticket.UpdatedAt = DateTime.UtcNow;
         try { await db.SaveChangesAsync(ct); }

@@ -22,6 +22,14 @@ public class PrioritySlaRuleDto
     public string ExternalResolutionUnit { get; set; } = "Hours"; // "Minutes" | "Hours"
     public int ExternalResolutionMinutes { get; set; }
 
+    /// <summary>
+    /// Ticket SLA: how long a ticket of this priority may wait to be assigned (0 = no target). On a save, null leaves the stored
+    /// value unchanged, so a screen that does not know this field can never wipe it.
+    /// </summary>
+    public int? TicketAssignValue { get; set; }
+    public string? TicketAssignUnit { get; set; } // "Minutes" | "Hours"
+    public int TicketAssignMinutes { get; set; }
+
     /// <summary>Sub-categories (by id) whose cases get this priority.</summary>
     public List<Guid> AppliedSubCategoryIds { get; set; } = new();
 }
@@ -187,6 +195,10 @@ public class SlaRoutingConfigResponseDto
     /// <summary>The zone the business hours are written in (IANA id).</summary>
     public string TimeZoneId { get; set; } = string.Empty;
     public List<string> AvailableTimeZones { get; set; } = new();
+
+    /// <summary>How long a ticket without a (configured) priority may wait to be assigned. 0 = no target.</summary>
+    public int TicketDefaultAssignValue { get; set; } = 30;
+    public string TicketDefaultAssignUnit { get; set; } = "Minutes";
     public List<EscalationTriggerOptionDto> TriggerTypes { get; set; } = new();
     public List<string> AssignmentTypes { get; set; } = new();
 }
@@ -195,6 +207,9 @@ public class UpdateSlaRoutingConfigRequestDto
 {
     /// <summary>When supplied, replaces the calendar's time zone. Omitted = unchanged.</summary>
     public string? TimeZoneId { get; set; }
+    /// <summary>When supplied, replaces the assign-within time of tickets without a priority. Omitted = unchanged.</summary>
+    public int? TicketDefaultAssignValue { get; set; }
+    public string? TicketDefaultAssignUnit { get; set; }
     public List<PrioritySlaRuleDto> PriorityRules { get; set; } = new();
     public List<BusinessHourDto> BusinessHours { get; set; } = new();
     public List<EscalationLevelConfigDto> EscalationLevels { get; set; } = new();

@@ -83,7 +83,18 @@ public class UpdateSlaRoutingConfigRequestDtoValidator : AbstractValidator<Updat
             rule.RuleFor(r => r.ExternalResolutionUnit)
                 .Must(u => AllowedUnits.Contains(u, StringComparer.OrdinalIgnoreCase))
                 .WithMessage("External resolution unit must be 'Minutes' or 'Hours'.");
+
+            // Ticket SLA: optional on a save (null = unchanged); 0 means no target.
+            rule.RuleFor(r => r.TicketAssignValue)
+                .Must((r, v) => TicketAssignLimits.IsValid(v, r.TicketAssignUnit))
+                .When(r => r.TicketAssignValue != null)
+                .WithMessage(TicketAssignLimits.Message("Assign ticket within"));
         });
+
+        RuleFor(x => x.TicketDefaultAssignValue)
+            .Must((x, v) => TicketAssignLimits.IsValid(v, x.TicketDefaultAssignUnit))
+            .When(x => x.TicketDefaultAssignValue != null)
+            .WithMessage(TicketAssignLimits.Message("Tickets without a priority"));
 
         RuleFor(x => x.BusinessHours)
             .NotEmpty().WithMessage("Business hours schedule is required.")
@@ -121,4 +132,22 @@ public class UpdateSlaRoutingConfigRequestDtoValidator : AbstractValidator<Updat
             level.RuleFor(l => l.TargetRole).NotEmpty().WithMessage("Target role or assignment is required.");
         });
     }
+}
+
+/// <summary>
+/// The rule for an assign-within (ticket SLA) time, shared by the request validator and the service: a whole number of
+/// minutes or hours, 0 (no target) up to a week. A week is generous for a queue; anything longer is a typing mistake.
+/// </summary>
+public static class TicketAssignLimits
+{
+    public const int MaxMinutes = 7 * 24 * 60;
+    private static readonly string[] Units = { "Minutes", "Hours" };
+
+    public static bool IsValid(int? value, string? unit) =>
+        value is { } v && v >= 0 && unit != null && Units.Contains(unit, StringComparer.OrdinalIgnoreCase) && Minutes(v, unit) <= MaxMinutes;
+
+    public static int Minutes(int value, string unit) => unit.Equals("Hours", StringComparison.OrdinalIgnoreCase) ? value * 60 : value;
+
+    public static string Message(string label) =>
+        $"{label} must be 0 (no target) or a whole number of Minutes or Hours, at most one week.";
 }
