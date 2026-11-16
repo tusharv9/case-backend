@@ -73,10 +73,16 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
         return new PagedResponseDto<InboxEmailListItemDto> { Items = items, TotalCount = total, Page = page, PageSize = pageSize };
     }
 
+    /// <remarks>
+    /// The tabs say where an email is now, not what intake first did with it. An email that opened a ticket keeps the status
+    /// TicketCreated for good (reply threading matches on it); once that ticket is assigned, its emails get the case's id, and from
+    /// then on they belong under Case Created.
+    /// </remarks>
     public static IQueryable<InboundEmail> Filter(IQueryable<InboundEmail> query, string? filter) => (filter ?? "all").ToLowerInvariant() switch
     {
-        "case-created" => query.Where(e => e.Status == EmailStatuses.CaseCreated || e.Status == EmailStatuses.LinkedToCase),
-        "ticket-created" => query.Where(e => e.Status == EmailStatuses.TicketCreated || e.Status == EmailStatuses.LinkedToTicket),
+        "case-created" => query.Where(e => e.Status == EmailStatuses.CaseCreated || e.Status == EmailStatuses.LinkedToCase
+            || ((e.Status == EmailStatuses.TicketCreated || e.Status == EmailStatuses.LinkedToTicket) && e.CaseId != null)),
+        "ticket-created" => query.Where(e => (e.Status == EmailStatuses.TicketCreated || e.Status == EmailStatuses.LinkedToTicket) && e.CaseId == null),
         "not-verified" => query.Where(e => e.Status == EmailStatuses.NotVerified),
         "failed" => query.Where(e => e.Status == EmailStatuses.Failed),
         "other" => query.Where(e => e.Status == EmailStatuses.Ignored || e.Status == EmailStatuses.Received || e.Status == EmailStatuses.Processing),
@@ -87,13 +93,17 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
     {
         var query = VisibleEmails();
         if (mailboxId is { } mb) query = query.Where(e => e.MailboxId == mb);
-        var byStatus = await query.GroupBy(e => e.Status).Select(g => new { g.Key, Count = g.Count() }).ToListAsync(ct);
-        int Of(params string[] s) => byStatus.Where(x => s.Contains(x.Key)).Sum(x => x.Count);
+        var byStatus = await query.GroupBy(e => new { e.Status, HasCase = e.CaseId != null })
+            .Select(g => new { g.Key.Status, g.Key.HasCase, Count = g.Count() }).ToListAsync(ct);
+        int Of(params string[] s) => byStatus.Where(x => s.Contains(x.Status)).Sum(x => x.Count);
+        // As Filter: a ticket's emails move to Case Created once the ticket became a case.
+        var ticketEmails = byStatus.Where(x => x.Status is EmailStatuses.TicketCreated or EmailStatuses.LinkedToTicket).ToList();
+        var ticketEmailsNowInACase = ticketEmails.Where(x => x.HasCase).Sum(x => x.Count);
         return new InboxCountsDto
         {
             All = byStatus.Sum(x => x.Count),
-            CaseCreated = Of(EmailStatuses.CaseCreated, EmailStatuses.LinkedToCase),
-            TicketCreated = Of(EmailStatuses.TicketCreated, EmailStatuses.LinkedToTicket),
+            CaseCreated = Of(EmailStatuses.CaseCreated, EmailStatuses.LinkedToCase) + ticketEmailsNowInACase,
+            TicketCreated = ticketEmails.Sum(x => x.Count) - ticketEmailsNowInACase,
             NotVerified = Of(EmailStatuses.NotVerified),
             Failed = Of(EmailStatuses.Failed),
             Other = Of(EmailStatuses.Ignored, EmailStatuses.Received, EmailStatuses.Processing),
