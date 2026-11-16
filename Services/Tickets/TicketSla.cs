@@ -56,20 +56,22 @@ public sealed class TicketSlaClock(BusinessCalendar calendar, decimal? approachi
     public TicketSlaSnapshot Evaluate(DateTime receivedAtUtc, int targetMinutes, DateTime? stoppedAtUtc, DateTime nowUtc)
     {
         var running = stoppedAtUtc == null;
-        var consumed = Math.Round(calendar.ElapsedBusinessMinutes(receivedAtUtc, stoppedAtUtc ?? nowUtc), 1);
+        // Decisions use the exact minutes; only the numbers shown are rounded (0.97 of a 1-minute target is not yet late).
+        var exact = calendar.ElapsedBusinessMinutes(receivedAtUtc, stoppedAtUtc ?? nowUtc);
+        var consumed = Math.Round(exact, 1);
         var outsideHours = running && !calendar.IsWorkingTime(nowUtc);
         if (targetMinutes <= 0)
             return new TicketSlaSnapshot(0, consumed, 0, 0, null, TicketSlaStates.None, running, outsideHours);
 
-        var percent = Math.Round(consumed / targetMinutes * 100, 1);
-        var breached = running ? consumed >= targetMinutes : consumed > targetMinutes;
+        var percent = Math.Round(exact / targetMinutes * 100, 1);
+        var breached = running ? exact >= targetMinutes : exact > targetMinutes;
         string state;
         if (!running) state = breached ? TicketSlaStates.Breached : TicketSlaStates.Met;
         else if (breached) state = TicketSlaStates.Breached;
         else if (approachingPercent.HasValue && percent >= (double)approachingPercent.Value) state = TicketSlaStates.Approaching;
         else state = TicketSlaStates.Healthy;
 
-        return new TicketSlaSnapshot(targetMinutes, consumed, percent, Math.Round(targetMinutes - consumed, 1),
+        return new TicketSlaSnapshot(targetMinutes, consumed, percent, Math.Round(targetMinutes - exact, 1),
             running ? DueAt(receivedAtUtc, targetMinutes) : null, state, running, outsideHours);
     }
 

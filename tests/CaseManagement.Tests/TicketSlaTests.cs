@@ -71,6 +71,14 @@ public class TicketSlaTests : IDisposable
     }
 
     [Fact]
+    public void A_ticket_seconds_before_its_due_time_is_not_yet_late_however_the_minutes_are_rounded_for_display()
+    {
+        var snapshot = Clock().Evaluate(Monday10, 1, null, Monday10.AddSeconds(58));
+
+        Assert.Equal(TicketSlaStates.Healthy, snapshot.State);
+    }
+
+    [Fact]
     public void A_ticket_reads_approaching_from_the_configured_percent_and_never_without_one()
     {
         Assert.Equal(TicketSlaStates.Approaching, Clock(75).Evaluate(Monday10, 30, null, Monday10.AddMinutes(23)).State);
