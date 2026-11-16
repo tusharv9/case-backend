@@ -68,7 +68,9 @@ public sealed class TicketSlaMonitor(AppDbContext db, ICaseNotificationSink? sin
 
         foreach (var (id, mailboxId, number) in late)
         {
-            if (!leads.TryGetValue(mailboxId, out var recipients) || recipients.Count == 0) continue;
+            // A mailbox no team leads still raises it, with no named recipient (as "New ticket to assign" does): AuthService then
+            // tells the administrators, the kind's default, so a late ticket is never seen by nobody.
+            var recipients = leads.GetValueOrDefault(mailboxId) ?? [];
             try
             {
                 sink.Enqueue(new CaseNotificationRequest(CaseNotificationKinds.TicketSlaBreached, recipients,

@@ -201,7 +201,7 @@ public class TicketSlaTests : IDisposable
     }
 
     [Fact]
-    public async Task A_late_ticket_in_a_mailbox_no_team_leads_alerts_nobody_and_does_not_fail()
+    public async Task A_late_ticket_in_a_mailbox_no_team_leads_is_still_raised_for_the_administrators()
     {
         var mailbox = new EmailMailbox { Name = "General", Address = "hello@rma.test", ImapHost = "i", SmtpHost = "s", CreatedAt = DateTime.UtcNow };
         db.EmailMailboxes.Add(mailbox);
@@ -210,7 +210,9 @@ public class TicketSlaTests : IDisposable
 
         await Monitor().RunAsync(TicketSlaClock.RoundTheClock, DateTime.UtcNow, default);
 
-        Assert.Empty(sink.Sent);
+        // Raised with no named recipient, as "New ticket to assign" is: AuthService then tells the administrators (the kind's default).
+        var request = Assert.Single(sink.Requests);
+        Assert.Equal((CaseNotificationKinds.TicketSlaBreached, 0), (request.Kind, request.RecipientLocalIds.Count));
         Assert.True((await db.Tickets.AsNoTracking().SingleAsync()).SlaBreachNotified);
     }
 
