@@ -24,6 +24,8 @@ public sealed class EmailIntakeWorker(IServiceScopeFactory scopes, IOptions<Emai
             {
                 using var scope = scopes.CreateScope();
                 await scope.ServiceProvider.GetRequiredService<EmailIntakeProcessor>().RunCycleAsync(stoppingToken);
+                // Customer Reply emails that failed, or were never sent (a server stopped half-way), go out from here.
+                await scope.ServiceProvider.GetRequiredService<CaseEmailSender>().SendDueAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
             catch (Exception ex) { logger.LogError(ex, "Email intake cycle failed."); }

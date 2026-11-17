@@ -70,11 +70,23 @@ public class CasesController : BaseApiController
         return Ok(caseDetails);
     }
 
+    /// <summary>Create Case → Assign to: who in the department's team could take a new case, with the reason anyone cannot.</summary>
+    [HttpGet("department-assignees")]
+    [RequirePermission(Permissions.CasesCreate)]
+    public async Task<IActionResult> DepartmentAssignees([FromQuery] Guid departmentId, CancellationToken ct) =>
+        Ok(await _caseService.GetDepartmentAssigneesAsync(departmentId, ct));
+
+    /// <summary>How a new case of this department and source channel would be given out (team, algorithm, whether an agent must be chosen).</summary>
+    [HttpGet("assignment-rule")]
+    [RequirePermission(Permissions.CasesCreate)]
+    public async Task<IActionResult> AssignmentRule([FromQuery] Guid departmentId, [FromQuery] string? sourceChannel, CancellationToken ct) =>
+        Ok(await _caseService.GetAssignmentRuleAsync(departmentId, sourceChannel, ct));
+
     [HttpPost]
     [RequirePermission(Permissions.CasesCreate)]
-    public async Task<IActionResult> CreateCase([FromBody] CreateCaseDto dto)
+    public async Task<IActionResult> CreateCase([FromBody] CreateCaseDto dto, [FromServices] ICurrentUserAccessor user)
     {
-        var newCase = await _caseService.CreateCaseAsync(dto, CurrentUserId);
+        var newCase = await _caseService.CreateCaseAsync(dto, CurrentUserId, callerMayAssignAnyCase: user.Has(Permissions.CasesAssign));
         // The same shape every screen reads a case in (owner, team and creator named, SLA verdict, masking applied), so the
         // list can show the new case straight away. A Customer 360 customer's name is not stored; the form that chose them has it.
         var created = await _caseService.GetCaseDetailsAsync(newCase.Id);
@@ -118,11 +130,41 @@ public class CasesController : BaseApiController
     }
 
     [HttpPost("{id:guid}/timeline-interaction")]
-    public async Task<IActionResult> AddTimelineInteraction(Guid id, [FromBody] AddTimelineInteractionDto dto)
+    public async Task<IActionResult> AddTimelineInteraction(Guid id, [FromBody] AddTimelineInteractionDto dto,
+        [FromServices] Services.EmailIntake.CaseEmailSender emails, [FromServices] Data.AppDbContext db, CancellationToken ct)
     {
         dto.UserId = CurrentUserId;
         await _caseService.AddTimelineInteractionAsync(id, dto, CurrentUserId);
-        return Ok(new { message = dto.IsInternal ? "Internal note posted successfully." : "Customer reply sent successfully." });
+        if (dto.IsInternal) return Ok(new { message = "Internal note posted successfully." });
+
+        // An emailed reply is sent now; a failure is kept on the email and retried, never lost.
+        await emails.SendForCaseAsync(id, ct);
+        var email = await db.CaseEmailMessages.AsNoTracking().Where(m => m.CaseId == id).OrderByDescending(m => m.CreatedAt).FirstOrDefaultAsync(ct);
+        if (email == null || email.CreatedAt < DateTime.UtcNow.AddMinutes(-2))
+            return Ok(new { message = "Customer reply recorded." });
+        return Ok(new
+        {
+            message = email.Status == Models.CaseEmailStatuses.Sent ? $"Reply emailed to {email.ToAddress}." : $"Reply saved; the email to {email.ToAddress} could not be sent yet and will be retried.",
+            email = new { email.Id, email.Status, email.ToAddress, email.Error, email.SentAt },
+        });
+    }
+
+    /// <summary>The Customer Reply box: where an emailed reply goes (recipient, subject, mailbox or mailboxes), or why it cannot be emailed.</summary>
+    [HttpGet("{id:guid}/reply-options")]
+    public async Task<IActionResult> ReplyOptions(Guid id, [FromServices] Data.AppDbContext db, CancellationToken ct)
+    {
+        _ = await _caseService.GetCaseDetailsAsync(id) ?? throw new KeyNotFoundException("Case not found.");   // only a case the caller may see
+        var c = await db.Cases.AsNoTracking().FirstAsync(x => x.Id == id, ct);
+        return Ok(await Services.EmailIntake.CaseEmailOutbox.OptionsAsync(db, c, ct));
+    }
+
+    /// <summary>Sends a Customer Reply email that failed again, now.</summary>
+    [HttpPost("{id:guid}/emails/{messageId:guid}/retry")]
+    public async Task<IActionResult> RetryEmail(Guid id, Guid messageId, [FromServices] Services.EmailIntake.CaseEmailSender emails, CancellationToken ct)
+    {
+        _ = await _caseService.GetCaseDetailsAsync(id) ?? throw new KeyNotFoundException("Case not found.");   // only a case the caller may see
+        var email = await emails.RetryAsync(id, messageId, ct);
+        return Ok(new { email.Id, email.Status, email.ToAddress, email.Error, email.SentAt });
     }
 
     /// <summary>Who a swarm can be requested from: every team's lead and the Supervisors (never regular agents).</summary>
@@ -140,13 +182,18 @@ public class CasesController : BaseApiController
         => Ok(await _collaboration.RespondToSwarmAsync(id, requestId, dto, CurrentUserId));
 
     [HttpGet("{id:guid}/attachments")]
-    public async Task<IActionResult> GetAttachments(Guid id, CancellationToken ct)
-        => Ok(await _attachments.GetAttachmentsAsync(id, ct));
+    public async Task<IActionResult> GetAttachments(Guid id, [FromServices] ICaseAccessScope access, CancellationToken ct)
+    {
+        if (!await access.CanSeeAsync(id, ct)) throw new KeyNotFoundException("Case not found.");   // only a case the caller may see
+        return Ok(await _attachments.GetAttachmentsAsync(id, ct));
+    }
 
     [HttpPost("{id:guid}/attachments")]
     [Microsoft.AspNetCore.RateLimiting.EnableRateLimiting("uploads")]
-    public async Task<IActionResult> UploadAttachment(Guid id, [FromForm] Microsoft.AspNetCore.Http.IFormFile file, [FromForm] string? note, CancellationToken ct)
+    public async Task<IActionResult> UploadAttachment(Guid id, [FromForm] Microsoft.AspNetCore.Http.IFormFile file, [FromForm] string? note,
+        [FromServices] ICaseAccessScope access, CancellationToken ct)
     {
+        if (!await access.CanSeeAsync(id, ct)) throw new KeyNotFoundException("Case not found.");
         var attachment = await _attachments.UploadAttachmentAsync(id, file, note, CurrentUserId, ct);
         await _caseService.MarkWorkStartedAsync(id, CurrentUserId, "a file was attached");
         return Ok(attachment);
@@ -162,14 +209,38 @@ public class CasesController : BaseApiController
     /// guess otherwise (nosniff), and the response is not cached by shared caches.
     /// </summary>
     [HttpGet("{id:guid}/attachments/{attachmentId:guid}/download")]
-    public async Task<IActionResult> DownloadAttachment(Guid id, Guid attachmentId, CancellationToken ct)
+    public async Task<IActionResult> DownloadAttachment(Guid id, Guid attachmentId, [FromServices] ICaseAccessScope access, CancellationToken ct)
     {
+        // Only a case the caller may see: an attachment id under another team's case is "not found".
+        if (!await access.CanSeeAsync(id, ct)) throw new KeyNotFoundException("Attachment not found.");
         var download = await _attachments.OpenDownloadAsync(id, attachmentId, ct);
         Response.Headers["X-Content-Type-Options"] = "nosniff";
         Response.Headers["Cache-Control"] = "private, no-store";
         Response.Headers["Content-Security-Policy"] = "default-src 'none'; sandbox";
         if (download.Sha256 != null) Response.Headers["X-Content-SHA256"] = download.Sha256;
         return File(download.Content, download.ContentType, download.FileName);   // File(...) sends Content-Disposition: attachment
+    }
+
+    /// <summary>
+    /// Shown in the case instead of downloaded — for pictures and PDFs only (never SVG or HTML, which can carry script), typed from
+    /// the verified extension, sandboxed, not sniffed and not cached. Anything else answers 415: download it instead.
+    /// </summary>
+    [HttpGet("{id:guid}/attachments/{attachmentId:guid}/preview")]
+    public async Task<IActionResult> PreviewAttachment(Guid id, Guid attachmentId, [FromServices] ICaseAccessScope access, CancellationToken ct)
+    {
+        if (!await access.CanSeeAsync(id, ct)) throw new KeyNotFoundException("Attachment not found.");
+        var download = await _attachments.OpenDownloadAsync(id, attachmentId, ct);
+        if (Services.AttachmentService.PreviewTypeOf(download.FileName) is not { } type)
+        {
+            await download.Content.DisposeAsync();
+            return Problem(statusCode: StatusCodes.Status415UnsupportedMediaType, title: "This kind of file cannot be previewed",
+                detail: "Pictures and PDFs can be previewed; download other files instead.");
+        }
+        Response.Headers["X-Content-Type-Options"] = "nosniff";
+        Response.Headers["Cache-Control"] = "private, no-store";
+        Response.Headers["Content-Security-Policy"] = "default-src 'none'; sandbox";
+        Response.Headers["Content-Disposition"] = "inline";
+        return File(download.Content, type);
     }
 
     /// <summary>Teams to choose collaborators from (Add Collaborator, step 1).</summary>

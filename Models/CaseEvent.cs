@@ -3,6 +3,8 @@ namespace CaseManagement.Api.Models;
 public class CaseEvent
 {
     public Guid Id { get; set; } = Guid.NewGuid();
+    /// <summary>For a Customer Reply sent by email: the email (its delivery status). No column of its own.</summary>
+    public CaseEmailMessage? EmailMessage { get; set; }
     public Guid? CaseId { get; set; }
     public Case? Case { get; set; }
     

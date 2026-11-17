@@ -129,6 +129,7 @@ public sealed class TicketService(
     public async Task<TicketDetailDto> GetAsync(Guid id, CancellationToken ct)
     {
         var t = await Visible().Include(x => x.Mailbox).Include(x => x.Attachments).Include(x => x.Case).ThenInclude(c => c!.Owner)
+            .Include(x => x.Organisation).Include(x => x.VerifiedSender).ThenInclude(s => s!.VerifiedDomain)
             .FirstOrDefaultAsync(x => x.Id == id, ct) ?? throw new KeyNotFoundException("Ticket not found.");
         var names = await db.Users.AsNoTracking().Where(u => u.Id == t.CreatedById || u.Id == t.HandledById)
             .ToDictionaryAsync(u => u.Id, u => u.Name, ct);
@@ -154,6 +155,9 @@ public sealed class TicketService(
             CaseId = t.CaseId, CaseNumber = t.Case?.CaseNumber, CaseOwnerName = t.Case?.Owner?.Name, ReceivedAt = t.ReceivedAt,
             CreatedByName = names.GetValueOrDefault(t.CreatedById), HandledByName = t.HandledById is { } h ? names.GetValueOrDefault(h) : null,
             HandledAt = t.HandledAt, Version = t.Version, MatchedCustomerId = customer, Sla = sla,
+            // Offered as the customer only while the sender is still registered (a removed sender's ticket falls back to a person).
+            OrganisationContactId = t.VerifiedSender is { IsActive: true, VerifiedDomain.IsActive: true } ? t.VerifiedSenderId : null,
+            OrganisationName = t.Organisation?.Name, ContactName = t.VerifiedSender?.DisplayName,
             Attachments = t.Attachments.OrderBy(a => a.CreatedAt).Select(a => new TicketAttachmentDto { Id = a.Id, FileName = a.FileName, ContentType = a.ContentType, SizeBytes = a.SizeBytes }).ToList(),
             Replies = replies,
         };
@@ -168,69 +172,14 @@ public sealed class TicketService(
     }
 
     /// <summary>Who could take the case of a department's team: the manual Assign &amp; Reassign rules' verdict for each person.</summary>
-    public async Task<List<TicketAssigneeDto>> AssigneesAsync(Guid departmentId, CancellationToken ct)
+    public Task<List<AssigneeOptionDto>> AssigneesAsync(Guid departmentId, CancellationToken ct) =>
+        AssignmentRules.AssigneesAsync(db, eligibility, departmentId, ct);
+
+    /// <summary>How a case of this department would be given out if made from <paramref name="ticketId"/>'s ticket now: its team, and the rule.</summary>
+    public async Task<AssignmentRuleDto?> AssignmentRuleAsync(Guid ticketId, Guid departmentId, CancellationToken ct)
     {
-        var department = await db.Departments.AsNoTracking().FirstOrDefaultAsync(d => d.Id == departmentId && d.IsActive, ct)
-                         ?? throw new KeyNotFoundException("Department not found.");
-        var team = await DepartmentTeams.TeamOfAsync(db, departmentId, ct);
-        if (team is not { IsActive: true }) return new();
-        var policy = await eligibility.GetManualPolicyAsync(ct);
-        var result = await eligibility.EvaluateForCaseAsync(team.Id, policy, ct);
-        return result.Candidates
-            .OrderByDescending(c => c.IsEligible).ThenBy(c => c.IsCrossTeam).ThenBy(c => c.User.Name)
-            .Select(c => new TicketAssigneeDto(c.User.Id, c.User.Name, c.MemberRole, c.HomeTeamName, c.IsTeamLead, c.IsCrossTeam,
-                c.IsEligible, c.IsEligible ? null : c.Explain(result.Team.Name), c.User.Status.ToString(), c.OpenCases, c.Capacity))
-            .ToList();
-    }
-
-    // ───────────────────────────── raising by hand ─────────────────────────────
-
-    public async Task<TicketDetailDto> CreateAsync(CreateTicketDto dto, IReadOnlyList<IFormFile> files, Guid actorId, CancellationToken ct)
-    {
-        var errors = new List<FieldError>();
-        var mailbox = await db.EmailMailboxes.AsNoTracking().FirstOrDefaultAsync(m => m.Id == dto.MailboxId, ct);
-        if (mailbox == null || !await access.CanSeeMailboxAsync(mailbox.Id, ct)) errors.Add(new("mailboxId", "Choose the mailbox (queue) the ticket belongs to."));
-        if (string.IsNullOrWhiteSpace(dto.RequesterName)) errors.Add(new("requesterName", "Enter who the request is from."));
-        else if (dto.RequesterName.Trim().Length > 200) errors.Add(new("requesterName", "At most 200 characters."));
-        var email = dto.RequesterEmail?.Trim().ToLowerInvariant() ?? "";
-        if (email.Length > 0 && !IsEmail(email)) errors.Add(new("requesterEmail", "Enter a valid email address, or leave it empty."));
-        if (email.Length == 0 && string.IsNullOrWhiteSpace(dto.RequesterPhone)) errors.Add(new("requesterEmail", "Enter the requester's email or phone, so they can be contacted."));
-        if (dto.RequesterPhone?.Trim().Length > 50) errors.Add(new("requesterPhone", "At most 50 characters."));
-        if (string.IsNullOrWhiteSpace(dto.Subject)) errors.Add(new("subject", "Enter a subject."));
-        else if (dto.Subject.Trim().Length > 500) errors.Add(new("subject", "At most 500 characters."));
-        if (string.IsNullOrWhiteSpace(dto.Description)) errors.Add(new("description", "Describe the request."));
-        else if (dto.Description.Trim().Length > 20000) errors.Add(new("description", "At most 20,000 characters."));
-        if (dto.DepartmentId is { } dept && !await db.Departments.AsNoTracking().AnyAsync(d => d.Id == dept && d.IsActive, ct))
-            errors.Add(new("departmentId", "Choose an active department, or leave it empty."));
-        if (files.Count > MaxFilesPerTicket) errors.Add(new("files", $"At most {MaxFilesPerTicket} files."));
-        if (files.Any(f => f.Length > MaxFileBytes)) errors.Add(new("files", $"Each file can be at most {MaxFileBytes / (1024 * 1024)} MB."));
-        if (errors.Count > 0) throw new FieldValidationException(errors);
-
-        var ticket = new Ticket
-        {
-            Source = TicketSources.Manual, MailboxId = mailbox!.Id,
-            RequesterName = dto.RequesterName.Trim(), RequesterEmail = email, RequesterPhone = Blank(dto.RequesterPhone),
-            Subject = dto.Subject.Trim(), Description = dto.Description.Trim(),
-            Priority = Blank(dto.Priority) ?? mailbox.DefaultPriority, CaseType = Blank(dto.CaseType) ?? mailbox.DefaultCaseType,
-            DepartmentId = dto.DepartmentId ?? mailbox.DefaultDepartmentId, SubCategory = Blank(dto.SubCategory) ?? mailbox.DefaultSubCategory,
-            SenderVerification = SenderVerification.Verified, SenderNote = "Raised by hand in Case Management.",
-            ReceivedAt = DateTime.UtcNow, CreatedById = actorId, CreatedAt = DateTime.UtcNow,
-        };
-        foreach (var file in files.Where(f => f.Length > 0))
-        {
-            await using var content = file.OpenReadStream();
-            var key = await store.SaveAsync(content, Path.GetExtension(file.FileName), ct);
-            ticket.Attachments.Add(new TicketAttachment
-            {
-                FileName = Path.GetFileName(file.FileName), ContentType = string.IsNullOrWhiteSpace(file.ContentType) ? "application/octet-stream" : file.ContentType,
-                SizeBytes = file.Length, StorageKey = key,
-            });
-        }
-        await TicketSla.StartAsync(db, ticket, await ClockAsync(ct), ct);
-        await TicketNumbers.AddAsync(db, ticket, ct);
-        Publish(ticket);
-        await TicketAlerts.NotifyReceivedAsync(db, notifications, ticket, mailbox.Name, logger, ct);
-        return await GetAsync(ticket.Id, ct);
+        var ticket = await Visible().AsNoTracking().FirstOrDefaultAsync(t => t.Id == ticketId, ct) ?? throw new KeyNotFoundException("Ticket not found.");
+        return await AssignmentRules.ForDepartmentAsync(db, null, departmentId, ticket.Source == TicketSources.Email ? "Email" : null, ct);
     }
 
     // ───────────────────────────── assigning ─────────────────────────────
@@ -245,10 +194,22 @@ public sealed class TicketService(
         caseDto.Description = string.IsNullOrWhiteSpace(caseDto.Description) ? ticket.Description : caseDto.Description;
         if (ticket.Source == TicketSources.Email)
         {
-            caseDto.SourceChannel = string.IsNullOrWhiteSpace(caseDto.SourceChannel) ? "Email" : caseDto.SourceChannel;
-            caseDto.CommunicationChannel ??= "Email";
+            // A case made from an email ticket IS an email case: source and preferred channel are Email whatever the form sent,
+            // and replies go to the address the email came from.
+            caseDto.SourceChannel = "Email";
+            caseDto.PreferredCommunicationChannel = "Email";
+            caseDto.CommunicationChannel = "Email";
+            caseDto.ContactEmail = ticket.RequesterEmail;
         }
-        if (caseDto.CustomerId == null && caseDto.Customer360 == null)
+
+        // When the setting for these cases is Manual, the person converting chooses the agent: the server insists, whatever the screen sent.
+        // Checked here too (case creation checks it again) so a refused conversion never leaves a customer made from the requester behind.
+        if (dto.OwnerId == null && caseDto.DepartmentId is { } deptId
+            && await AssignmentRules.ForDepartmentAsync(db, null, deptId, caseDto.SourceChannel, ct) is { OwnerRequired: true } rule)
+            throw AssignmentRules.AgentRequired(rule, "ownerId");
+        if (caseDto.OrganisationContactId is { } contact && contact != ticket.VerifiedSenderId)
+            throw new FieldValidationException([new FieldError("selectCustomer", "The organisation contact must be the registered sender who wrote this ticket.")]);
+        if (caseDto.CustomerId == null && caseDto.Customer360 == null && caseDto.OrganisationContactId == null)
         {
             if (!dto.CreateCustomerFromRequester)
                 throw new FieldValidationException([new FieldError("selectCustomer", "Choose the customer, or use the requester as a new customer.")]);

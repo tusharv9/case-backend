@@ -7,7 +7,7 @@ using CaseManagement.Api.Services.Tickets;
 using Microsoft.AspNetCore.Mvc;
 
 /// <summary>
-/// Tickets: requests (emails in a Tickets-mode mailbox, or raised by hand) waiting for a person to assign them to a team or
+/// Tickets: requests (emails from registered senders, or approved by a reviewer) waiting for a person to assign them to a team or
 /// agent, which makes each a case. Everything is scoped to the mailboxes the caller's teams are linked to.
 /// </summary>
 [ApiController]
@@ -23,7 +23,7 @@ public class TicketsController(TicketService tickets, EmailIntakeAdminService ad
     [HttpGet("counts")]
     public async Task<IActionResult> Counts([FromQuery] Guid? mailboxId, CancellationToken ct) => Ok(await tickets.CountsAsync(mailboxId, ct));
 
-    /// <summary>The mailboxes (queues) the caller may see and raise tickets in, with each one's suggested case details.</summary>
+    /// <summary>The mailboxes (queues) the caller may see, with each one's suggested case details.</summary>
     [HttpGet("mailboxes")]
     public async Task<IActionResult> Mailboxes(CancellationToken ct) => Ok(await admin.AccessibleMailboxesAsync(ct));
 
@@ -43,12 +43,18 @@ public class TicketsController(TicketService tickets, EmailIntakeAdminService ad
     [HttpGet("assignees")]
     public async Task<IActionResult> Assignees([FromQuery] Guid departmentId, CancellationToken ct) => Ok(await tickets.AssigneesAsync(departmentId, ct));
 
-    /// <summary>Raise a ticket by hand (multipart form: the fields of <see cref="CreateTicketDto"/> and any <c>files</c>).</summary>
+    /// <summary>How a case of <paramref name="departmentId"/> made from this ticket would be given out (its team, the algorithm, whether an agent must be chosen).</summary>
+    [HttpGet("{id:guid}/assignment-rule")]
+    public async Task<IActionResult> AssignmentRule(Guid id, [FromQuery] Guid departmentId, CancellationToken ct) =>
+        Ok(await tickets.AssignmentRuleAsync(id, departmentId, ct));
+
+    /// <summary>
+    /// Raising a ticket by hand was retired: tickets come only from email. Kept for one release so an old screen gets a clear
+    /// answer instead of a 404 or 405; remove it in the release after.
+    /// </summary>
     [HttpPost]
-    [RequirePermission(Permissions.TicketsCreate)]
-    [RequestSizeLimit(260L * 1024 * 1024)]
-    public async Task<IActionResult> Create([FromForm] CreateTicketDto dto, [FromForm] List<IFormFile>? files, CancellationToken ct) =>
-        Ok(await tickets.CreateAsync(dto, files ?? new List<IFormFile>(), CurrentUserId, ct));
+    public IActionResult Create() => Problem(statusCode: StatusCodes.Status410Gone, title: "Tickets can no longer be raised by hand",
+        detail: "Tickets are opened only by email sent to a company mailbox. Reload Case Management to get the current screen.");
 
     /// <summary>Assign the ticket: it becomes a case with the details given, held by the chosen agent (or the team's rule picks one).</summary>
     [HttpPost("{id:guid}/assign")]

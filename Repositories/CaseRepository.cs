@@ -583,7 +583,7 @@ public class CaseRepository : ICaseRepository
                 CaseNumber = ce.Case != null ? ce.Case.CaseNumber : (ce.EntityName ?? ce.Module ?? "System"),
                 CaseTitle = ce.Case != null ? ce.Case.Title : (ce.Module ?? "Configurable Settings"),
                 CustomerId = ce.Case != null ? (Guid?)ce.Case.CustomerId : null,
-                CustomerName = ce.Case != null && ce.Case.Customer != null ? ce.Case.Customer.FullName : null,
+                CustomerName = ce.Case != null && ce.Case.Customer != null ? ce.Case.Customer.FullName : ce.Case != null && ce.Case.Organisation != null ? ce.Case.Organisation.Name : null,
                 DepartmentName = ce.Case != null && ce.Case.Team != null ? ce.Case.Team.Name : null,
                 Severity = ce.Case != null ? ce.Case.Severity : null,
                 NewOwner = ce.Case != null && ce.Case.Owner != null ? ce.Case.Owner.Name : null,

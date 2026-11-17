@@ -370,6 +370,8 @@ builder.Services.AddScoped<IBusinessTimeService, BusinessTimeService>();
 builder.Services.AddScoped<IEscalationService, EscalationService>();
 builder.Services.AddScoped<ISlaClockProvider, SlaClockProvider>();
 builder.Services.AddScoped<CaseManagement.Api.Services.Tickets.TicketSlaMonitor>();
+builder.Services.AddScoped<CaseManagement.Api.Services.EmailIntake.ReviewSlaMonitor>();
+builder.Services.AddScoped<CaseManagement.Api.Services.EmailIntake.CaseEmailSender>();
 builder.Services.AddScoped<ISlaMonitor, SlaMonitorService>();
 builder.Services.Configure<SlaMonitorOptions>(builder.Configuration.GetSection(SlaMonitorOptions.SectionName));
 builder.Services.AddScoped<ISlaRoutingService, SlaRoutingService>();

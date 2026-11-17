@@ -85,16 +85,17 @@ public static class HostPermissionCatalog
         new("email", "Email Inbox", 55,
         [
             new("View", "View the email inbox", "See emails received in the company mailboxes and the case each became.", Permissions.EmailInboxView),
-            new("Manage", "Manage email maintenance", "Configure mailboxes and verified sender domains, and check an email again.", Permissions.EmailManage),
+            new("Manage", "Manage email configuration", "Configure inbound mailboxes and sender verification, and check an email again.", Permissions.EmailManage),
+            new("Review", "Review unknown senders", "Approve an email from a sender who is not registered into Tickets, reject it, or mark it suspicious.", Permissions.EmailReview),
+            new("RegisterSender", "Register senders when reviewing", "While approving an email, also register its sender permanently so their future emails are verified.", Permissions.EmailSendersRegister),
         ],
         [
             new("inbox", "Inbox", "Mail", 10, "View"),
-            new("email-maintenance", "Maintenance", "Server", 20, "Manage"),
+            new("email-maintenance", "Email Configuration", "Server", 20, "Manage"),
         ]),
         new("tickets", "Tickets", 57,
         [
             new("View", "View tickets", "See the tickets of the mailboxes the person's teams are linked to.", Permissions.TicketsView),
-            new("Create", "Raise tickets", "Raise a ticket by hand into a mailbox's queue.", Permissions.TicketsCreate),
             new("Assign", "Assign tickets", "Assign a ticket to a team or agent (it becomes a case), or close it without a case.", Permissions.TicketsAssign),
             new("ViewAll", "See every mailbox's tickets", "See the emails and tickets of every mailbox, not only those linked to the person's teams.", Permissions.TicketsViewAll),
         ],

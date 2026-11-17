@@ -28,6 +28,7 @@ public class SlaMonitorService : ISlaMonitor
     private readonly INotificationService _notifications;
     private readonly ILogger<SlaMonitorService> _logger;
     private readonly Tickets.TicketSlaMonitor? _tickets;
+    private readonly EmailIntake.ReviewSlaMonitor? _reviews;
 
     public SlaMonitorService(
         AppDbContext context,
@@ -35,7 +36,8 @@ public class SlaMonitorService : ISlaMonitor
         IEscalationService escalation,
         INotificationService notifications,
         ILogger<SlaMonitorService> logger,
-        Tickets.TicketSlaMonitor? tickets = null)
+        Tickets.TicketSlaMonitor? tickets = null,
+        EmailIntake.ReviewSlaMonitor? reviews = null)
     {
         _context = context;
         _clockProvider = clockProvider;
@@ -43,6 +45,7 @@ public class SlaMonitorService : ISlaMonitor
         _notifications = notifications;
         _logger = logger;
         _tickets = tickets;
+        _reviews = reviews;
     }
 
     public async Task<SlaMonitorReport> RunCycleAsync(DateTime? nowUtc = null, CancellationToken ct = default)
@@ -149,6 +152,19 @@ public class SlaMonitorService : ISlaMonitor
             catch (Exception ex) when (!ct.IsCancellationRequested)
             {
                 _logger.LogWarning(ex, "Could not check ticket SLAs.");
+            }
+        }
+
+        // Emails from unregistered senders still waiting for review: reminders and escalations, under the same lock.
+        if (_reviews != null)
+        {
+            try
+            {
+                await _reviews.RunAsync(Tickets.TicketSlaClock.From(clock), now, ct);
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                _logger.LogWarning(ex, "Could not check sender review deadlines.");
             }
         }
 

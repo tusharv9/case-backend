@@ -17,6 +17,14 @@ public class Case : AuditableEntity
     public string SourceChannel { get; set; } = "Voice";
     public string PreferredCommunicationChannel { get; set; } = "Phone";
     public string CommunicationChannel { get; set; } = "Voice";
+    /// <summary>
+    /// Where Customer Reply emails go: the original sender's address for a case made from an email, or the address entered on
+    /// Create Case when Email is the preferred channel. Kept on the case (lower-case) so it never depends on a customer record.
+    /// </summary>
+    public string? ContactEmail { get; set; }
+    /// <summary>The mailbox Customer Reply emails are sent from: the one the email came to, or the one chosen for a manual case.</summary>
+    public Guid? ReplyMailboxId { get; set; }
+    public EmailMailbox? ReplyMailbox { get; set; }
     public string? Subcategory { get; set; }
     /// <summary>The language to use with the customer on this case, from the Create Case form. Null on cases created before it was kept.</summary>
     public string? PreferredLanguage { get; set; }
@@ -102,6 +110,13 @@ public class Case : AuditableEntity
     
     public Guid OwnerId { get; set; }
     public User Owner { get; set; } = null!;
+
+    /// <summary>For <see cref="CustomerSources.Organisation"/>: the organisation the case is for.</summary>
+    public Guid? OrganisationId { get; set; }
+    public EmailOrganisation? Organisation { get; set; }
+    /// <summary>For <see cref="CustomerSources.Organisation"/>: the registered sender who is the contact person.</summary>
+    public Guid? ContactSenderId { get; set; }
+    public EmailVerifiedSender? ContactSender { get; set; }
     
     public ICollection<CaseEvent> Events { get; set; } = new List<CaseEvent>();
     public ICollection<CaseParticipant> Participants { get; set; } = new List<CaseParticipant>();
@@ -132,6 +147,11 @@ public static class CustomerSources
     public const string Local = "Local";
     /// <summary>An existing Customer 360 customer, referenced by identifiers only.</summary>
     public const string Customer360 = "Customer360";
+    /// <summary>
+    /// A registered organisation (Email Configuration → Sender Verification), with the registered sender who wrote as the contact
+    /// person. Never copied into <see cref="Customer"/>: an organisation has no NRIC or personal phone.
+    /// </summary>
+    public const string Organisation = "Organisation";
 }
 
 /// <summary>Customer 360's two kinds of customer.</summary>

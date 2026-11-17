@@ -10,15 +10,20 @@ using Microsoft.AspNetCore.Mvc;
 [ApiController]
 [Route("api/email-intake")]
 [RequirePermission(Permissions.EmailInboxView, Permissions.EmailInboxView)]
-public class EmailIntakeController(EmailIntakeAdminService admin, EmailIntakeProcessor processor) : BaseApiController
+public class EmailIntakeController(EmailIntakeAdminService admin, EmailIntakeProcessor processor, ICurrentUserAccessor user) : BaseApiController
 {
     [HttpGet("inbox")]
-    public async Task<IActionResult> List([FromQuery] string? filter, [FromQuery] string? search, [FromQuery] Guid? mailboxId,
+    public async Task<IActionResult> List([FromQuery] string? filter, [FromQuery] string? search, [FromQuery] Guid? mailboxId, [FromQuery] Guid? organisationId,
         [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken ct = default) =>
-        Ok(await admin.ListAsync(filter, search, mailboxId, page, pageSize, ct));
+        Ok(await admin.ListAsync(filter, search, mailboxId, page, pageSize, ct, organisationId));
 
     [HttpGet("inbox/counts")]
-    public async Task<IActionResult> Counts([FromQuery] Guid? mailboxId, CancellationToken ct) => Ok(await admin.CountsAsync(mailboxId, ct));
+    public async Task<IActionResult> Counts([FromQuery] Guid? mailboxId, [FromQuery] Guid? organisationId, CancellationToken ct) =>
+        Ok(await admin.CountsAsync(mailboxId, ct, organisationId));
+
+    /// <summary>The organisations the caller's emails come from (the Inbox's organisation filter).</summary>
+    [HttpGet("organisations")]
+    public async Task<IActionResult> Organisations(CancellationToken ct) => Ok(await admin.InboxOrganisationsAsync(ct));
 
     /// <summary>The mailboxes the caller may see (for the mailbox filter); no connection details.</summary>
     [HttpGet("mailboxes")]
@@ -34,6 +39,23 @@ public class EmailIntakeController(EmailIntakeAdminService admin, EmailIntakePro
         var (content, name) = await admin.OpenOriginalAsync(id, ct);
         Response.Headers["X-Content-Type-Options"] = "nosniff";
         return File(content, "message/rfc822", name);
+    }
+
+    /// <summary>
+    /// Decides on an email from a sender who is not registered: approve this one email into Tickets (optionally also registering the
+    /// sender, with its own confirmation and permission), reject it, or mark it suspicious.
+    /// </summary>
+    [HttpPost("emails/{id:guid}/review")]
+    [RequirePermission(Permissions.EmailReview)]
+    public async Task<IActionResult> Review(Guid id, [FromBody] ReviewEmailDto dto, CancellationToken ct)
+    {
+        var detail = await admin.ReviewAsync(id, dto, CurrentUserId, user.Has(Permissions.EmailSendersRegister), ct);
+        if (detail.ReviewDecision == ReviewDecisions.Approved && detail.Status == EmailStatuses.Received)
+        {
+            await processor.ProcessAsync(id, manual: true, ct);   // opens its ticket now; the worker would also pick it up
+            detail = await admin.GetAsync(id, ct);
+        }
+        return Ok(detail);
     }
 
     /// <summary>
@@ -112,6 +134,24 @@ public class EmailMaintenanceController(EmailIntakeAdminService admin, EmailInta
     public async Task<IActionResult> DeleteDomain(Guid id, CancellationToken ct)
     {
         await admin.DeleteDomainAsync(id, CurrentUserId, ct);
+        return NoContent();
+    }
+
+    /// <summary>Every registered sender, with its organisation, domain, mailbox and team.</summary>
+    [HttpGet("senders")]
+    public async Task<IActionResult> Senders(CancellationToken ct) => Ok(await admin.SendersAsync(ct));
+
+    /// <summary>Registers one sender directly; its domain is registered for the organisation when it is not yet.</summary>
+    [HttpPost("senders")]
+    public async Task<IActionResult> CreateSender([FromBody] SaveSenderDto dto, CancellationToken ct) => Ok(await admin.SaveSenderAsync(null, dto, CurrentUserId, ct));
+
+    [HttpPut("senders/{id:guid}")]
+    public async Task<IActionResult> UpdateSender(Guid id, [FromBody] SaveSenderDto dto, CancellationToken ct) => Ok(await admin.SaveSenderAsync(id, dto, CurrentUserId, ct));
+
+    [HttpDelete("senders/{id:guid}")]
+    public async Task<IActionResult> DeleteSender(Guid id, CancellationToken ct)
+    {
+        await admin.DeleteSenderAsync(id, CurrentUserId, ct);
         return NoContent();
     }
 

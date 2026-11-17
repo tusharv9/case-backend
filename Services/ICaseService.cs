@@ -8,7 +8,13 @@ public interface ICaseService
     /// <param name="withinTransaction">Optional work saved in the same transaction as the new case (it commits or rolls back with
     /// it) — e.g. email intake recording which email the case came from, so a case can never exist without that link. It may run
     /// more than once when the database connection is retried, so it must be safe to repeat.</param>
-    Task<Case> CreateCaseAsync(CreateCaseDto dto, Guid createdByUserId, Func<Case, Task>? withinTransaction = null);
+    Task<Case> CreateCaseAsync(CreateCaseDto dto, Guid createdByUserId, Func<Case, Task>? withinTransaction = null, bool callerMayAssignAnyCase = false);
+
+    /// <summary>Create Case → Assign to: who in the department's team could take a new case, and why anyone cannot.</summary>
+    Task<List<AssigneeOptionDto>> GetDepartmentAssigneesAsync(Guid departmentId, CancellationToken ct = default);
+
+    /// <summary>How a new case of the department and source channel would be given out (team, algorithm, agent required).</summary>
+    Task<AssignmentRuleDto?> GetAssignmentRuleAsync(Guid departmentId, string? sourceChannel, CancellationToken ct = default);
 
     /// <summary>
     /// <see cref="CreateCaseAsync"/> for a ticket being assigned: <paramref name="ownerId"/> (when given) is the person chosen

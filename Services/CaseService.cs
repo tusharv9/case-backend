@@ -161,8 +161,14 @@ public class CaseService : ICaseService
         });
     }
 
-    public Task<Case> CreateCaseAsync(CreateCaseDto dto, Guid createdByUserId, Func<Case, Task>? withinTransaction = null) =>
-        CreateCaseCoreAsync(dto, createdByUserId, withinTransaction, chosenOwnerId: null, origin: null, callerMayAssignAnyCase: false);
+    public Task<Case> CreateCaseAsync(CreateCaseDto dto, Guid createdByUserId, Func<Case, Task>? withinTransaction = null, bool callerMayAssignAnyCase = false) =>
+        CreateCaseCoreAsync(dto, createdByUserId, withinTransaction, chosenOwnerId: dto.AssigneeId, origin: null, callerMayAssignAnyCase);
+
+    public Task<List<AssigneeOptionDto>> GetDepartmentAssigneesAsync(Guid departmentId, CancellationToken ct = default) =>
+        AssignmentRules.AssigneesAsync(_context, _eligibility, departmentId, ct);
+
+    public Task<AssignmentRuleDto?> GetAssignmentRuleAsync(Guid departmentId, string? sourceChannel, CancellationToken ct = default) =>
+        AssignmentRules.ForDepartmentAsync(_context, _configCache, departmentId, sourceChannel, ct);
 
     public Task<Case> CreateCaseForTicketAsync(CreateCaseDto dto, Guid createdByUserId, Guid? ownerId, TicketOrigin origin, bool callerMayAssignAnyCase,
         Func<Case, Task>? withinTransaction = null) =>
@@ -174,6 +180,11 @@ public class CaseService : ICaseService
         // Everything the form submitted is checked against the administrator's configuration first; what comes
         // back is canonical (configured spelling, resolved records), so nothing downstream guesses or defaults.
         var validated = await ValidateCreateCaseAsync(dto);
+
+        // Manual (for this case's source): a person chooses the agent — the same rule for Create Case and a ticket's conversion.
+        if (chosenOwnerId == null
+            && await AssignmentRules.ForDepartmentAsync(_context, _configCache, validated.Department.Id, dto.SourceChannel) is { OwnerRequired: true } manualRule)
+            throw AssignmentRules.AgentRequired(manualRule, origin != null ? "ownerId" : "assigneeId");
 
         // 1. Resolve the priority: the sub-category's configured priority is authoritative; otherwise the
         //    requested one, which must be a configured priority. Never silently defaulted.
@@ -216,6 +227,7 @@ public class CaseService : ICaseService
             CommunicationChannel = sourceChannel,
             PreferredLanguage = string.IsNullOrWhiteSpace(validated.Value("preferredLanguage")) ? null : validated.Value("preferredLanguage"),
             Subcategory = validated.SubCategory.Name,
+            ContactEmail = validated.ContactEmail,
         };
 
         // Who the case is for: the local customer, or the Customer 360 customer by identifiers only.
@@ -230,6 +242,12 @@ public class CaseService : ICaseService
             newCase.CustomerLookupType = existing.LookupType;
             newCase.CustomerLookupKeyEncrypted = identifiers.Protect(existing.LookupType, existing.LookupKey);
             newCase.CustomerLookupKeyHash = identifiers.Hash(existing.LookupType, existing.LookupKey);
+        }
+        else if (validated.OrganisationContact is { } org)
+        {
+            newCase.CustomerSource = CustomerSources.Organisation;
+            newCase.OrganisationId = org.OrganisationId;
+            newCase.ContactSenderId = org.SenderId;
         }
         else
         {
@@ -300,7 +318,9 @@ public class CaseService : ICaseService
             {
                 routingDecision = await _routingEngine.RouteAndAssignCaseAsync(newCase, customer);
                 // Decided under the team lock, so an agent freed up since the creator was asked is still preferred.
-                if (routingDecision.HeldReason != null) ApplyUnstaffedTeamChoice(routingDecision, dto.UnstaffedTeamAction);
+                // Under Manual nobody is missing: holding the case for a person to assign is the point, so there is nothing to choose.
+                if (routingDecision.HeldReason != null && routingDecision.AlgorithmUsed != AssignmentAlgorithms.Manual)
+                    ApplyUnstaffedTeamChoice(routingDecision, dto.UnstaffedTeamAction);
             }
 
             await _caseRepository.AddAsync(newCase);
@@ -1055,7 +1075,10 @@ public class CaseService : ICaseService
             .Where(c => c.Id != caseId && (existingCase.CustomerSource == CustomerSources.Customer360
                 // A Customer 360 customer is the same customer when Customer 360's own key and type match.
                 ? c.CustomerSource == CustomerSources.Customer360 && c.CustomerType == existingCase.CustomerType && c.ExternalCustomerId == existingCase.ExternalCustomerId
-                : c.CustomerId != null && c.CustomerId == existingCase.CustomerId))
+                // An organisation's cases are every case for that organisation, whoever of its people wrote.
+                : existingCase.CustomerSource == CustomerSources.Organisation
+                    ? c.OrganisationId != null && c.OrganisationId == existingCase.OrganisationId
+                    : c.CustomerId != null && c.CustomerId == existingCase.CustomerId))
             .OrderByDescending(c => c.CreatedAt)
             .ToListAsync();
 
@@ -1215,7 +1238,13 @@ public class CaseService : ICaseService
             throw new ArgumentException("Message cannot be empty.");
 
         var sender = await _context.Users.FindAsync(userId);
-        var channel = dto.IsInternal ? null : (dto.Channel ?? existingCase.SourceChannel ?? existingCase.CommunicationChannel ?? "Voice");
+        // A Customer Reply on an email case goes out by email: checked before anything is saved (an address and a mailbox).
+        var emailMailbox = !dto.IsInternal && EmailIntake.CaseEmailOutbox.IsEmailReply(existingCase, dto.Channel)
+            ? await EmailIntake.CaseEmailOutbox.ResolveMailboxAsync(_context, existingCase, dto.MailboxId, CancellationToken.None)
+            : null;
+        var channel = dto.IsInternal ? null
+            : emailMailbox != null ? "Email"
+            : (dto.Channel ?? existingCase.SourceChannel ?? existingCase.CommunicationChannel ?? "Voice");
 
         var caseEvent = new CaseEvent
         {
@@ -1238,6 +1267,12 @@ public class CaseService : ICaseService
             await _caseRepository.AddEventAsync(caseEvent);
             if (started != null || recordsFirstResponse) await _caseRepository.UpdateAsync(existingCase);
             if (started != null) await _caseRepository.AddEventAsync(started);
+            if (emailMailbox != null)
+            {
+                // The email, in the same transaction as its timeline entry: never a reply on the timeline that was not queued to send.
+                await EmailIntake.CaseEmailOutbox.StageReplyAsync(_context, existingCase, emailMailbox, caseEvent.Id, caseEvent.Message, userId, CancellationToken.None);
+                await _context.SaveChangesAsync();
+            }
         });
 
         // Internal notes notify the colleagues they @mention (one shared implementation).
@@ -1513,6 +1548,15 @@ public class CaseService : ICaseService
         => await ValidateCreateCaseAsync(dto, ct, confirmCustomer360: false);
 
     /// <summary>A create-case request after validation: resolved records and canonical values.</summary>
+    private static bool IsEmailChannel(string? channel) => string.Equals(channel?.Trim(), "Email", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsValidEmail(string value)
+    {
+        if (value.Length > 254) return false;
+        try { return new System.Net.Mail.MailAddress(value).Address.Equals(value, StringComparison.OrdinalIgnoreCase) && value[(value.LastIndexOf('@') + 1)..].Contains('.'); }
+        catch (FormatException) { return false; }
+    }
+
     private sealed record ValidatedCase(
         Department Department,
         Guid TeamId,
@@ -1521,7 +1565,9 @@ public class CaseService : ICaseService
         IReadOnlyDictionary<string, string> Values,
         IReadOnlyDictionary<string, string> CustomAttributes,
         Guid? LocalCustomerId,
-        ResolvedCustomer360? Customer360)
+        ResolvedCustomer360? Customer360,
+        string? ContactEmail = null,
+        (Guid OrganisationId, Guid SenderId)? OrganisationContact = null)
     {
         public string Value(string field) => Values.TryGetValue(field, out var v) ? v : string.Empty;
     }
@@ -1545,7 +1591,21 @@ public class CaseService : ICaseService
         ResolvedCustomer360? customer360 = null;
         string? selectedCustomer = null;
         var hasLocal = dto.CustomerId is { } localId && localId != Guid.Empty;
-        if (hasLocal && dto.Customer360 != null)
+        (Guid OrganisationId, Guid SenderId)? organisationContact = null;
+        if (dto.OrganisationContactId is { } senderId)
+        {
+            // A registered sender: the case is for their organisation, with them as the contact. Exactly one kind of customer.
+            if (hasLocal || dto.Customer360 != null)
+                errors.Add(new FieldError("selectCustomer", "Choose the organisation, a Customer 360 customer or a new customer — only one."));
+            else if (await _context.EmailVerifiedSenders.AsNoTracking().Where(s => s.Id == senderId && s.IsActive && s.VerifiedDomain!.IsActive)
+                         .Select(s => new { s.Id, s.VerifiedDomain!.OrganisationId }).FirstOrDefaultAsync(ct) is { } sender)
+            {
+                organisationContact = (sender.OrganisationId, sender.Id);
+                selectedCustomer = $"organisation:{sender.Id}";
+            }
+            else errors.Add(new FieldError("selectCustomer", "This sender is no longer registered. Choose another customer."));
+        }
+        else if (hasLocal && dto.Customer360 != null)
             errors.Add(new FieldError("selectCustomer", "Choose either an existing Customer 360 customer or a new customer, not both."));
         else if (dto.Customer360 != null)
         {
@@ -1623,8 +1683,17 @@ public class CaseService : ICaseService
                 errors.Add(new FieldError("subCategory", $"Sub-category '{subCategoryInput}' is invalid for department '{department.Name}'."));
         }
 
+        // Email cases keep to email: a case whose source is Email is answered by email, whatever the form sent, and email needs
+        // an address. The address is kept on the case, so a reply never depends on a customer record having one.
+        var sourceInput = !string.IsNullOrWhiteSpace(dto.SourceChannel) ? dto.SourceChannel : dto.CommunicationChannel;
+        var preferred = IsEmailChannel(sourceInput) ? "Email" : dto.PreferredCommunicationChannel;
+        var contactEmail = string.IsNullOrWhiteSpace(dto.ContactEmail) ? null : dto.ContactEmail.Trim().ToLowerInvariant();
+        if (contactEmail != null && !IsValidEmail(contactEmail))
+            errors.Add(new FieldError("contactEmail", "Enter a valid email address, e.g. name@company.com."));
+        else if (contactEmail == null && IsEmailChannel(preferred))
+            errors.Add(new FieldError("contactEmail", "Email is the communication channel, so enter the customer's email address."));
+
         // 2. Configuration-driven checks: required, lengths, patterns, field types, dropdown options, custom fields.
-        var preferred = dto.PreferredCommunicationChannel;
         var values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
         {
             ["caseType"] = caseType?.Name,
@@ -1659,6 +1728,7 @@ public class CaseService : ICaseService
             .Where(kv => (dto.CustomAttributes?.ContainsKey(kv.Key) ?? false) && kv.Value.Length > 0)
             .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase);
 
-        return new ValidatedCase(department!, teamId!.Value, caseType!, subCategory!, result.Normalized, custom, customerId, customer360);
+        return new ValidatedCase(department!, teamId!.Value, caseType!, subCategory!, result.Normalized, custom, customerId, customer360,
+            IsEmailChannel(preferred) ? contactEmail : null, organisationContact);
     }
 }

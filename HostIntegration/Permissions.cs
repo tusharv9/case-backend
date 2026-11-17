@@ -49,14 +49,17 @@ public static class Permissions
     /// <summary>See the email Inbox: emails read from the company mailboxes and the case each became.</summary>
     public const string EmailInboxView = "email.inbox.view";
 
-    /// <summary>Email Maintenance: configure mailboxes (address, password, servers) and verified sender domains; re-check an email.</summary>
+    /// <summary>Email Configuration: configure mailboxes (address, password, servers) and verified sender domains; re-check an email.</summary>
     public const string EmailManage = "email.manage";
+
+    /// <summary>Review emails from senders who are not registered: approve one email into Tickets, reject it, or mark it suspicious.</summary>
+    public const string EmailReview = "email.review";
+
+    /// <summary>When approving an email, also register its sender permanently (future emails from them are verified).</summary>
+    public const string EmailSendersRegister = "email.senders.register";
 
     /// <summary>See Tickets: requests waiting to be assigned, for the mailboxes the person's teams are linked to.</summary>
     public const string TicketsView = "tickets.view";
-
-    /// <summary>Raise a ticket by hand (a phone call, a walk-in) into a mailbox's queue.</summary>
-    public const string TicketsCreate = "tickets.create";
 
     /// <summary>Assign a ticket to a team or agent (it becomes a case), or close it without a case.</summary>
     public const string TicketsAssign = "tickets.assign";
@@ -75,7 +78,7 @@ public static class Permissions
     public static readonly string[] All =
     {
         CasesRead, CasesCreate, CasesWrite, CasesTransfer, CasesResolve, CasesAssign, CasesViewAll, CasesSupervise, CustomersRead, CustomersWrite, ConfigManage,
-        TeamsManage, MonitoringView, MonitoringNudge, AuditView, EmailInboxView, EmailManage, TicketsView, TicketsCreate, TicketsAssign,
+        TeamsManage, MonitoringView, MonitoringNudge, AuditView, EmailInboxView, EmailManage, TicketsView, TicketsAssign,
         TicketsViewAll, PiiUnmask
     };
 

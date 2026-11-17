@@ -36,6 +36,12 @@ public class Ticket : AuditableEntity
     public Guid? DepartmentId { get; set; }
     public string? SubCategory { get; set; }
 
+    /// <summary>The registered sender who wrote it, and their organisation: the case made from it is for that organisation.</summary>
+    public Guid? OrganisationId { get; set; }
+    public EmailOrganisation? Organisation { get; set; }
+    public Guid? VerifiedSenderId { get; set; }
+    public EmailVerifiedSender? VerifiedSender { get; set; }
+
     /// <summary><see cref="SenderVerification"/> of the email's sender, shown as a badge; it never blocks a ticket.</summary>
     public string SenderVerification { get; set; } = Models.SenderVerification.Pending;
     public string? SenderNote { get; set; }

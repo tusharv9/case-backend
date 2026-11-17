@@ -853,7 +853,7 @@ public static class DbSeeder
     /// <summary>The global default for how cases are given to agents. Every team follows it unless it has its own settings.</summary>
     private static void EnsureGlobalAssignmentSettings(AppDbContext context)
     {
-        if (context.AssignmentConfigurations.Any(c => c.TeamId == null)) return;
+        if (context.AssignmentConfigurations.Any(c => c.TeamId == null && c.CaseSource == AssignmentCaseSources.Default)) return;
         context.AssignmentConfigurations.Add(new AssignmentConfiguration
         {
             Id = Guid.NewGuid(), TeamId = null, Algorithm = "RoundRobin", MaxConcurrentCapacity = 5, IsActive = true, CreatedAt = DateTime.UtcNow

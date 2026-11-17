@@ -29,10 +29,20 @@ public class CreateCaseDto
     /// <summary>An existing Customer 360 customer, as chosen from the search results. Only identifiers are stored.</summary>
     public Customer360SelectionDto? Customer360 { get; set; }
     /// <summary>
+    /// A registered sender (Sender Verification): the case is for their organisation, with them as the contact. Exactly one of this,
+    /// <see cref="CustomerId"/> and <see cref="Customer360"/>.
+    /// </summary>
+    public Guid? OrganisationContactId { get; set; }
+    /// <summary>
     /// The department the case belongs to (Create Case → Department). The case goes to the team that department is assigned
     /// to; a department with no team, or an inactive one, is refused.
     /// </summary>
     public Guid DepartmentId { get; set; }
+    /// <summary>
+    /// The agent the person creating the case chose (Create Case → Assign to), judged by the Assign &amp; Reassign rules. Null lets
+    /// the team's assignment rule pick — refused when that rule is Manual (<see cref="Services.AssignmentRules"/>).
+    /// </summary>
+    public Guid? AssigneeId { get; set; }
     public string Severity { get; set; } = string.Empty;
 
     /// <summary>Ignored: SLA targets come from the priority's configured rule, never from the client.</summary>
@@ -43,6 +53,8 @@ public class CreateCaseDto
     public string? PreferredLanguage { get; set; }
     public string? SourceChannel { get; set; }
     public string? PreferredCommunicationChannel { get; set; }
+    /// <summary>The customer's email address for replies. Required (and checked) when the preferred channel is Email.</summary>
+    public string? ContactEmail { get; set; }
     public string? CommunicationChannel { get; set; }
 
     /// <summary>Values of administrator-defined custom fields on the Create Case form, keyed by field key.</summary>
@@ -205,6 +217,8 @@ public class AddTimelineInteractionDto
     public bool IsInternal { get; set; } = true;
     public string? Channel { get; set; }
     public Guid UserId { get; set; }
+    /// <summary>For an emailed reply when the case's team works several mailboxes and the case has none yet: the one to send from.</summary>
+    public Guid? MailboxId { get; set; }
 }
 
 public class RequestSwarmDto

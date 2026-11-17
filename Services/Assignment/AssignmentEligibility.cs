@@ -289,9 +289,37 @@ public static class AssignmentSettings
             if (own != null) return own;
         }
 
-        return active.FirstOrDefault(c => c.TeamId == null)
+        return active.FirstOrDefault(c => c.TeamId == null && c.CaseSource == AssignmentCaseSources.Default)
             ?? throw new InvalidOperationException("No assignment settings are configured. Set the assignment algorithm under Cases SLA & Routing.");
     }
+
+    /// <summary>
+    /// The settings a case of <paramref name="caseSource"/> is given out with: the team's (or global) settings, with the algorithm of the
+    /// global Email row for email cases when one is set ("Same as other cases" when it is not). Capacity always comes from the team's settings.
+    /// </summary>
+    public static async Task<AssignmentConfiguration> ResolveForSourceAsync(AppDbContext context, IConfigCache? cache, Guid? teamId, string caseSource, CancellationToken ct = default)
+    {
+        var basis = await ResolveAsync(context, cache, teamId, ct);
+        if (caseSource != AssignmentCaseSources.Email) return basis;
+        var email = await EmailRowAsync(context, cache, ct);
+        return email == null ? basis : new AssignmentConfiguration
+        {
+            Id = basis.Id, TeamId = basis.TeamId, Algorithm = email.Algorithm, MaxConcurrentCapacity = basis.MaxConcurrentCapacity,
+            IsActive = true, CaseSource = AssignmentCaseSources.Email, CreatedAt = basis.CreatedAt, UpdatedAt = basis.UpdatedAt,
+        };
+    }
+
+    /// <summary>The global "email cases" row, or null when email cases follow the same settings as every other case.</summary>
+    public static async Task<AssignmentConfiguration?> EmailRowAsync(AppDbContext context, IConfigCache? cache, CancellationToken ct = default)
+    {
+        Task<List<AssignmentConfiguration>> Load() => context.AssignmentConfigurations.AsNoTracking().Where(c => c.IsActive).ToListAsync(ct);
+        var active = cache == null ? await Load() : await cache.GetOrCreateAsync(CacheKey, Load);
+        return active.FirstOrDefault(c => c.TeamId == null && c.CaseSource == AssignmentCaseSources.Email);
+    }
+
+    /// <summary>The source a case is given out as: Email for a case whose source channel is Email.</summary>
+    public static string SourceOf(Case c) =>
+        string.Equals(c.SourceChannel, "Email", StringComparison.OrdinalIgnoreCase) ? AssignmentCaseSources.Email : AssignmentCaseSources.Default;
 }
 
 /// <summary>

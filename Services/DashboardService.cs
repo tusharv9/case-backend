@@ -303,7 +303,7 @@ public class DashboardService : IDashboardService
                 OwnerName = c.Owner != null ? c.Owner.Name : string.Empty, OwnerId = c.OwnerId,
                 TeamName = c.Team != null ? c.Team.Name : string.Empty,
                 SlaStartTime = c.SlaStartTime, SlaTargetHours = c.SlaTargetHours, SlaBreachedAt = c.SlaBreachedAt, SlaPausedAt = c.SlaPausedAt,
-                SlaTotalPausedMinutes = c.SlaTotalPausedMinutes, CustomerName = c.Customer != null ? c.Customer.FullName : string.Empty,
+                SlaTotalPausedMinutes = c.SlaTotalPausedMinutes, CustomerName = c.Customer != null ? c.Customer.FullName : c.Organisation != null ? c.Organisation.Name : string.Empty,
                 CustomerSource = c.CustomerSource, CustomerType = c.CustomerType, CreatedAt = c.CreatedAt
             }).ToDictionaryAsync(c => c.Id, ct),
             async db => extra = missing.Count == 0 ? new() : (await db.Cases.AsNoTracking().Where(c => missing.Contains(c.Id)).Select(c => new
@@ -410,7 +410,7 @@ public class DashboardService : IDashboardService
                 Status = c.Status, Severity = c.Severity,
                 TeamName = c.Team != null ? c.Team.Name : string.Empty,
                 OwnerName = c.Owner != null ? c.Owner.Name : string.Empty,
-                CustomerName = c.Customer != null ? c.Customer.FullName : string.Empty,
+                CustomerName = c.Customer != null ? c.Customer.FullName : c.Organisation != null ? c.Organisation.Name : string.Empty,
                 CustomerSource = c.CustomerSource, CustomerType = c.CustomerType,
                 Channel = c.SourceChannel ?? c.CommunicationChannel,
                 EscalationLevel = c.EscalationLevel, CreatedAt = c.CreatedAt, ResolvedAt = c.ResolvedAt, SlaOutcome = c.SlaOutcome,

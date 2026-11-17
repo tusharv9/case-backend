@@ -17,6 +17,8 @@ public class AssignmentSettingsDto
     public string DefaultAlgorithm { get; set; } = string.Empty;
     public int DefaultCapacity { get; set; }
     public List<string> Algorithms { get; set; } = new();
+    /// <summary>How email cases are given out: an algorithm, or null for "the same as other cases".</summary>
+    public string? EmailAlgorithm { get; set; }
 
     public List<AssignmentSettingsTeamDto> Teams { get; set; } = new();
 
@@ -61,6 +63,8 @@ public class UpdateAssignmentSettingsDto
     public bool EnforceCapacity { get; set; }
     public string DefaultAlgorithm { get; set; } = string.Empty;
     public int DefaultCapacity { get; set; }
+    /// <summary>How email cases are given out: RoundRobin | LeastOccupancy | Manual, or null/empty for "the same as other cases".</summary>
+    public string? EmailAlgorithm { get; set; }
     /// <summary>Member selection changes (only the rows sent are changed).</summary>
     public List<MemberSelectionDto> MemberSelections { get; set; } = new();
     /// <summary>The Version the editor loaded. A different stored version means someone saved in between: 409, nothing is changed.</summary>

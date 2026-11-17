@@ -191,7 +191,19 @@ public class PiiMaskingService : IPiiMaskingService
 
             if (property.Name == "CustomerName" && property.PropertyType == typeof(string) && property.CanWrite)
             {
-                if (rules.Customer.TryGetValue("fullName", out var nameRule)) ApplyToProperty(dto, property, nameRule);
+                // An organisation's name is not a person's: only a person's name follows the full-name masking.
+                var isOrganisation = dto.GetType().GetProperty("CustomerSource")?.GetValue(dto) as string == CustomerSources.Organisation;
+                if (!isOrganisation && rules.Customer.TryGetValue("fullName", out var nameRule)) ApplyToProperty(dto, property, nameRule);
+            }
+            else if (property.Name == "ContactName" && property.PropertyType == typeof(string) && property.CanWrite)
+            {
+                // The organisation's contact person is a person.
+                if (rules.Customer.TryGetValue("fullName", out var contactRule)) ApplyToProperty(dto, property, contactRule);
+            }
+            else if ((property.Name == "ContactEmail" || property.Name == "ContactSenderEmail") && property.PropertyType == typeof(string) && property.CanWrite)
+            {
+                // The case's reply address is the customer's email: it follows the customer email field's masking.
+                if (rules.Customer.TryGetValue("email", out var emailRule)) ApplyToProperty(dto, property, emailRule);
             }
             else if (property.GetValue(dto) is List<CustomerCustomAttributeDto> custom)
             {

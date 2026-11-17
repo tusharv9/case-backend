@@ -42,6 +42,9 @@ public static class CaseNotificationKinds
     public const string SettingsChanged = "settings.changed";
     public const string TicketReceived = "ticket.received";
     public const string TicketSlaBreached = "ticket.sla_breached";
+    public const string EmailReviewNeeded = "email.review_needed";
+    public const string EmailReviewReminder = "email.review_reminder";
+    public const string EmailReviewEscalated = "email.review_escalated";
 
     /// <summary>The shape AuthService reads (<c>modules[].notifications</c>).</summary>
     public sealed record Declaration(
@@ -127,6 +130,17 @@ public static class CaseNotificationKinds
         new(TicketSlaBreached, "Ticket not assigned in time", "When a ticket in a mailbox linked to your team waits past its assign-within time.",
             "The leads of the mailbox's teams", DefaultToAdministrators: true, Severity: "Warning",
             Message: "Ticket {record} in {mailbox} {verb:passed} its assign-within time", Context: "Still waiting to be assigned", Tone: "update", Icon: "Mail"),
+        // Sender review: an email from a sender who is not registered waits for a decision instead of opening a ticket. Named by
+        // its mailbox and what kind of sender it is, never by the sender's address or the subject.
+        new(EmailReviewNeeded, "Email waiting for review", "When an email from a sender who is not registered arrives in a mailbox linked to your team.",
+            "The leads and members of the mailbox's teams", DefaultToAdministrators: true,
+            Message: "An email {verb:needs} review in {mailbox}", Context: "{match} · decide by {due}", Tone: "update", Icon: "ShieldAlert"),
+        new(EmailReviewReminder, "Email review reminder", "When an email waiting for review in your team's mailbox reaches its reminder time.",
+            "The leads and members of the mailbox's teams", DefaultToAdministrators: true, Severity: "Warning",
+            Message: "An email in {mailbox} {verb:still} waits for review", Context: "{match} · decide by {due}", Tone: "update", Icon: "Clock"),
+        new(EmailReviewEscalated, "Email review overdue", "When an email waits for review past its mailbox's deadline.",
+            "The leads of the mailbox's teams, or the administrators (set per mailbox)", DefaultToAdministrators: true, Severity: "Warning",
+            Message: "An email in {mailbox} {verb:passed} its review deadline", Context: "{match} · waiting since {since}", Tone: "disable", Icon: "ShieldAlert"),
         new(SettingsChanged, "Case settings changed", "When someone changes Case Management configuration (case types and similar).", "People who manage Case Settings",
             Message: "{actor} {verb:changed} Case Management settings", Context: "{detail}", Tone: "update", Icon: "Settings"),
     ];

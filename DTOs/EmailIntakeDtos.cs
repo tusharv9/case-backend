@@ -21,6 +21,12 @@ public sealed class InboxEmailListItemDto
     public Guid? TicketId { get; set; }
     public int AttachmentCount { get; set; }
     public string AckStatus { get; set; } = string.Empty;
+    /// <summary>RegisteredSender | KnownDomain | SimilarDomain | Unknown (null on emails from before sender review).</summary>
+    public string? MatchKind { get; set; }
+    public string? MatchReason { get; set; }
+    public DateTime? ReviewStartedAt { get; set; }
+    public DateTime? ReviewDueAt { get; set; }
+    public DateTime? ReviewEscalatedAt { get; set; }
 }
 
 public sealed class InboxEmailDetailDto
@@ -56,8 +62,31 @@ public sealed class InboxEmailDetailDto
     public DateTime? AckSentAt { get; set; }
     public string? AckError { get; set; }
     public bool HasOriginal { get; set; }
-    /// <summary>"Check again" is offered: the email is not verified, or failed.</summary>
+    /// <summary>"Check again" is offered: the email is not verified, failed, waits for review, or was held as suspicious automatically.</summary>
     public bool CanRecheck { get; set; }
+
+    public string? MatchKind { get; set; }
+    public string? MatchReason { get; set; }
+    public Guid? OrganisationId { get; set; }
+    public DateTime? ReviewStartedAt { get; set; }
+    public DateTime? ReviewDueAt { get; set; }
+    public DateTime? ReviewReminderSentAt { get; set; }
+    public DateTime? ReviewEscalatedAt { get; set; }
+    public string? ReviewSlaOutcome { get; set; }
+    public string? ReviewDecision { get; set; }
+    public string? ReviewNote { get; set; }
+    public string? ReviewedByName { get; set; }
+    public DateTime? ReviewedAt { get; set; }
+    /// <summary>The email waits for review: Approve / Reject / Mark as suspicious are offered (to people who may review).</summary>
+    public bool CanReview { get; set; }
+    /// <summary>The address is not registered yet, so approving can also register it.</summary>
+    public bool CanRegisterSender { get; set; }
+    /// <summary>The sender writes from a public provider (gmail.com…): an organisation cannot own it, so only this email can be approved.</summary>
+    public bool FromPublicProvider { get; set; }
+    public Guid MailboxId { get; set; }
+    /// <summary>The mailbox's active teams: the teams a sender registered from this email may be routed to.</summary>
+    public List<EmailOptionDto> MailboxTeams { get; set; } = new();
+    public int Version { get; set; }
 }
 
 public sealed class InboxCountsDto
@@ -66,6 +95,12 @@ public sealed class InboxCountsDto
     public int CaseCreated { get; set; }
     public int TicketCreated { get; set; }
     public int NotVerified { get; set; }
+    /// <summary>From registered senders.</summary>
+    public int Verified { get; set; }
+    /// <summary>Waiting for review: an organisation's unregistered sender, or a look-alike of one.</summary>
+    public int PendingVerification { get; set; }
+    /// <summary>Waiting for review from an unknown sender, or suspicious / rejected.</summary>
+    public int UnknownSuspicious { get; set; }
     public int Failed { get; set; }
     public int Other { get; set; }
 }
@@ -101,6 +136,10 @@ public sealed class MailboxDto
     public string? DefaultSubCategory { get; set; }
     public string? DefaultPriority { get; set; }
     public string? DefaultPreferredLanguage { get; set; }
+    public int ReviewSlaMinutes { get; set; }
+    public int ReviewReminderMinutes { get; set; }
+    public int ReviewEscalationMinutes { get; set; }
+    public string ReviewEscalateTo { get; set; } = string.Empty;
 }
 
 public sealed class SaveMailboxDto
@@ -118,13 +157,19 @@ public sealed class SaveMailboxDto
     public string SmtpSecurity { get; set; } = "StartTls";
     public bool IsEnabled { get; set; } = true;
     public bool SendAcknowledgement { get; set; } = true;
-    /// <summary>The teams that see this mailbox's emails and tickets. Null keeps the stored teams; empty = not restricted.</summary>
+    /// <summary>The teams that see this mailbox's emails and tickets. Null keeps the stored teams; empty = only people who see every mailbox see it.</summary>
     public List<Guid>? TeamIds { get; set; }
     public Guid? DefaultDepartmentId { get; set; }
     public string? DefaultCaseType { get; set; }
     public string? DefaultSubCategory { get; set; }
     public string? DefaultPriority { get; set; }
     public string? DefaultPreferredLanguage { get; set; }
+    /// <summary>Sender review deadline, reminder and escalation, in working minutes from when an email starts waiting. Null keeps the stored value.</summary>
+    public int? ReviewSlaMinutes { get; set; }
+    public int? ReviewReminderMinutes { get; set; }
+    public int? ReviewEscalationMinutes { get; set; }
+    /// <summary>TeamLeads | Administrators. Null keeps the stored value.</summary>
+    public string? ReviewEscalateTo { get; set; }
 }
 
 public sealed class TestMailboxDto
@@ -165,6 +210,37 @@ public sealed class VerifiedSenderDto
     public string DisplayName { get; set; } = string.Empty;
     public string? Description { get; set; }
     public bool IsActive { get; set; } = true;
+    /// <summary>The mailbox this sender writes to (optional).</summary>
+    public Guid? MailboxId { get; set; }
+    /// <summary>The team its tickets are suggested to (optional; needs a mailbox that is shared with the team).</summary>
+    public Guid? TeamId { get; set; }
+
+    // Read only: what the ids are, for the lists.
+    public string? MailboxName { get; set; }
+    public string? TeamName { get; set; }
+    public Guid? VerifiedDomainId { get; set; }
+    public string? Domain { get; set; }
+    public Guid? OrganisationId { get; set; }
+    public string? OrganisationName { get; set; }
+    public DateTime? CreatedAt { get; set; }
+    public DateTime? UpdatedAt { get; set; }
+}
+
+/// <summary>
+/// Registers one sender directly (Sender Verification → Senders), without opening its domain first. The domain is taken from the
+/// address: an existing registered domain must belong to the organisation named; an unregistered one is added for it, verifying
+/// only the listed senders.
+/// </summary>
+public sealed class SaveSenderDto
+{
+    public string Address { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public bool IsActive { get; set; } = true;
+    /// <summary>An existing organisation (matched ignoring case and spacing) or a new one.</summary>
+    public string OrganisationName { get; set; } = string.Empty;
+    public Guid? MailboxId { get; set; }
+    public Guid? TeamId { get; set; }
 }
 
 public sealed class EmailOrganisationDto
@@ -201,3 +277,30 @@ public sealed class EmailCaseOptionsDto
     /// <summary>The active teams a mailbox can be linked to.</summary>
     public List<OptionDto> Teams { get; set; } = new();
 }
+
+/// <summary>A reviewer's decision on an email from a sender who is not registered.</summary>
+public sealed class ReviewEmailDto
+{
+    /// <summary>approve | reject | suspicious.</summary>
+    public string Decision { get; set; } = string.Empty;
+    /// <summary>Required for reject and suspicious: why.</summary>
+    public string? Note { get; set; }
+    /// <summary>The email's version when the reviewer opened it.</summary>
+    public int Version { get; set; }
+    /// <summary>Also register the sender permanently (approve only). Needs <see cref="ConfirmRegistration"/>.</summary>
+    public ReviewRegisterSenderDto? Register { get; set; }
+    /// <summary>The reviewer's separate, explicit confirmation of the permanent registration.</summary>
+    public bool ConfirmRegistration { get; set; }
+}
+
+/// <summary>The sender's details when a reviewer registers them; the address is the email's own.</summary>
+public sealed class ReviewRegisterSenderDto
+{
+    public string DisplayName { get; set; } = string.Empty;
+    public string OrganisationName { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public Guid? MailboxId { get; set; }
+    public Guid? TeamId { get; set; }
+}
+
+public sealed record EmailOptionDto(Guid Id, string Name);

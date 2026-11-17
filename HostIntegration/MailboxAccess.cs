@@ -8,9 +8,9 @@ using Microsoft.EntityFrameworkCore;
 /// Which mailboxes' emails and tickets the caller may see, one rule for the Inbox and for Tickets.
 /// </summary>
 /// <remarks>
-/// <para>A mailbox linked to teams (Email Maintenance → mailbox → Teams with access) is seen by those teams' leads and ACTIVE
-/// members only. A mailbox linked to no team is not restricted: everyone who may open the Inbox / Tickets sees it, which is
-/// how every mailbox behaved before teams could be linked.</para>
+/// <para>A mailbox is seen by the leads and ACTIVE members of the teams it is shared with (Email Configuration → Inbound
+/// Mailboxes → Teams with access), and by nobody else. A mailbox shared with no team is seen only by the people below: a
+/// client's mail is never open to everyone just because nobody chose its teams yet (the mailbox list warns about it).</para>
 /// <para><see cref="Permissions.TicketsViewAll"/>, <see cref="Permissions.EmailManage"/> (the people who configure the
 /// mailboxes) and work with no caller see every mailbox. Like <see cref="CaseAccessScope"/>, it is one SQL predicate over the
 /// live tables, so removing someone from a team takes effect on their next request.</para>
@@ -34,8 +34,7 @@ public sealed class MailboxAccessScope(AppDbContext db, ICurrentUserAccessor? cu
         if (SeesAll) return db.EmailMailboxes.Select(m => m.Id);
         var me = currentUser!.LocalUserId!.Value;
         return db.EmailMailboxes
-            .Where(m => !m.Teams.Any()
-                || m.Teams.Any(t => t.Team!.OwnerId == me || db.TeamMembers.Any(tm => tm.TeamId == t.TeamId && tm.UserId == me && tm.IsActive)))
+            .Where(m => m.Teams.Any(t => t.Team!.OwnerId == me || db.TeamMembers.Any(tm => tm.TeamId == t.TeamId && tm.UserId == me && tm.IsActive)))
             .Select(m => m.Id);
     }
 

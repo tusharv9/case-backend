@@ -117,6 +117,18 @@ public class AttachmentService : IAttachmentService
         };
     }
 
+    /// <summary>The type a file is previewed as, from its extension: pictures and PDF only. Null for anything else (SVG included).</summary>
+    public static string? PreviewTypeOf(string fileName) => Path.GetExtension(fileName ?? "").ToLowerInvariant() switch
+    {
+        ".png" => "image/png",
+        ".jpg" or ".jpeg" => "image/jpeg",
+        ".gif" => "image/gif",
+        ".bmp" => "image/bmp",
+        ".webp" => "image/webp",
+        ".pdf" => "application/pdf",
+        _ => null,
+    };
+
     public async Task<AttachmentDownload> OpenDownloadAsync(Guid caseId, Guid attachmentId, CancellationToken ct = default)
     {
         // The attachment must belong to THIS case: a valid attachment id under another case's URL is "not found".

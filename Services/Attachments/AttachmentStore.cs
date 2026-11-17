@@ -50,7 +50,7 @@ public class LocalDiskAttachmentStore : IAttachmentStore
     public Task<Stream> OpenReadAsync(string key, CancellationToken ct = default)
     {
         var path = PathFor(key);
-        if (!File.Exists(path)) throw new FileNotFoundException("The stored file for this attachment is missing from the server.");
+        if (!File.Exists(path)) throw new FileNotFoundException("This file is not stored on this server. It may have been received by another server that shares the database; open it there, or ask an administrator to set up shared file storage.");
         return Task.FromResult<Stream>(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, useAsync: true));
     }
 

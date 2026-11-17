@@ -33,6 +33,7 @@ public class AssignmentSettingsService : IAssignmentSettingsService
         var global = await _routing.GetAssignmentConfigAsync(null, ct);
         var vocabulary = await _routing.GetVocabularyAsync(ct);
 
+        var emailRow = await AssignmentSettings.EmailRowAsync(_context, null, ct);
         var teamConfigs = await _context.AssignmentConfigurations.AsNoTracking()
             .Where(c => c.IsActive && c.TeamId != null)
             .ToDictionaryAsync(c => c.TeamId!.Value, c => c.MaxConcurrentCapacity, ct);
@@ -82,6 +83,7 @@ public class AssignmentSettingsService : IAssignmentSettingsService
             DefaultAlgorithm = global.Algorithm,
             DefaultCapacity = global.MaxConcurrentCapacity,
             Algorithms = vocabulary.Algorithms,
+            EmailAlgorithm = emailRow?.Algorithm,
             Teams = teams,
             Version = VersionOf(settings),
         };
@@ -120,6 +122,11 @@ public class AssignmentSettingsService : IAssignmentSettingsService
         if (unknown.Count > 0)
             errors.Add(new FieldError("memberSelections", $"{unknown.Count} selected member(s) are no longer in that team. Reload and choose again."));
 
+        var emailAlgorithm = string.IsNullOrWhiteSpace(dto.EmailAlgorithm) ? null
+            : AssignmentAlgorithms.All.FirstOrDefault(a => string.Equals(a, dto.EmailAlgorithm.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (!string.IsNullOrWhiteSpace(dto.EmailAlgorithm) && emailAlgorithm == null)
+            errors.Add(new FieldError("emailAlgorithm", "Choose Round robin, Least occupancy, Manual, or the same as other cases."));
+
         if (errors.Count > 0) throw new FieldValidationException(errors);
 
         var strategy = _context.Database.CreateExecutionStrategy();
@@ -138,6 +145,28 @@ public class AssignmentSettingsService : IAssignmentSettingsService
             {
                 await _routing.UpdateAssignmentConfigAsync(
                     new UpdateAssignmentConfigDto { Algorithm = dto.DefaultAlgorithm, MaxConcurrentCapacity = dto.DefaultCapacity }, actingUserId, null, ct);
+            }
+
+            // Email cases: one global row, present only while they are given out differently from other cases.
+            var emailRow = await _context.AssignmentConfigurations
+                .FirstOrDefaultAsync(c => c.TeamId == null && c.CaseSource == AssignmentCaseSources.Email, ct);
+            if (emailRow?.Algorithm != emailAlgorithm)
+            {
+                if (emailAlgorithm == null) _context.AssignmentConfigurations.Remove(emailRow!);
+                else if (emailRow == null)
+                    _context.AssignmentConfigurations.Add(new AssignmentConfiguration
+                    {
+                        Id = Guid.NewGuid(), TeamId = null, CaseSource = AssignmentCaseSources.Email, Algorithm = emailAlgorithm,
+                        MaxConcurrentCapacity = dto.DefaultCapacity, IsActive = true, CreatedAt = DateTime.UtcNow,
+                    });
+                else { emailRow.Algorithm = emailAlgorithm; emailRow.UpdatedAt = DateTime.UtcNow; }
+                _context.CaseEvents.Add(new CaseEvent
+                {
+                    Id = Guid.NewGuid(), EventType = EventType.Other, CreatedAt = DateTime.UtcNow, UserId = actingUserId,
+                    Module = "Configurable Settings", EntityName = "AssignmentConfiguration", ActionType = "CONFIG_UPDATED",
+                    Message = $"Email cases are now given out {(emailAlgorithm == null ? "the same way as other cases" : $"by {emailAlgorithm}")}.",
+                    OldValue = emailRow?.Algorithm ?? "Same as other cases", NewValue = emailAlgorithm ?? "Same as other cases",
+                });
             }
 
             var before = Describe(settings.IncludeTeamLeads, settings.RequireAvailable, settings.EnforceCapacity, settings.CrossTeamMode, settings.CrossTeams.Count);

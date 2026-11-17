@@ -39,10 +39,11 @@ public class InboxTabsTests : IDisposable
 
     public void Dispose() { db.Dispose(); GC.SuppressFinalize(this); }
 
-    private void Email(string key, string status, bool hasTicket = false, bool hasCase = false) =>
+    private void Email(string key, string status, bool hasTicket = false, bool hasCase = false, string? match = null, string? verification = null) =>
         db.InboundEmails.Add(new InboundEmail
         {
-            MailboxId = mailbox.Id, MessageKey = key, Subject = key, FromAddress = "ravi@gmail.com", Status = status,
+            MailboxId = mailbox.Id, MessageKey = key, Subject = key, FromAddress = "ravi@gmail.com", Status = status, MatchKind = match,
+            Verification = verification ?? SenderVerification.Pending,
             TicketId = hasTicket ? Guid.NewGuid() : null, CaseId = hasCase ? Guid.NewGuid() : null,
             ReceivedAt = DateTime.UtcNow, CreatedAt = DateTime.UtcNow,
         });
@@ -58,6 +59,11 @@ public class InboxTabsTests : IDisposable
         Email("reply-on-direct-case", EmailStatuses.LinkedToCase, hasCase: true);
         Email("unverified", EmailStatuses.NotVerified);
         Email("failed", EmailStatuses.Failed);
+        Email("review-known-organisation", EmailStatuses.PendingReview, match: SenderMatchKinds.KnownDomain);
+        Email("review-look-alike", EmailStatuses.PendingReview, match: SenderMatchKinds.SimilarDomain);
+        Email("review-unknown", EmailStatuses.PendingReview, match: SenderMatchKinds.Unknown);
+        Email("suspicious", EmailStatuses.Suspicious, match: SenderMatchKinds.KnownDomain);
+        Email("rejected", EmailStatuses.Rejected, match: SenderMatchKinds.Unknown);
         await db.SaveChangesAsync();
     }
 
@@ -87,10 +93,22 @@ public class InboxTabsTests : IDisposable
         Assert.Equal((await KeysOf("ticket-created")).Length, counts.TicketCreated);
         Assert.Equal(4, counts.CaseCreated);
         Assert.Equal(2, counts.TicketCreated);
-        Assert.Equal(1, counts.NotVerified);
         Assert.Equal(1, counts.Failed);
-        Assert.Equal(8, counts.All);
-        Assert.Equal(counts.All, counts.CaseCreated + counts.TicketCreated + counts.NotVerified + counts.Failed + counts.Other);
+        Assert.Equal((2, 3), (counts.PendingVerification, counts.UnknownSuspicious));
+        Assert.Equal((await KeysOf("pending-verification")).Length, counts.PendingVerification);
+        Assert.Equal((await KeysOf("unknown-suspicious")).Length, counts.UnknownSuspicious);
+        Assert.Equal(13, counts.All);
+        // Every email is in exactly one of these tabs (Verified cuts across them, by sender).
+        Assert.Equal(counts.All, counts.CaseCreated + counts.TicketCreated + counts.PendingVerification + counts.UnknownSuspicious + counts.Failed + counts.Other);
+    }
+
+    [Fact]
+    public async Task Sender_review_splits_known_organisations_and_look_alikes_from_the_unknown_and_the_suspicious()
+    {
+        await SeedEveryShapeAsync();
+
+        Assert.Equal(new[] { "review-known-organisation", "review-look-alike" }, await KeysOf("pending-verification"));
+        Assert.Equal(new[] { "rejected", "review-unknown", "suspicious" }, await KeysOf("unknown-suspicious"));
     }
 
     [Fact]

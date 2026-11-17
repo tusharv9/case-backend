@@ -174,7 +174,7 @@ public class RoutingEngineService : IRoutingEngineService
 
     // ------------------------------------------------------------------------------------ assignment settings
 
-    private static readonly string[] Algorithms = { "RoundRobin", "LeastOccupancy" };
+    private static readonly string[] Algorithms = AssignmentAlgorithms.All;
 
     private static AssignmentConfigDto ToDto(AssignmentConfiguration c, bool isOverride) => new()
     {
@@ -210,7 +210,8 @@ public class RoutingEngineService : IRoutingEngineService
                     ?? throw new KeyNotFoundException("Team not found.");
         }
 
-        var config = await _context.AssignmentConfigurations.FirstOrDefaultAsync(c => c.TeamId == departmentId, ct);
+        var config = await _context.AssignmentConfigurations
+            .FirstOrDefaultAsync(c => c.TeamId == departmentId && c.CaseSource == AssignmentCaseSources.Default, ct);
         if (config == null)
         {
             // A team's first override starts from the current global settings; the global row is never created here.
@@ -243,7 +244,8 @@ public class RoutingEngineService : IRoutingEngineService
 
     public async Task ClearTeamAssignmentConfigAsync(Guid departmentId, Guid actingUserId, CancellationToken ct = default)
     {
-        var own = await _context.AssignmentConfigurations.FirstOrDefaultAsync(c => c.TeamId == departmentId, ct);
+        var own = await _context.AssignmentConfigurations
+            .FirstOrDefaultAsync(c => c.TeamId == departmentId && c.CaseSource == AssignmentCaseSources.Default, ct);
         if (own == null) return;
         _context.AssignmentConfigurations.Remove(own);
         await RecordAuditLogAsync("CONFIG_UPDATED", "AssignmentConfiguration", "A team now follows the global assignment settings.", own.Algorithm, null, actingUserId);
@@ -394,8 +396,30 @@ public class RoutingEngineService : IRoutingEngineService
         // "least loaded" agent or the same round-robin position; the lock lasts until the surrounding transaction commits.
         await LockTeamAsync(target.Id, ct);
 
-        var config = await ResolveConfigAsync(target.Id, ct);
+        var source = AssignmentSettings.SourceOf(newCase);
+        var config = await AssignmentSettings.ResolveForSourceAsync(_context, _cache, target.Id, source, ct);
         result.AlgorithmUsed = config.Algorithm;
+
+        // Manual: nobody is picked automatically. The team lead holds the case (and is told it needs an agent) until a person assigns it.
+        if (config.Algorithm == AssignmentAlgorithms.Manual)
+        {
+            result.HeldReason = source == AssignmentCaseSources.Email
+                ? "Email cases are assigned by hand (Assign & Reassign settings), so no agent was chosen automatically."
+                : "Cases are assigned by hand (Assign & Reassign settings), so no agent was chosen automatically.";
+            var manualLead = target.OwnerId.HasValue
+                ? await _context.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == target.OwnerId.Value && u.IsActive, ct)
+                : null;
+            if (manualLead != null)
+            {
+                newCase.OwnerId = manualLead.Id;
+                result.HeldByUserId = manualLead.Id;
+                result.AssignedUserId = manualLead.Id;
+                result.AssignedUserName = manualLead.Name;
+            }
+            result.RoutingLogMessage = $"Case routed to '{target.Name}' via {ruleText}. {result.HeldReason}"
+                + (manualLead != null ? $" Held by the team lead, {manualLead.Name}, to assign." : " No team lead is set, so it stays with its creator.");
+            return;
+        }
 
         var pool = await _pool.GetAsync(target.Id, config.MaxConcurrentCapacity, ct);
         var strategy = _strategies.FirstOrDefault(s => string.Equals(s.AlgorithmName, config.Algorithm, StringComparison.OrdinalIgnoreCase))

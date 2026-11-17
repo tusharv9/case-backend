@@ -90,6 +90,9 @@ public class ExceptionMiddleware
         TeamUnavailableException => (409, ex.Message, null),
         // Someone else assigned or closed the ticket first; the message says who.
         CaseManagement.Api.Services.Tickets.TicketConflictException => (409, ex.Message, null),
+        // Another reviewer decided first, or the reviewer may not register senders.
+        CaseManagement.Api.Services.EmailIntake.EmailReviewConflictException => (409, ex.Message, null),
+        CaseManagement.Api.Services.EmailIntake.EmailReviewForbiddenException => (403, ex.Message, null),
         // The agent was nudged moments ago; the body says when they can be nudged again.
         NudgeCooldownException => (429, ex.Message, null),
         FileNotFoundException => (404, ex.Message, null),

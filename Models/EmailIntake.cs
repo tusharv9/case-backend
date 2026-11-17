@@ -63,6 +63,28 @@ public class EmailMailbox : AuditableEntity
 
     /// <summary>The teams whose members see this mailbox's emails and tickets (<see cref="HostIntegration.MailboxAccessScope"/>).</summary>
     public List<EmailMailboxTeam> Teams { get; set; } = new();
+
+    // ── Sender review deadline: how long an email from an unregistered sender may wait for a decision, in working minutes from
+    //    when it started waiting. Each waiting email takes these when it starts waiting, so a later change never rewrites it. ──
+
+    /// <summary>The review deadline. 0 = no deadline (no reminder or escalation either).</summary>
+    public int ReviewSlaMinutes { get; set; } = 60;
+    /// <summary>When to remind the mailbox's teams, before the deadline. 0 = no reminder.</summary>
+    public int ReviewReminderMinutes { get; set; } = 30;
+    /// <summary>When an undecided email is escalated: at or after the deadline.</summary>
+    public int ReviewEscalationMinutes { get; set; } = 60;
+    /// <summary><see cref="ReviewEscalationTargets"/>: who is told when an email is escalated.</summary>
+    public string ReviewEscalateTo { get; set; } = ReviewEscalationTargets.TeamLeads;
+}
+
+/// <summary>Who an overdue review is escalated to.</summary>
+public static class ReviewEscalationTargets
+{
+    /// <summary>The leads of the mailbox's teams (the administrators when it has none).</summary>
+    public const string TeamLeads = "TeamLeads";
+    /// <summary>The administrators (as set for the notification under Settings → Manage Notifications).</summary>
+    public const string Administrators = "Administrators";
+    public static readonly string[] All = [TeamLeads, Administrators];
 }
 
 /// <summary>A team allowed to see a mailbox: its active members and its lead see that mailbox's emails and tickets.</summary>
@@ -137,6 +159,19 @@ public class EmailVerifiedSender : AuditableEntity
     public bool IsActive { get; set; } = true;
     public Guid? CreatedByUserId { get; set; }
     public Guid? UpdatedByUserId { get; set; }
+
+    /// <summary>
+    /// The mailbox this sender writes to. Optional; a hint for routing, never a permission: the sender's email stays in the mailbox
+    /// it actually arrived at, and is only flagged when that is another one.
+    /// </summary>
+    public Guid? MailboxId { get; set; }
+    public EmailMailbox? Mailbox { get; set; }
+    /// <summary>
+    /// The team this sender's tickets are suggested to. Needs <see cref="MailboxId"/>, and must be one of that mailbox's teams
+    /// (<see cref="EmailMailboxTeam"/>): a sender can never route work to a team the mailbox is not shared with.
+    /// </summary>
+    public Guid? TeamId { get; set; }
+    public Team? Team { get; set; }
 }
 
 /// <summary>One email read from a mailbox, and what was done with it.</summary>
@@ -201,6 +236,30 @@ public class InboundEmail : AuditableEntity
     public DateTime? NextAttemptAt { get; set; }
     /// <summary>Bumped on every claim, so two workers (or a worker and a person) can never process the same email at once.</summary>
     public int Version { get; set; }
+
+    // ── Sender review: an email from anyone who is not a registered sender waits here instead of opening a ticket. ──
+
+    /// <summary><see cref="SenderMatchKinds"/>: how the sender relates to the registered organisations.</summary>
+    public string? MatchKind { get; set; }
+    /// <summary>Why it was classified so, in words a reviewer can check, e.g. "looks like bsn.example (Cyrillic 'а' for 'a')".</summary>
+    public string? MatchReason { get; set; }
+    /// <summary>When the email started waiting for review (the review SLA counts from here).</summary>
+    public DateTime? ReviewStartedAt { get; set; }
+    /// <summary>The mailbox's deadline when it started waiting (0 = none); with the times below, frozen so a settings change never rewrites it.</summary>
+    public int? ReviewSlaMinutes { get; set; }
+    public DateTime? ReviewDueAt { get; set; }
+    public DateTime? ReviewReminderAt { get; set; }
+    public DateTime? ReviewEscalateAt { get; set; }
+    /// <summary>Set once each was sent, so each is sent once.</summary>
+    public DateTime? ReviewReminderSentAt { get; set; }
+    public DateTime? ReviewEscalatedAt { get; set; }
+    /// <summary>"Met" or "Breached", when the decision was made (null without a deadline, or while waiting).</summary>
+    public string? ReviewSlaOutcome { get; set; }
+    /// <summary><see cref="ReviewDecisions"/>; null while it waits.</summary>
+    public string? ReviewDecision { get; set; }
+    public string? ReviewNote { get; set; }
+    public Guid? ReviewedById { get; set; }
+    public DateTime? ReviewedAt { get; set; }
 
     /// <summary><see cref="AcknowledgementStatuses"/>.</summary>
     public string AckStatus { get; set; } = AcknowledgementStatuses.NotSent;
@@ -278,9 +337,37 @@ public static class EmailStatuses
     public const string TicketCreated = "TicketCreated";
     /// <summary>A reply on a ticket's thread before the ticket became a case: added to the ticket.</summary>
     public const string LinkedToTicket = "LinkedToTicket";
+    /// <summary>Not from a registered sender (known organisation, look-alike or unknown): waits for a person, no ticket yet.</summary>
+    public const string PendingReview = "PendingReview";
+    /// <summary>A reviewer refused it: never becomes a ticket.</summary>
+    public const string Rejected = "Rejected";
+    /// <summary>Forged (the domain's signature check failed) or marked suspicious by a reviewer: never becomes a ticket.</summary>
+    public const string Suspicious = "Suspicious";
+    /// <summary>Before sender review existed: a ticket was opened and marked not verified. Kept for old rows.</summary>
     public const string NotVerified = "NotVerified";
     public const string Ignored = "Ignored";
     public const string Failed = "Failed";
+}
+
+/// <summary>How an email's sender relates to the registered organisations. Only <see cref="RegisteredSender"/> is verification.</summary>
+public static class SenderMatchKinds
+{
+    /// <summary>The address is a registered, active sender (and the email is not forged).</summary>
+    public const string RegisteredSender = "RegisteredSender";
+    /// <summary>The domain is an organisation's registered domain, but this person is not registered.</summary>
+    public const string KnownDomain = "KnownDomain";
+    /// <summary>The domain resembles a registered one (look-alike characters, a typo, another ending). A hint for the reviewer, never trust.</summary>
+    public const string SimilarDomain = "SimilarDomain";
+    /// <summary>Nothing matches.</summary>
+    public const string Unknown = "Unknown";
+}
+
+public static class ReviewDecisions
+{
+    /// <summary>This one email is released into Tickets. The sender stays unregistered unless registered in the same decision.</summary>
+    public const string Approved = "Approved";
+    public const string Rejected = "Rejected";
+    public const string Suspicious = "Suspicious";
 }
 
 public static class AcknowledgementStatuses

@@ -7,7 +7,7 @@ using CaseManagement.Api.Models;
 using CaseManagement.Api.Services.Teams;
 using Microsoft.EntityFrameworkCore;
 
-/// <summary>The Inbox (reading what arrived) and Maintenance (mailboxes and verified domains) behind the email intake screens.</summary>
+/// <summary>The Inbox (reading what arrived, and reviewing unregistered senders) and Email Configuration behind the email intake screens.</summary>
 public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProtector secrets, IMailboxClient mail, IAttachmentStore store,
     HostIntegration.IMailboxAccessScope? access = null)
 {
@@ -45,12 +45,14 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
 
     // ───────────────────────────── inbox ─────────────────────────────
 
-    public async Task<PagedResponseDto<InboxEmailListItemDto>> ListAsync(string? filter, string? search, Guid? mailboxId, int page, int pageSize, CancellationToken ct)
+    public async Task<PagedResponseDto<InboxEmailListItemDto>> ListAsync(string? filter, string? search, Guid? mailboxId, int page, int pageSize, CancellationToken ct,
+        Guid? organisationId = null)
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
         var query = Filter(VisibleEmails(), filter);
         if (mailboxId is { } mb) query = query.Where(e => e.MailboxId == mb);
+        if (organisationId is { } org) query = query.Where(e => e.OrganisationId == org);
         if (!string.IsNullOrWhiteSpace(search))
         {
             var s = search.Trim().ToLower();
@@ -69,6 +71,8 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
                 SenderAlias = e.SenderAlias, Authenticity = e.Authenticity,
                 Status = e.Status, CaseNumber = e.Case != null ? e.Case.CaseNumber : null, CaseId = e.CaseId, AttachmentCount = e.AttachmentCount, AckStatus = e.AckStatus,
                 TicketId = e.TicketId, TicketNumber = e.Ticket != null ? e.Ticket.TicketNumber : null,
+                MatchKind = e.MatchKind, MatchReason = e.MatchReason, ReviewStartedAt = e.ReviewStartedAt,
+                ReviewDueAt = e.ReviewDueAt, ReviewEscalatedAt = e.ReviewEscalatedAt,
             }).ToListAsync(ct);
         return new PagedResponseDto<InboxEmailListItemDto> { Items = items, TotalCount = total, Page = page, PageSize = pageSize };
     }
@@ -83,16 +87,24 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
         "case-created" => query.Where(e => e.Status == EmailStatuses.CaseCreated || e.Status == EmailStatuses.LinkedToCase
             || ((e.Status == EmailStatuses.TicketCreated || e.Status == EmailStatuses.LinkedToTicket) && e.CaseId != null)),
         "ticket-created" => query.Where(e => (e.Status == EmailStatuses.TicketCreated || e.Status == EmailStatuses.LinkedToTicket) && e.CaseId == null),
+        "verified" => query.Where(e => e.Verification == SenderVerification.Verified),
+        // Sender review: an organisation's unregistered sender (or a look-alike of one), and the unknown and the suspicious.
+        "pending-verification" => query.Where(e => e.Status == EmailStatuses.PendingReview
+            && (e.MatchKind == SenderMatchKinds.KnownDomain || e.MatchKind == SenderMatchKinds.SimilarDomain)),
+        "unknown-suspicious" => query.Where(e => (e.Status == EmailStatuses.PendingReview && e.MatchKind != SenderMatchKinds.KnownDomain && e.MatchKind != SenderMatchKinds.SimilarDomain)
+            || e.Status == EmailStatuses.Suspicious || e.Status == EmailStatuses.Rejected),
         "not-verified" => query.Where(e => e.Status == EmailStatuses.NotVerified),
         "failed" => query.Where(e => e.Status == EmailStatuses.Failed),
-        "other" => query.Where(e => e.Status == EmailStatuses.Ignored || e.Status == EmailStatuses.Received || e.Status == EmailStatuses.Processing),
+        "other" => query.Where(e => e.Status == EmailStatuses.Ignored || e.Status == EmailStatuses.Received || e.Status == EmailStatuses.Processing
+            || e.Status == EmailStatuses.NotVerified),
         _ => query,
     };
 
-    public async Task<InboxCountsDto> CountsAsync(Guid? mailboxId, CancellationToken ct)
+    public async Task<InboxCountsDto> CountsAsync(Guid? mailboxId, CancellationToken ct, Guid? organisationId = null)
     {
         var query = VisibleEmails();
         if (mailboxId is { } mb) query = query.Where(e => e.MailboxId == mb);
+        if (organisationId is { } org) query = query.Where(e => e.OrganisationId == org);
         var byStatus = await query.GroupBy(e => new { e.Status, HasCase = e.CaseId != null })
             .Select(g => new { g.Key.Status, g.Key.HasCase, Count = g.Count() }).ToListAsync(ct);
         int Of(params string[] s) => byStatus.Where(x => s.Contains(x.Status)).Sum(x => x.Count);
@@ -105,8 +117,11 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
             CaseCreated = Of(EmailStatuses.CaseCreated, EmailStatuses.LinkedToCase) + ticketEmailsNowInACase,
             TicketCreated = ticketEmails.Sum(x => x.Count) - ticketEmailsNowInACase,
             NotVerified = Of(EmailStatuses.NotVerified),
+            Verified = await Filter(query, "verified").CountAsync(ct),
+            PendingVerification = await Filter(query, "pending-verification").CountAsync(ct),
+            UnknownSuspicious = await Filter(query, "unknown-suspicious").CountAsync(ct),
             Failed = Of(EmailStatuses.Failed),
-            Other = Of(EmailStatuses.Ignored, EmailStatuses.Received, EmailStatuses.Processing),
+            Other = Of(EmailStatuses.Ignored, EmailStatuses.Received, EmailStatuses.Processing, EmailStatuses.NotVerified),
         };
     }
 
@@ -124,7 +139,20 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
             Status = e.Status, StatusNote = e.StatusNote, Attempts = e.Attempts, CaseNumber = e.Case?.CaseNumber, CaseId = e.CaseId,
             TicketId = e.TicketId, TicketNumber = e.Ticket?.TicketNumber,
             AckStatus = e.AckStatus, AckSentAt = e.AckSentAt, AckError = e.AckError, HasOriginal = e.RawKey != null,
-            CanRecheck = e.RawKey != null && (e.Status is EmailStatuses.NotVerified or EmailStatuses.Failed),
+            CanRecheck = e.RawKey != null && (e.Status is EmailStatuses.NotVerified or EmailStatuses.Failed or EmailStatuses.PendingReview
+                || (e.Status == EmailStatuses.Suspicious && e.ReviewDecision == null)),
+            MatchKind = e.MatchKind, MatchReason = e.MatchReason, OrganisationId = e.OrganisationId, ReviewStartedAt = e.ReviewStartedAt,
+            ReviewDueAt = e.ReviewDueAt, ReviewReminderSentAt = e.ReviewReminderSentAt, ReviewEscalatedAt = e.ReviewEscalatedAt, ReviewSlaOutcome = e.ReviewSlaOutcome,
+            ReviewDecision = e.ReviewDecision, ReviewNote = e.ReviewNote, ReviewedAt = e.ReviewedAt,
+            ReviewedByName = e.ReviewedById == null ? null : await db.Users.AsNoTracking().Where(u => u.Id == e.ReviewedById).Select(u => u.Name).FirstOrDefaultAsync(ct),
+            CanReview = e.Status == EmailStatuses.PendingReview,
+            FromPublicProvider = PublicEmailDomains.Contains(EmailParsing.DomainOf(e.FromAddress)),
+            CanRegisterSender = e.Status == EmailStatuses.PendingReview && !PublicEmailDomains.Contains(EmailParsing.DomainOf(e.FromAddress))
+                && !await db.EmailVerifiedSenders.AsNoTracking().AnyAsync(s => s.Address == e.FromAddress, ct),
+            Version = e.Version,
+            MailboxId = e.MailboxId,
+            MailboxTeams = await db.EmailMailboxTeams.AsNoTracking().Where(t => t.MailboxId == e.MailboxId && t.Team!.IsActive)
+                .OrderBy(t => t.Team!.Name).Select(t => new EmailOptionDto(t.TeamId, t.Team!.Name)).ToListAsync(ct),
         };
     }
 
@@ -168,6 +196,18 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
         var address = dto.Address.Trim().ToLowerInvariant();
         if (await db.EmailMailboxes.AnyAsync(m => m.Id != id && m.Address == address, ct)) errors.Add(new FieldError("address", "This mailbox is already configured."));
         errors.AddRange(await ValidateTicketSettingsAsync(dto, ct));
+        if (dto.TeamIds != null)
+        {
+            // A team that senders of this mailbox are routed to cannot lose access silently: name them, so they are changed first.
+            var wanted = dto.TeamIds.ToHashSet();
+            var stranded = await db.EmailVerifiedSenders.AsNoTracking()
+                .Where(s => s.MailboxId == id && s.TeamId != null && !wanted.Contains(s.TeamId.Value))
+                .Select(s => new { s.Address, Team = s.Team!.Name }).OrderBy(s => s.Address).ToListAsync(ct);
+            if (stranded.Count > 0)
+                errors.Add(new("teamIds", $"{string.Join(", ", stranded.Select(s => s.Team).Distinct())} still receive{(stranded.Count == 1 ? "s" : "")} the tickets of "
+                    + $"{string.Join(", ", stranded.Take(5).Select(s => s.Address))}{(stranded.Count > 5 ? $" and {stranded.Count - 5} more" : "")}. "
+                    + "Change those senders' team under Sender Verification first."));
+        }
         if (errors.Count > 0) throw new FieldValidationException(errors);
         ApplyTeams(mailbox, dto);
 
@@ -216,6 +256,20 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
         Max("defaultSubCategory", dto.DefaultSubCategory, 200);
         Max("defaultPriority", dto.DefaultPriority, 100);
         Max("defaultPreferredLanguage", dto.DefaultPreferredLanguage, 100);
+
+        // The review deadline: 0 switches it off; otherwise remind before it and escalate at or after it, within a working week.
+        const int Limit = 7 * 24 * 60;
+        var sla = dto.ReviewSlaMinutes;
+        if (sla is < 0 or > Limit) errors.Add(new("reviewSlaMinutes", "Between 0 (no deadline) and 10080 minutes (a week)."));
+        if (sla > 0)
+        {
+            if (dto.ReviewReminderMinutes is { } r && (r < 0 || r >= sla))
+                errors.Add(new("reviewReminderMinutes", "Before the deadline (fewer minutes than it), or 0 for no reminder."));
+            if (dto.ReviewEscalationMinutes is { } e && (e < sla || e > Limit))
+                errors.Add(new("reviewEscalationMinutes", "At or after the deadline, and at most 10080 minutes."));
+        }
+        if (dto.ReviewEscalateTo != null && !ReviewEscalationTargets.All.Contains(dto.ReviewEscalateTo))
+            errors.Add(new("reviewEscalateTo", "Choose the team leads or the administrators."));
         return errors;
     }
 
@@ -226,6 +280,11 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
         m.DefaultSubCategory = Blank(dto.DefaultSubCategory);
         m.DefaultPriority = Blank(dto.DefaultPriority);
         m.DefaultPreferredLanguage = Blank(dto.DefaultPreferredLanguage);
+        if (dto.ReviewSlaMinutes is { } sla) m.ReviewSlaMinutes = sla;
+        if (dto.ReviewReminderMinutes is { } reminder) m.ReviewReminderMinutes = reminder;
+        if (dto.ReviewEscalationMinutes is { } escalation) m.ReviewEscalationMinutes = escalation;
+        else if (m.ReviewEscalationMinutes < m.ReviewSlaMinutes) m.ReviewEscalationMinutes = m.ReviewSlaMinutes;
+        if (dto.ReviewEscalateTo != null) m.ReviewEscalateTo = dto.ReviewEscalateTo;
         if (dto.TeamIds == null) return;
         var wanted = dto.TeamIds.Distinct().ToHashSet();
         m.Teams.RemoveAll(t => !wanted.Contains(t.TeamId));
@@ -339,6 +398,8 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
         TeamNames = m.Teams.Where(t => t.Team != null).Select(t => t.Team!.Name).OrderBy(n => n).ToList(),
         DefaultDepartmentId = m.DefaultDepartmentId, DefaultCaseType = m.DefaultCaseType, DefaultSubCategory = m.DefaultSubCategory,
         DefaultPriority = m.DefaultPriority, DefaultPreferredLanguage = m.DefaultPreferredLanguage,
+        ReviewSlaMinutes = m.ReviewSlaMinutes, ReviewReminderMinutes = m.ReviewReminderMinutes, ReviewEscalationMinutes = m.ReviewEscalationMinutes,
+        ReviewEscalateTo = m.ReviewEscalateTo,
     };
 
     private static bool IsEmail(string? value)
@@ -354,7 +415,8 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
     {
         var counts = await db.InboundEmails.AsNoTracking().Where(e => (e.Status == EmailStatuses.CaseCreated || e.Status == EmailStatuses.TicketCreated) && e.VerifiedDomainId != null)
             .GroupBy(e => e.VerifiedDomainId!.Value).Select(g => new { g.Key, Count = g.Count() }).ToDictionaryAsync(x => x.Key, x => x.Count, ct);
-        var list = await db.EmailVerifiedDomains.AsNoTracking().Include(d => d.Organisation).Include(d => d.Senders)
+        var list = await db.EmailVerifiedDomains.AsNoTracking().Include(d => d.Organisation)
+            .Include(d => d.Senders).ThenInclude(x => x.Mailbox).Include(d => d.Senders).ThenInclude(x => x.Team)
             .ToListAsync(ct);
         return list.OrderBy(d => d.Organisation?.Name ?? d.OrganisationName, StringComparer.OrdinalIgnoreCase).ThenBy(d => d.Domain)
             .Select(d => ToDto(d, counts.GetValueOrDefault(d.Id))).ToList();
@@ -393,13 +455,11 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
         if (orgName.Length == 0) errors.Add(new("organisationName", "Enter the organisation the domain belongs to."));
         else if (orgName.Length > 200) errors.Add(new("organisationName", "At most 200 characters."));
 
-        var policy = string.IsNullOrWhiteSpace(dto.VerificationPolicy) ? VerificationPolicies.EntireDomain
-            : VerificationPolicies.All.FirstOrDefault(p => string.Equals(p, dto.VerificationPolicy.Trim(), StringComparison.OrdinalIgnoreCase));
-        if (policy == null) errors.Add(new("verificationPolicy", "Choose \"Entire domain\" or \"Specific email addresses only\"."));
+        // A domain names the organisation; it never verifies everyone at it. Only its registered senders are verified, and a domain
+        // may be registered before any of them (its people's emails then wait for review, filed under the organisation).
+        const string policy = VerificationPolicies.SpecificSenders;
 
         var senders = await ValidateSendersAsync(dto.Senders ?? new(), name, dto.IncludeSubdomains, domain.Id, errors, ct);
-        if (policy == VerificationPolicies.SpecificSenders && !senders.Any(s => s.IsActive))
-            errors.Add(new("senders", "Add at least one active sender, or choose \"Entire domain\"."));
 
         if (errors.Count > 0) throw new FieldValidationException(errors);
 
@@ -424,7 +484,7 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
         domain.OrganisationName = organisation.Name;
         domain.IncludeSubdomains = dto.IncludeSubdomains;
         domain.IsActive = dto.IsActive;
-        domain.VerificationPolicy = policy!;
+        domain.VerificationPolicy = policy;
         domain.RequireAuthentication = dto.RequireAuthentication;
         if (id == null) db.EmailVerifiedDomains.Add(domain);
         else
@@ -445,7 +505,8 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
                 domain.Senders.Add(row);
                 db.EmailVerifiedSenders.Add(row);   // explicitly new: its id is set already, so EF would otherwise take it for an existing row
             }
-            else if (row.Address != s.Address || row.DisplayName != s.DisplayName || row.Description != s.Description || row.IsActive != s.IsActive)
+            else if (row.Address != s.Address || row.DisplayName != s.DisplayName || row.Description != s.Description || row.IsActive != s.IsActive
+                     || row.MailboxId != s.MailboxId || row.TeamId != s.TeamId)
             {
                 row.UpdatedAt = now;
                 row.UpdatedByUserId = Actor(actingUserId);
@@ -454,6 +515,8 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
             row.DisplayName = s.DisplayName;
             row.Description = s.Description;
             row.IsActive = s.IsActive;
+            row.MailboxId = s.MailboxId;
+            row.TeamId = s.TeamId;
             keep.Add(row.Id);
         }
         foreach (var gone in domain.Senders.Where(x => !keep.Contains(x.Id)).ToList())
@@ -467,7 +530,8 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
             before, Snapshot(domain));
         await db.SaveChangesAsync(ct);
 
-        var saved = await db.EmailVerifiedDomains.AsNoTracking().Include(d => d.Organisation).Include(d => d.Senders)
+        var saved = await db.EmailVerifiedDomains.AsNoTracking().Include(d => d.Organisation)
+            .Include(d => d.Senders).ThenInclude(x => x.Mailbox).Include(d => d.Senders).ThenInclude(x => x.Team)
             .FirstAsync(d => d.Id == domain.Id, ct);
         return ToDto(saved, await db.InboundEmails.CountAsync(e => e.VerifiedDomainId == domain.Id && (e.Status == EmailStatuses.CaseCreated || e.Status == EmailStatuses.TicketCreated), ct));
     }
@@ -501,8 +565,10 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
             if (alias.Length == 0) errors.Add(new($"{field}.displayName", "Enter the name this sender is shown by."));
             else if (alias.Length > 100) errors.Add(new($"{field}.displayName", "At most 100 characters."));
             if (description?.Length > 500) errors.Add(new($"{field}.description", "At most 500 characters."));
-            result.Add(new VerifiedSenderDto { Id = s.Id, Address = address, DisplayName = alias, Description = description, IsActive = s.IsActive });
+            result.Add(new VerifiedSenderDto { Id = s.Id, Address = address, DisplayName = alias, Description = description, IsActive = s.IsActive,
+                MailboxId = s.MailboxId, TeamId = s.TeamId });
         }
+        await ValidateMappingsAsync(result.Select((r, i) => ($"senders.{i}", r.MailboxId, r.TeamId)).ToList(), errors, ct);
 
         var addresses = result.Select(r => r.Address).Where(a => a.Length > 0).ToList();
         if (addresses.Count > 0)
@@ -531,9 +597,282 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
         Id = d.Id, Domain = d.Domain, OrganisationId = d.OrganisationId, OrganisationName = d.Organisation?.Name ?? d.OrganisationName,
         IncludeSubdomains = d.IncludeSubdomains, IsActive = d.IsActive, VerificationPolicy = d.VerificationPolicy, RequireAuthentication = d.RequireAuthentication,
         Senders = d.Senders.OrderBy(s => s.DisplayName, StringComparer.OrdinalIgnoreCase).ThenBy(s => s.Address)
-            .Select(s => new VerifiedSenderDto { Id = s.Id, Address = s.Address, DisplayName = s.DisplayName, Description = s.Description, IsActive = s.IsActive }).ToList(),
+            .Select(s => SenderDto(s, d)).ToList(),
         CaseCount = cases, CreatedAt = d.CreatedAt, UpdatedAt = d.UpdatedAt,
     };
+
+    private static VerifiedSenderDto SenderDto(EmailVerifiedSender s, EmailVerifiedDomain? d) => new()
+    {
+        Id = s.Id, Address = s.Address, DisplayName = s.DisplayName, Description = s.Description, IsActive = s.IsActive,
+        MailboxId = s.MailboxId, MailboxName = s.Mailbox == null ? null : $"{s.Mailbox.Name} <{s.Mailbox.Address}>",
+        TeamId = s.TeamId, TeamName = s.Team?.Name,
+        VerifiedDomainId = s.VerifiedDomainId, Domain = d?.Domain, OrganisationId = d?.OrganisationId, OrganisationName = d?.Organisation?.Name ?? d?.OrganisationName,
+        CreatedAt = s.CreatedAt, UpdatedAt = s.UpdatedAt,
+    };
+
+    /// <summary>
+    /// A sender's mailbox and team. Both optional; a team needs a mailbox, and must be one of the teams that mailbox is shared with,
+    /// so a sender can never route work to a team that may not see the mailbox. An inactive team is not offered.
+    /// </summary>
+    private async Task ValidateMappingsAsync(List<(string Field, Guid? MailboxId, Guid? TeamId)> rows, List<FieldError> errors, CancellationToken ct)
+    {
+        var mailboxIds = rows.Where(r => r.MailboxId != null).Select(r => r.MailboxId!.Value).Distinct().ToList();
+        var teamIds = rows.Where(r => r.TeamId != null).Select(r => r.TeamId!.Value).Distinct().ToList();
+        if (mailboxIds.Count == 0 && teamIds.Count == 0) return;
+        var mailboxes = await db.EmailMailboxes.AsNoTracking().Include(m => m.Teams).Where(m => mailboxIds.Contains(m.Id)).ToDictionaryAsync(m => m.Id, ct);
+        var teams = await db.Teams.AsNoTracking().Where(t => teamIds.Contains(t.Id)).ToDictionaryAsync(t => t.Id, ct);
+        foreach (var (field, mailboxId, teamId) in rows)
+        {
+            EmailMailbox? mailbox = null;
+            if (mailboxId is { } mid && !mailboxes.TryGetValue(mid, out mailbox))
+                errors.Add(new($"{field}.mailboxId", "This mailbox no longer exists. Choose another."));
+            if (teamId is not { } tid) continue;
+            if (!teams.TryGetValue(tid, out var team)) errors.Add(new($"{field}.teamId", "This team no longer exists. Choose another."));
+            else if (!team.IsActive) errors.Add(new($"{field}.teamId", $"{team.Name} is inactive. Choose an active team."));
+            else if (mailboxId == null) errors.Add(new($"{field}.teamId", "Choose the mailbox first: the team must be one the mailbox is shared with."));
+            else if (mailbox != null && mailbox.Teams.All(t => t.TeamId != tid))
+                errors.Add(new($"{field}.teamId", $"{mailbox.Address} is not shared with {team.Name}. Give {team.Name} access to the mailbox under Inbound Mailboxes, or choose one of its teams."));
+        }
+    }
+
+    /// <summary>Every registered sender, with its domain, organisation, mailbox and team (Sender Verification → Senders).</summary>
+    public async Task<List<VerifiedSenderDto>> SendersAsync(CancellationToken ct)
+    {
+        var rows = await db.EmailVerifiedSenders.AsNoTracking()
+            .Include(s => s.VerifiedDomain).ThenInclude(d => d!.Organisation).Include(s => s.Mailbox).Include(s => s.Team)
+            .ToListAsync(ct);
+        return rows.OrderBy(s => s.VerifiedDomain?.Organisation?.Name ?? s.VerifiedDomain?.OrganisationName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(s => s.DisplayName, StringComparer.OrdinalIgnoreCase).ThenBy(s => s.Address)
+            .Select(s => SenderDto(s, s.VerifiedDomain)).ToList();
+    }
+
+    /// <summary>
+    /// Registers (or changes) one sender directly. The domain comes from the address: a registered domain must belong to the
+    /// organisation named; an unregistered one is registered for it, verifying only its listed senders (never everyone at it).
+    /// The same address can never be two senders: the unique address is checked here and by the database.
+    /// </summary>
+    public async Task<VerifiedSenderDto> SaveSenderAsync(Guid? id, SaveSenderDto dto, Guid actingUserId, CancellationToken ct)
+    {
+        var (sender, domain) = await StageSenderAsync(id, dto, actingUserId, ct);
+        await db.SaveChangesAsync(ct);
+        return SenderDto(sender, domain);
+    }
+
+    /// <summary>Validates and applies a sender registration to the context WITHOUT saving, so a review can commit it with its decision.</summary>
+    private async Task<(EmailVerifiedSender Sender, EmailVerifiedDomain Domain)> StageSenderAsync(Guid? id, SaveSenderDto dto, Guid actingUserId, CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        var sender = id is { } existingId
+            ? await db.EmailVerifiedSenders.Include(s => s.VerifiedDomain).ThenInclude(d => d!.Organisation).Include(s => s.Mailbox).Include(s => s.Team)
+                  .FirstOrDefaultAsync(s => s.Id == existingId, ct) ?? throw new KeyNotFoundException("Sender not found.")
+            : null;
+        var before = sender == null ? null : Snapshot(sender, sender.VerifiedDomain!);
+
+        var errors = new List<FieldError>();
+        var address = (dto.Address ?? "").Trim().ToLowerInvariant();
+        var alias = CollapseSpaces(dto.DisplayName ?? "");
+        var description = string.IsNullOrWhiteSpace(dto.Description) ? null : dto.Description.Trim();
+        var orgName = CollapseSpaces(dto.OrganisationName ?? "");
+        var domainName = "";
+        if (!IsEmail(address)) errors.Add(new("address", "Enter a valid email address."));
+        else
+        {
+            domainName = EmailParsing.NormalizeDomain(EmailParsing.DomainOf(address));
+            if (domainName.Length == 0) errors.Add(new("address", "Enter a valid email address."));
+            else if (PublicEmailDomains.Contains(domainName))
+                errors.Add(new("address", $"{domainName} is a public email provider: anyone can have an address there, so its senders cannot be verified by organisation."));
+            else if (await db.EmailVerifiedSenders.AsNoTracking().Where(s => s.Address == address && s.Id != (id ?? Guid.Empty))
+                         .Select(s => s.VerifiedDomain!.Domain).FirstOrDefaultAsync(ct) is { } taken)
+                errors.Add(new("address", $"{address} is already registered (under {taken}). Edit that sender instead."));
+        }
+        if (alias.Length == 0) errors.Add(new("displayName", "Enter the name this sender is shown by."));
+        else if (alias.Length > 100) errors.Add(new("displayName", "At most 100 characters."));
+        if (description?.Length > 500) errors.Add(new("description", "At most 500 characters."));
+        if (orgName.Length == 0) errors.Add(new("organisationName", "Enter the organisation the sender belongs to."));
+        else if (orgName.Length > 200) errors.Add(new("organisationName", "At most 200 characters."));
+
+        // The sender's domain: the registered domain the address falls under (exact, or a parent that accepts sub-domains).
+        EmailVerifiedDomain? domain = null;
+        if (domainName.Length > 0)
+        {
+            var domains = await db.EmailVerifiedDomains.Include(d => d.Organisation).ToListAsync(ct);
+            domain = EmailParsing.MatchDomain(domainName, domains, d => d.Domain, d => d.IncludeSubdomains);
+            if (domain != null && orgName.Length > 0 && EmailOrganisation.KeyOf(orgName) != (domain.Organisation?.NameKey ?? EmailOrganisation.KeyOf(domain.OrganisationName)))
+                errors.Add(new("organisationName", $"{domain.Domain} is registered to {domain.Organisation?.Name ?? domain.OrganisationName}. A sender at it belongs to that organisation."));
+            if (sender != null && domain?.Id != sender.VerifiedDomainId)
+                errors.Add(new("address", $"The address must stay at {sender.VerifiedDomain!.Domain}. To register an address at another domain, add a new sender."));
+        }
+        await ValidateMappingsAsync([("", dto.MailboxId, dto.TeamId)], errors, ct);
+        if (errors.Count > 0)
+            throw new FieldValidationException(errors.Select(e => e.Field.StartsWith('.') ? new FieldError(e.Field[1..], e.Message) : e).ToList());
+
+        if (domain == null)
+        {
+            var key = EmailOrganisation.KeyOf(orgName);
+            var organisation = await db.EmailOrganisations.FirstOrDefaultAsync(o => o.NameKey == key, ct);
+            if (organisation == null)
+            {
+                organisation = new EmailOrganisation { Name = orgName, NameKey = key, CreatedAt = now, CreatedByUserId = Actor(actingUserId) };
+                db.EmailOrganisations.Add(organisation);
+            }
+            else if (!organisation.IsActive)
+            {
+                organisation.IsActive = true;
+                organisation.UpdatedAt = now;
+                organisation.UpdatedByUserId = Actor(actingUserId);
+            }
+            domain = new EmailVerifiedDomain
+            {
+                Domain = domainName, OrganisationId = organisation.Id, Organisation = organisation, OrganisationName = organisation.Name,
+                VerificationPolicy = VerificationPolicies.SpecificSenders, IsActive = true, CreatedAt = now, CreatedByUserId = Actor(actingUserId),
+            };
+            db.EmailVerifiedDomains.Add(domain);
+            Audit(actingUserId, "DOMAIN_CREATED", "EmailVerifiedDomain",
+                $"Domain {domain.Domain} ({organisation.Name}) added with its first sender; only its listed senders are verified.", null, Snapshot(domain));
+        }
+
+        if (sender == null)
+        {
+            sender = new EmailVerifiedSender { VerifiedDomainId = domain.Id, VerifiedDomain = domain, CreatedAt = now, CreatedByUserId = Actor(actingUserId) };
+            db.EmailVerifiedSenders.Add(sender);
+        }
+        else
+        {
+            sender.UpdatedAt = now;
+            sender.UpdatedByUserId = Actor(actingUserId);
+        }
+        sender.Address = address;
+        sender.DisplayName = alias;
+        sender.Description = description;
+        sender.IsActive = dto.IsActive;
+        sender.MailboxId = dto.MailboxId;
+        sender.TeamId = dto.TeamId;
+        sender.Mailbox = dto.MailboxId == null ? null : await db.EmailMailboxes.FirstOrDefaultAsync(m => m.Id == dto.MailboxId, ct);
+        sender.Team = dto.TeamId == null ? null : await db.Teams.FirstOrDefaultAsync(t => t.Id == dto.TeamId, ct);
+
+        Audit(actingUserId, before == null ? "SENDER_REGISTERED" : "SENDER_UPDATED", "EmailVerifiedSender",
+            before == null ? $"Sender {address} ({domain.Organisation?.Name ?? domain.OrganisationName}) registered." : $"Sender {address} changed.",
+            before, Snapshot(sender, domain));
+        return (sender, domain);
+    }
+
+    // ───────────────────────────── sender review ─────────────────────────────
+
+    /// <summary>
+    /// A reviewer's decision on an email from a sender who is not registered. Approve releases THIS email only (the caller then works it
+    /// into a ticket); registering the sender is a second, separately confirmed choice, committed in the same save as the decision.
+    /// Reject and Suspicious need a reason and end the email for good. Two reviewers can never both decide: the email's version is checked.
+    /// </summary>
+    public async Task<InboxEmailDetailDto> ReviewAsync(Guid id, ReviewEmailDto dto, Guid actingUserId, bool mayRegister, CancellationToken ct)
+    {
+        // Visibility first (VisibleEmails is a no-tracking query), then the email itself, tracked, to change it.
+        if (!await VisibleEmails().AnyAsync(e => e.Id == id, ct)) throw new KeyNotFoundException("Email not found.");
+        var email = await db.InboundEmails.FirstAsync(e => e.Id == id, ct);
+        if (email.Status != EmailStatuses.PendingReview || email.Version != dto.Version)
+            throw new EmailReviewConflictException(email.Status == EmailStatuses.PendingReview
+                ? "This email was just changed by someone else. Reload it and decide again."
+                : "This email is no longer waiting for review; someone else has already decided.");
+
+        var decision = ReviewDecisionsOf(dto.Decision);
+        var note = string.IsNullOrWhiteSpace(dto.Note) ? null : dto.Note.Trim();
+        var errors = new List<FieldError>();
+        if (decision == null) errors.Add(new("decision", "Choose Approve, Reject or Mark as suspicious."));
+        if (decision is ReviewDecisions.Rejected or ReviewDecisions.Suspicious && (note == null || note.Length < 3))
+            errors.Add(new("note", "Say why, so the next reviewer and the audit trail know."));
+        if (note?.Length > 1000) errors.Add(new("note", "At most 1000 characters."));
+        if (dto.Register != null && decision != ReviewDecisions.Approved)
+            errors.Add(new("register", "A sender can only be registered while approving their email."));
+        if (dto.Register != null && decision == ReviewDecisions.Approved && !dto.ConfirmRegistration)
+            errors.Add(new("confirmRegistration", "Confirm that this sender should be registered permanently: their future emails will be verified without review."));
+        if (errors.Count > 0) throw new FieldValidationException(errors);
+        if (dto.Register != null && !mayRegister)
+            throw new EmailReviewForbiddenException("You may approve this email, but not register its sender. Approve it without registering, or ask someone who may register senders.");
+
+        var before = new { email.Status, email.ReviewDecision };
+        if (dto.Register is { } r)
+        {
+            try
+            {
+                await StageSenderAsync(null, new SaveSenderDto
+                {
+                    Address = email.FromAddress, DisplayName = r.DisplayName, Description = r.Description, OrganisationName = r.OrganisationName,
+                    IsActive = true, MailboxId = r.MailboxId, TeamId = r.TeamId,
+                }, actingUserId, ct);
+            }
+            catch (FieldValidationException ex)
+            {
+                throw new FieldValidationException(ex.Errors.Select(e => new FieldError($"register.{e.Field}", e.Message)).ToList());
+            }
+        }
+
+        var now = DateTime.UtcNow;
+        ReviewSla.Stop(email, now);
+        email.ReviewDecision = decision;
+        email.ReviewNote = note;
+        email.ReviewedById = Actor(actingUserId);
+        email.ReviewedAt = now;
+        email.Version++;
+        email.UpdatedAt = now;
+        switch (decision)
+        {
+            case ReviewDecisions.Approved:
+                // Worked through again with the approval: it opens its ticket (and its sender, if registered now, is verified).
+                email.Status = EmailStatuses.Received;
+                email.StatusNote = "Approved by a reviewer; opening its ticket.";
+                break;
+            case ReviewDecisions.Rejected:
+                email.Status = EmailStatuses.Rejected;
+                email.StatusNote = $"Rejected by a reviewer: {note}";
+                break;
+            default:
+                email.Status = EmailStatuses.Suspicious;
+                email.StatusNote = $"Marked suspicious by a reviewer: {note}";
+                break;
+        }
+        db.CaseEvents.Add(new CaseEvent
+        {
+            CaseId = null, EventType = EventType.Other, CreatedAt = now, UserId = Actor(actingUserId), IsInternal = true,
+            Module = "EmailReview", EntityName = "InboundEmail",
+            ActionType = decision switch { ReviewDecisions.Approved => "EMAIL_APPROVED", ReviewDecisions.Rejected => "EMAIL_REJECTED", _ => "EMAIL_MARKED_SUSPICIOUS" },
+            Message = decision switch
+            {
+                ReviewDecisions.Approved => $"Email \"{email.Subject}\" from {email.FromAddress} approved{(dto.Register != null ? " and its sender registered" : "; the sender stays unregistered")}.",
+                ReviewDecisions.Rejected => $"Email \"{email.Subject}\" from {email.FromAddress} rejected: {note}",
+                _ => $"Email \"{email.Subject}\" from {email.FromAddress} marked suspicious: {note}",
+            },
+            OldValue = System.Text.Json.JsonSerializer.Serialize(before),
+            NewValue = System.Text.Json.JsonSerializer.Serialize(new { email.Status, email.ReviewDecision, email.ReviewNote, RegisteredSender = dto.Register != null,
+                email.ReviewStartedAt, email.ReviewDueAt, DecidedAt = now, email.ReviewSlaOutcome }),
+        });
+        await db.SaveChangesAsync(ct);
+        return await GetAsync(id, ct);
+    }
+
+    private static string? ReviewDecisionsOf(string? value) => (value ?? "").Trim().ToLowerInvariant() switch
+    {
+        "approve" or "approved" => ReviewDecisions.Approved,
+        "reject" or "rejected" => ReviewDecisions.Rejected,
+        "suspicious" => ReviewDecisions.Suspicious,
+        _ => null,
+    };
+
+    /// <summary>The organisations the caller's emails come from, for the Inbox's organisation filter.</summary>
+    public async Task<List<EmailOrganisationDto>> InboxOrganisationsAsync(CancellationToken ct)
+    {
+        var ids = VisibleEmails().Where(e => e.OrganisationId != null).Select(e => e.OrganisationId!.Value).Distinct();
+        var orgs = await db.EmailOrganisations.AsNoTracking().Where(o => ids.Contains(o.Id)).ToListAsync(ct);
+        return orgs.OrderBy(o => o.Name, StringComparer.OrdinalIgnoreCase).Select(o => new EmailOrganisationDto { Id = o.Id, Name = o.Name }).ToList();
+    }
+
+    public async Task DeleteSenderAsync(Guid id, Guid actingUserId, CancellationToken ct)
+    {
+        var sender = await db.EmailVerifiedSenders.Include(s => s.VerifiedDomain).ThenInclude(d => d!.Organisation).Include(s => s.Mailbox).Include(s => s.Team)
+                         .FirstOrDefaultAsync(s => s.Id == id, ct) ?? throw new KeyNotFoundException("Sender not found.");
+        Audit(actingUserId, "SENDER_DELETED", "EmailVerifiedSender", $"Sender {sender.Address} removed; its emails are no longer verified.",
+            Snapshot(sender, sender.VerifiedDomain!), null);
+        db.EmailVerifiedSenders.Remove(sender);
+        await db.SaveChangesAsync(ct);
+    }
 
     // ───────────────────────────── audit ─────────────────────────────
 
@@ -556,13 +895,20 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
     private static object Snapshot(EmailMailbox m, bool passwordChanged) => new
     {
         m.Name, m.Address, m.Username, m.ImapHost, m.ImapPort, m.ImapSecurity, m.SmtpHost, m.SmtpPort, m.SmtpSecurity, m.IsEnabled, m.SendAcknowledgement,
+        m.ReviewSlaMinutes, m.ReviewReminderMinutes, m.ReviewEscalationMinutes, m.ReviewEscalateTo,
         PasswordChanged = passwordChanged,
     };
 
     private static object Snapshot(EmailVerifiedDomain d) => new
     {
         d.Domain, Organisation = d.Organisation?.Name ?? d.OrganisationName, d.IncludeSubdomains, d.IsActive, d.VerificationPolicy, d.RequireAuthentication,
-        Senders = d.Senders.OrderBy(s => s.Address).Select(s => new { s.Address, s.DisplayName, s.Description, s.IsActive }).ToList(),
+        Senders = d.Senders.OrderBy(s => s.Address).Select(s => new { s.Address, s.DisplayName, s.Description, s.IsActive, s.MailboxId, s.TeamId }).ToList(),
+    };
+
+    private static object Snapshot(EmailVerifiedSender s, EmailVerifiedDomain d) => new
+    {
+        s.Address, s.DisplayName, s.Description, s.IsActive, d.Domain, Organisation = d.Organisation?.Name ?? d.OrganisationName,
+        s.MailboxId, Mailbox = s.Mailbox?.Address, s.TeamId, Team = s.Team?.Name,
     };
 
     private static string CollapseSpaces(string value) => System.Text.RegularExpressions.Regex.Replace(value.Trim(), @"\s+", " ");
@@ -588,3 +934,9 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
         return new EmailCaseOptionsDto { CaseTypes = types, Departments = deptOptions, Priorities = priorities, Languages = languages, Teams = teams };
     }
 }
+
+/// <summary>The email is no longer waiting for review, or changed since the reviewer opened it. Answered 409.</summary>
+public sealed class EmailReviewConflictException(string message) : Exception(message);
+
+/// <summary>The reviewer may decide on the email but not register its sender. Answered 403.</summary>
+public sealed class EmailReviewForbiddenException(string message) : Exception(message);

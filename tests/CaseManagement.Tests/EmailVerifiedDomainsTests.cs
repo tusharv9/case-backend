@@ -88,11 +88,12 @@ public class EmailVerifiedDomainsTests : IDisposable
     }
 
     [Fact]
-    public async Task Specific_senders_needs_at_least_one_active_sender()
+    public async Task A_domain_can_be_registered_before_its_senders_and_never_verifies_everyone_at_it_whatever_is_asked()
     {
-        var errors = await ErrorsOf(() => admin.SaveDomainAsync(null, Domain("bsn.com.in", "BSN", VerificationPolicies.SpecificSenders), actor, default));
+        var saved = await admin.SaveDomainAsync(null, Domain("bsn.com.in", "BSN", VerificationPolicies.EntireDomain), actor, default);
 
-        Assert.Contains(errors, e => e.Field == "senders");
+        Assert.Equal(VerificationPolicies.SpecificSenders, saved.VerificationPolicy);
+        Assert.Empty(saved.Senders);
     }
 
     [Fact]

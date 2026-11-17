@@ -36,7 +36,7 @@ public class TicketServiceTests : IDisposable
     private readonly Team support;
     private readonly Team other;
     private readonly EmailMailbox restricted;
-    private readonly EmailMailbox open;
+    private readonly EmailMailbox unshared;
 
     public TicketServiceTests()
     {
@@ -49,8 +49,8 @@ public class TicketServiceTests : IDisposable
         db.TeamMembers.Add(new TeamMember { TeamId = other.Id, UserId = outsider.Id, IsActive = true, CreatedAt = DateTime.UtcNow });
         restricted = new EmailMailbox { Name = "Support", Address = "support@rma.test", ImapHost = "i", SmtpHost = "s", CreatedAt = DateTime.UtcNow };
         restricted.Teams.Add(new EmailMailboxTeam { MailboxId = restricted.Id, TeamId = support.Id });
-        open = new EmailMailbox { Name = "General", Address = "hello@rma.test", ImapHost = "i", SmtpHost = "s", CreatedAt = DateTime.UtcNow };
-        db.EmailMailboxes.AddRange(restricted, open);
+        unshared = new EmailMailbox { Name = "General", Address = "hello@rma.test", ImapHost = "i", SmtpHost = "s", CreatedAt = DateTime.UtcNow };
+        db.EmailMailboxes.AddRange(restricted, unshared);
         db.SaveChanges();
     }
 
@@ -88,7 +88,8 @@ public class TicketServiceTests : IDisposable
             .Returns(async (CreateCaseDto dto, Guid by, Guid? owner, TicketOrigin origin, bool _, Func<Case, Task>? inTx) =>
             {
                 var c = new Case { CaseNumber = $"C-{created.Count + 1:D5}", Title = dto.Title, Description = dto.Description, CaseType = dto.CaseType,
-                    Severity = dto.Severity, SourceChannel = dto.SourceChannel ?? "", CustomerId = dto.CustomerId, OwnerId = owner ?? by, TeamId = support.Id, CreatedAt = DateTime.UtcNow };
+                    Severity = dto.Severity, SourceChannel = dto.SourceChannel ?? "", PreferredCommunicationChannel = dto.PreferredCommunicationChannel ?? "",
+                    ContactEmail = dto.ContactEmail, CustomerId = dto.CustomerId, OwnerId = owner ?? by, TeamId = support.Id, CreatedAt = DateTime.UtcNow };
                 db.Cases.Add(c);
                 if (inTx != null) await inTx(c);
                 await db.SaveChangesAsync();
@@ -156,6 +157,76 @@ public class TicketServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task When_email_cases_are_assigned_by_hand_converting_an_email_ticket_without_an_agent_is_refused_and_makes_no_case()
+    {
+        var cards = new Department { Name = "Cards", Code = "CD", IsActive = true, CreatedAt = DateTime.UtcNow };
+        db.Departments.Add(cards);
+        db.TeamDepartments.Add(new TeamDepartment { TeamId = support.Id, DepartmentId = cards.Id });
+        db.AssignmentConfigurations.Add(new AssignmentConfiguration { TeamId = null, Algorithm = AssignmentAlgorithms.RoundRobin, MaxConcurrentCapacity = 5, CreatedAt = DateTime.UtcNow });
+        db.AssignmentConfigurations.Add(new AssignmentConfiguration { TeamId = null, CaseSource = AssignmentCaseSources.Email, Algorithm = AssignmentAlgorithms.Manual, MaxConcurrentCapacity = 5, CreatedAt = DateTime.UtcNow });
+        db.SaveChanges();
+        var ticket = await Waiting(restricted);
+        AssignTicketDto Into(Guid? owner) => new()
+        {
+            Case = new CreateCaseDto { CaseType = "Complaint", DepartmentId = cards.Id, Subcategory = "Refunds", Severity = "High", SourceChannel = "Walk-in" },
+            OwnerId = owner, CreateCustomerFromRequester = true, Version = ticket.Version,
+        };
+
+        var rule = await Service(assigner).AssignmentRuleAsync(ticket.Id, cards.Id, default);
+        var refused = await Assert.ThrowsAsync<FieldValidationException>(() =>
+            Service(assigner, Permissions.TicketsAssign).AssignAsync(ticket.Id, Into(null), assigner.Id, false, default));
+        var done = await Service(assigner, Permissions.TicketsAssign).AssignAsync(ticket.Id, Into(agent.Id), assigner.Id, false, default);
+
+        Assert.Equal(("Support", AssignmentAlgorithms.Manual, true), (rule!.TeamName, rule.Algorithm, rule.OwnerRequired));
+        Assert.Contains(refused.Errors, e => e.Field == "ownerId" && e.Message.Contains("Email cases are assigned by hand"));
+        Assert.Equal(TicketStatuses.Converted, done.Status);
+        Assert.Equal("Email", (await db.Cases.SingleAsync()).SourceChannel);   // a case from an email ticket is an email case, whatever was sent
+    }
+
+    [Fact]
+    public async Task A_case_made_from_an_email_ticket_keeps_to_email_and_replies_go_to_the_address_it_came_from()
+    {
+        var ticket = await Waiting(restricted);
+        var dto = Assign(ticket.Version, agent.Id);
+        dto.Case.SourceChannel = "Voice";                    // whatever the form sent
+        dto.Case.PreferredCommunicationChannel = "Phone";
+        dto.Case.ContactEmail = "someone-else@example.com";
+
+        await Service(assigner, Permissions.TicketsAssign).AssignAsync(ticket.Id, dto, assigner.Id, false, default);
+
+        var c = await db.Cases.SingleAsync();
+        Assert.Equal(("Email", "Email", ticket.RequesterEmail), (c.SourceChannel, c.PreferredCommunicationChannel, c.ContactEmail));
+    }
+
+    [Fact]
+    public async Task A_registered_senders_ticket_becomes_a_case_for_their_organisation_without_making_a_person_customer()
+    {
+        var org = new EmailOrganisation { Name = "ABC Financial Services", NameKey = "abc financial services", CreatedAt = DateTime.UtcNow };
+        var domain = new EmailVerifiedDomain { Domain = "abcfinancial.com", OrganisationId = org.Id, OrganisationName = org.Name, VerificationPolicy = VerificationPolicies.SpecificSenders, CreatedAt = DateTime.UtcNow };
+        var rahul = new EmailVerifiedSender { VerifiedDomainId = domain.Id, Address = "rahul@abcfinancial.com", DisplayName = "Rahul Sharma", CreatedAt = DateTime.UtcNow };
+        db.AddRange(org, domain, rahul);
+        db.SaveChanges();
+        var ticket = await Waiting(restricted);
+        var tracked = db.Tickets.Single(t => t.Id == ticket.Id);
+        (tracked.OrganisationId, tracked.VerifiedSenderId) = (org.Id, rahul.Id);
+        db.SaveChanges();
+        db.ChangeTracker.Clear();
+
+        var detail = await Service(assigner).GetAsync(ticket.Id, default);
+        var other = Assign(ticket.Version, agent.Id);
+        other.Case.OrganisationContactId = Guid.NewGuid();   // someone else's sender: refused
+        await Assert.ThrowsAsync<FieldValidationException>(() => Service(assigner, Permissions.TicketsAssign).AssignAsync(ticket.Id, other, assigner.Id, false, default));
+        var dto = Assign(ticket.Version, agent.Id);
+        dto.CreateCustomerFromRequester = false;
+        dto.Case.OrganisationContactId = rahul.Id;
+        await Service(assigner, Permissions.TicketsAssign).AssignAsync(ticket.Id, dto, assigner.Id, false, default);
+
+        Assert.Equal((rahul.Id, "ABC Financial Services", "Rahul Sharma"), (detail.OrganisationContactId, detail.OrganisationName, detail.ContactName));
+        Assert.Empty(db.Customers);   // no individual customer was made from the requester
+        Assert.Single(db.Cases);
+    }
+
+    [Fact]
     public async Task A_ticket_already_assigned_is_refused_naming_who_did_it_and_no_second_case_is_made()
     {
         var ticket = await Waiting(restricted);
@@ -195,17 +266,18 @@ public class TicketServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task A_mailbox_linked_to_a_team_is_seen_only_by_that_teams_lead_and_members_while_an_unlinked_one_is_seen_by_everyone()
+    public async Task A_mailbox_is_seen_only_by_its_teams_lead_and_members_and_one_shared_with_no_team_only_by_those_who_see_every_mailbox()
     {
         var supportTicket = await Waiting(restricted, "Support only");
-        await Waiting(open, "Anyone");
+        var unsharedTicket = await Waiting(unshared, "No team yet");
 
         string[] Subjects(PagedResponseDto<TicketListItemDto> p) => p.Items.Select(i => i.Subject).OrderBy(s => s).ToArray();
-        Assert.Equal(["Anyone", "Support only"], Subjects(await Service(assigner).ListAsync("new", null, null, 1, 25, default)));
-        Assert.Equal(["Anyone", "Support only"], Subjects(await Service(agent).ListAsync("new", null, null, 1, 25, default)));
-        Assert.Equal(["Anyone"], Subjects(await Service(outsider).ListAsync("new", null, null, 1, 25, default)));
-        Assert.Equal(["Anyone", "Support only"], Subjects(await Service(outsider, Permissions.TicketsViewAll).ListAsync("new", null, null, 1, 25, default)));
+        Assert.Equal(["Support only"], Subjects(await Service(assigner).ListAsync("new", null, null, 1, 25, default)));
+        Assert.Equal(["Support only"], Subjects(await Service(agent).ListAsync("new", null, null, 1, 25, default)));
+        Assert.Empty(Subjects(await Service(outsider).ListAsync("new", null, null, 1, 25, default)));
+        Assert.Equal(["No team yet", "Support only"], Subjects(await Service(outsider, Permissions.TicketsViewAll).ListAsync("new", null, null, 1, 25, default)));
         await Assert.ThrowsAsync<KeyNotFoundException>(() => Service(outsider).GetAsync(supportTicket.Id, default));
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => Service(agent).GetAsync(unsharedTicket.Id, default));
         await Assert.ThrowsAsync<KeyNotFoundException>(() =>
             Service(outsider, Permissions.TicketsAssign).AssignAsync(supportTicket.Id, Assign(supportTicket.Version), outsider.Id, false, default));
     }
@@ -213,57 +285,13 @@ public class TicketServiceTests : IDisposable
     [Fact]
     public async Task Closing_without_a_case_needs_a_reason_and_ends_the_ticket()
     {
-        var ticket = await Waiting(open);
+        var ticket = await Waiting(restricted);
 
         await Assert.ThrowsAsync<FieldValidationException>(() => Service(assigner).CloseAsync(ticket.Id, new CloseTicketDto { Reason = " ", Version = ticket.Version }, assigner.Id, default));
         var closed = await Service(assigner).CloseAsync(ticket.Id, new CloseTicketDto { Reason = "Spam", Version = ticket.Version }, assigner.Id, default);
 
         Assert.Equal((TicketStatuses.Closed, "Spam", "Asha Triage"), (closed.Status, closed.CloseReason, closed.HandledByName));
         Assert.Empty(db.Cases);
-    }
-
-    [Fact]
-    public async Task A_ticket_raised_by_hand_needs_a_way_to_reach_the_requester_and_tells_the_mailbox_teams_lead()
-    {
-        var service = Service(agent, Permissions.TicketsCreate);
-        var dto = new CreateTicketDto { MailboxId = restricted.Id, RequesterName = "Walk-in", Subject = "Lost card", Description = "Customer at branch." };
-
-        var ex = await Assert.ThrowsAsync<FieldValidationException>(() => service.CreateAsync(dto, [], agent.Id, default));
-        Assert.Contains(ex.Errors, e => e.Field == "requesterEmail");
-
-        dto.RequesterPhone = "+60123456789";
-        var ticket = await service.CreateAsync(dto, [], agent.Id, default);
-
-        Assert.Equal(("T-00001", TicketSources.Manual, "Bala Agent"), (ticket.TicketNumber, ticket.Source, ticket.CreatedByName));
-        Assert.Contains((CaseNotificationKinds.TicketReceived, assigner.Id), sink.Sent);
-    }
-
-    [Fact]
-    public async Task Nobody_can_raise_a_ticket_into_a_mailbox_they_cannot_see()
-    {
-        var dto = new CreateTicketDto { MailboxId = restricted.Id, RequesterName = "X", RequesterEmail = "x@y.example", Subject = "S", Description = "D" };
-
-        var ex = await Assert.ThrowsAsync<FieldValidationException>(() => Service(outsider, Permissions.TicketsCreate).CreateAsync(dto, [], outsider.Id, default));
-
-        Assert.Contains(ex.Errors, e => e.Field == "mailboxId");
-        Assert.Empty(db.Tickets);
-    }
-
-    // ───────────── the ticket's own SLA ─────────────
-
-    [Fact]
-    public async Task A_ticket_raised_by_hand_takes_its_prioritys_assign_within_target_and_shows_when_it_is_due()
-    {
-        db.PrioritySlaRules.Add(new PrioritySlaRule { Priority = "High", TicketAssignValue = 15, TicketAssignMinutes = 15, CreatedAt = DateTime.UtcNow });
-        await db.SaveChangesAsync();
-        var dto = new CreateTicketDto { MailboxId = open.Id, RequesterName = "Walk-in", RequesterPhone = "+60123456789", Subject = "Lost card", Description = "At branch.", Priority = "high" };
-
-        var ticket = await Service(agent, Permissions.TicketsCreate).CreateAsync(dto, [], agent.Id, default);
-
-        var stored = await db.Tickets.AsNoTracking().SingleAsync();
-        Assert.Equal((15, stored.ReceivedAt.AddMinutes(15)), (stored.AssignTargetMinutes, stored.AssignDueAt));
-        Assert.NotNull(ticket.Sla);
-        Assert.Equal((15, TicketSlaStates.Healthy, true), (ticket.Sla!.TargetMinutes, ticket.Sla.State, ticket.Sla.IsRunning));
     }
 
     [Fact]
@@ -283,7 +311,7 @@ public class TicketServiceTests : IDisposable
     [Fact]
     public async Task Closing_a_ticket_in_time_stops_its_clock_as_met()
     {
-        var ticket = await Waiting(open, age: TimeSpan.FromMinutes(5));
+        var ticket = await Waiting(restricted, age: TimeSpan.FromMinutes(5));
 
         var closed = await Service(assigner).CloseAsync(ticket.Id, new CloseTicketDto { Reason = "Duplicate", Version = ticket.Version }, assigner.Id, default);
 
@@ -293,9 +321,9 @@ public class TicketServiceTests : IDisposable
     [Fact]
     public async Task The_list_shows_each_tickets_assign_time_and_overdue_holds_only_late_tickets_still_waiting()
     {
-        await Waiting(open, "Late");
-        await Waiting(open, "Fresh", age: TimeSpan.FromMinutes(5));
-        var handled = await Waiting(open, "Late but handled");
+        await Waiting(restricted, "Late");
+        await Waiting(restricted, "Fresh", age: TimeSpan.FromMinutes(5));
+        var handled = await Waiting(restricted, "Late but handled");
         await Service(assigner).CloseAsync(handled.Id, new CloseTicketDto { Reason = "Spam", Version = handled.Version }, assigner.Id, default);
         var service = Service(assigner);
 
@@ -312,7 +340,7 @@ public class TicketServiceTests : IDisposable
     [Fact]
     public async Task A_ticket_whose_priority_has_no_assign_target_never_reads_overdue()
     {
-        await Waiting(open, "No target", target: 0);
+        await Waiting(restricted, "No target", target: 0);
 
         var service = Service(assigner);
 

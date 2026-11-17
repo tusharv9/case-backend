@@ -198,7 +198,11 @@ public sealed class EmailIntakeProcessor(
         var email = await db.InboundEmails.FirstOrDefaultAsync(e => e.Id == emailId, ct);
         if (email == null) return null;
         if (email.Status is EmailStatuses.CaseCreated or EmailStatuses.LinkedToCase or EmailStatuses.Ignored
-            or EmailStatuses.TicketCreated or EmailStatuses.LinkedToTicket) return email;
+            or EmailStatuses.TicketCreated or EmailStatuses.LinkedToTicket or EmailStatuses.Rejected) return email;
+        // Waiting for a person: only a person moves it on ("Check again" after registering the sender, or a review decision).
+        if (email.Status == EmailStatuses.PendingReview && !manual) return email;
+        // Suspicious stays so: a reviewer's verdict for good, the automatic one (a failed signature) until someone checks again.
+        if (email.Status == EmailStatuses.Suspicious && (!manual || email.ReviewDecision != null)) return email;
         if (email.RawKey == null) return email;   // too large to read: nothing to work with
         if (email.Status == EmailStatuses.Processing && email.NextAttemptAt > DateTime.UtcNow) return email;   // someone is on it
 
@@ -268,6 +272,9 @@ public sealed class EmailIntakeProcessor(
         email.SenderAlias = null;
         email.Authenticity = EmailAuthenticity.NotChecked;
         email.AuthenticationDetail = null;
+        email.MatchKind = null;
+        email.MatchReason = null;
+        var approved = email.ReviewDecision == ReviewDecisions.Approved;
 
         // Who is it from: the domain names the organisation; the policy and the email's signature decide whether the sender is verified.
         var senderDomain = EmailParsing.DomainOf(email.FromAddress);
@@ -275,12 +282,13 @@ public sealed class EmailIntakeProcessor(
         var domain = EmailParsing.MatchDomain(senderDomain, domains, d => d.Domain, d => d.IncludeSubdomains);
         var verified = false;
         string? refusal = null;
+        EmailVerifiedSender? listed = null;
         if (domain != null)
         {
             email.OrganisationId = domain.OrganisationId;
             var org = OrganisationOf(domain);
 
-            var listed = await db.EmailVerifiedSenders.AsNoTracking()
+            listed = await db.EmailVerifiedSenders.AsNoTracking().Include(s => s.Mailbox)
                 .FirstOrDefaultAsync(s => s.VerifiedDomainId == domain.Id && s.Address == email.FromAddress && s.IsActive, ct);
             email.VerifiedSenderId = listed?.Id;
             email.SenderAlias = listed?.DisplayName;
@@ -296,10 +304,27 @@ public sealed class EmailIntakeProcessor(
                 throw new TransientCheckException($"The signature of {senderDomain} could not be checked (DNS did not answer); it will be checked again.");
             else if (domain.RequireAuthentication && auth.Result != EmailAuthenticity.Pass)
                 refusal = $"{org} requires a valid signature (DKIM) of {senderDomain}, and this email has none. ({auth.Detail})";
-            else if (domain.VerificationPolicy == VerificationPolicies.SpecificSenders && listed == null)
-                refusal = $"{email.FromAddress} is not on {org}'s list of senders. Add it under Maintenance → Verified Domains → {domain.Domain}, then press Check again.";
+            else if (listed == null)
+                // A registered domain names the organisation; it never verifies everyone at it. Only registered senders are verified.
+                refusal = $"{senderDomain} belongs to {org}, but {email.FromAddress} is not one of its registered senders. Review the email, and register the sender if it is genuine.";
             else
                 verified = true;
+            email.MatchKind = verified ? SenderMatchKinds.RegisteredSender : SenderMatchKinds.KnownDomain;
+            email.MatchReason = verified ? null : refusal;
+        }
+        else if (senderDomain.Length > 0)
+        {
+            // Not an organisation we know: does it imitate one? A hint for the reviewer, never trust.
+            var registered = domains.Select(d => new LookalikeDomains.Registered(d.Domain, OrganisationOf(d), d.IncludeSubdomains)).ToList();
+            var resemblance = LookalikeDomains.Find(senderDomain, email.FromName, registered);
+            email.MatchKind = resemblance != null ? SenderMatchKinds.SimilarDomain : SenderMatchKinds.Unknown;
+            email.MatchReason = resemblance?.Reason ?? $"No registered organisation uses {senderDomain}.";
+            if (resemblance != null) email.OrganisationId = domains.First(d => d.Domain == resemblance.Domain).OrganisationId;
+        }
+        else
+        {
+            email.MatchKind = SenderMatchKinds.Unknown;
+            email.MatchReason = "The email has no sender address.";
         }
 
         // A reply on a thread we already have a case for goes to that case — whoever sent it (they were sent our email, or copied
@@ -314,16 +339,16 @@ public sealed class EmailIntakeProcessor(
             return;
         }
 
-        // How the sender stands, for the ticket and the Inbox: verified, not on the domain's list, or not verified (and why).
+        // How the sender stands, for the ticket and the Inbox: verified, an organisation's unregistered sender, or not verified (and why).
         var verification = verified ? SenderVerification.Verified
-            : domain != null && domain.VerificationPolicy == VerificationPolicies.SpecificSenders && email.VerifiedSenderId == null && !forged
-                ? SenderVerification.NotListed : SenderVerification.NotVerified;
-        var note = verified ? VerifiedNote(email, domain!)
-            : refusal ?? (senderDomain.Length == 0 ? "The email has no sender address."
-                : $"{senderDomain} is not a verified domain. Check who sent it before acting on it; add the domain under Maintenance → Verified Domains to mark its senders verified.");
+            : domain != null && email.VerifiedSenderId == null && !forged ? SenderVerification.NotListed : SenderVerification.NotVerified;
+        var note = verified ? VerifiedNote(email, domain!) : refusal ?? email.MatchReason ?? "The sender is not registered.";
+        // The sender's mailbox is a routing hint, never a move: the email stays in the mailbox it arrived at, and says so.
+        if (verified && listed?.MailboxId is { } home && home != email.MailboxId)
+            note += $" {email.FromAddress} is registered to write to {listed.Mailbox?.Address ?? "another mailbox"}; this email arrived here and stays here.";
 
         // A reply on a ticket: added to it while it waits, or to its case once it was assigned. A closed ticket starts a new one.
-        // A forged email is never added to someone's ticket or case: it opens its own ticket, marked not verified.
+        // A forged email is never added to someone's ticket or case: it is held as suspicious instead.
         if (!forged && await ThreadTicketAsync(email, ct) is { } threadTicket)
         {
             if (threadTicket.Status == TicketStatuses.New)
@@ -338,9 +363,49 @@ public sealed class EmailIntakeProcessor(
             }
         }
 
-        // Anything else is a new request: it becomes a ticket, never a case. A person assigns it (Tickets), which makes the case.
+        // A forged email never becomes a ticket, and is not offered for approval: it waits under Suspicious for someone to look.
+        if (forged)
+        {
+            await HoldForReviewAsync(email, EmailStatuses.Suspicious, verification, note, ct);
+            return;
+        }
+
+        // A new request from a registered sender — or one a reviewer approved — becomes a ticket, never a case. A person assigns it
+        // (Tickets), which makes the case. Anyone else's email waits for review; no ticket is opened for it.
+        if (verified || approved)
+        {
+            var mailbox = await db.EmailMailboxes.AsNoTracking().FirstAsync(m => m.Id == email.MailboxId, ct);
+            if (approved && !verified) note = $"Approved by a reviewer: {note}";
+            ReviewSla.Stop(email, DateTime.UtcNow);   // it waited for review (and was approved, or its sender registered meanwhile)
+            await CreateTicketAsync(email, message, mailbox, verified ? domain : null, verification, note, acknowledge: true, ct);
+            return;
+        }
+        await HoldForReviewAsync(email, EmailStatuses.PendingReview, verification, note, ct);
+    }
+
+    /// <summary>
+    /// Leaves the email waiting for a person (or held as suspicious): no ticket, no acknowledgement. An email that starts waiting
+    /// for review starts its review deadline and tells the mailbox's teams.
+    /// </summary>
+    private async Task HoldForReviewAsync(InboundEmail email, string status, string verification, string note, CancellationToken ct)
+    {
+        email.Status = status;
+        email.StatusNote = status == EmailStatuses.Suspicious
+            ? "Held as suspicious: it does not carry its domain's valid signature. It does not become a ticket."
+            : "Waiting for review: the sender is not registered, so no ticket was opened.";
+        email.Verification = verification;
+        email.VerificationNote = note;
+        email.VerifiedDomainId = null;
+        email.ReviewStartedAt ??= DateTime.UtcNow;
+        email.NextAttemptAt = null;
+        email.AckStatus = AcknowledgementStatuses.Skipped;
+        email.UpdatedAt = DateTime.UtcNow;
+        if (status != EmailStatuses.PendingReview) return;
+
         var mailbox = await db.EmailMailboxes.AsNoTracking().FirstAsync(m => m.Id == email.MailboxId, ct);
-        await CreateTicketAsync(email, message, mailbox, verified ? domain : null, verification, note, ct);
+        var clock = await Tickets.TicketSla.ClockAsync(clocks, logger, ct);
+        if (ReviewSla.Start(email, mailbox, clock, DateTime.UtcNow))
+            await ReviewAlerts.NotifyAsync(db, notifications, ReviewAlerts.Kind.Needed, email, mailbox, logger, ct);
     }
 
     private static string OrganisationOf(EmailVerifiedDomain domain) => domain.Organisation?.Name ?? domain.OrganisationName;
@@ -399,7 +464,8 @@ public sealed class EmailIntakeProcessor(
     /// Saved in one transaction with the email's link to it, so there is never a ticket without its email or a second ticket for it.
     /// A verified sender is told the ticket number; anyone else is not answered (we do not mail unknown addresses).
     /// </summary>
-    private async Task CreateTicketAsync(InboundEmail email, MimeMessage message, EmailMailbox mailbox, EmailVerifiedDomain? domain, string verification, string note, CancellationToken ct)
+    private async Task CreateTicketAsync(InboundEmail email, MimeMessage message, EmailMailbox mailbox, EmailVerifiedDomain? domain, string verification, string note,
+        bool acknowledge, CancellationToken ct)
     {
         var systemUser = await SystemUserAsync(ct);
         var body = email.BodyText;
@@ -420,6 +486,9 @@ public sealed class EmailIntakeProcessor(
             Priority = mailbox.DefaultPriority,
             SenderVerification = verification,
             SenderNote = EmailParsing.Truncate(note, 1000),
+            // A registered sender writes for their organisation: the case made from this ticket is for it, with them as the contact.
+            OrganisationId = verification == Models.SenderVerification.Verified ? email.OrganisationId : null,
+            VerifiedSenderId = verification == Models.SenderVerification.Verified ? email.VerifiedSenderId : null,
             ReceivedAt = email.ReceivedAt, CreatedById = systemUser, CreatedAt = DateTime.UtcNow,
         };
         ticket.Attachments.AddRange(await StoreAttachmentsAsync(message, ct));
@@ -431,7 +500,8 @@ public sealed class EmailIntakeProcessor(
         email.VerificationNote = note;
         email.VerifiedDomainId = domain?.Id;
         email.NextAttemptAt = null;
-        email.AckStatus = mailbox.SendAcknowledgement && domain != null ? AcknowledgementStatuses.NotSent : AcknowledgementStatuses.Skipped;
+        // Acknowledged: a registered sender, or one whose email a person approved.
+        email.AckStatus = mailbox.SendAcknowledgement && acknowledge ? AcknowledgementStatuses.NotSent : AcknowledgementStatuses.Skipped;
         email.UpdatedAt = DateTime.UtcNow;
         // The ticket's own SLA (how long it may wait to be assigned) starts from the email's arrival.
         await Tickets.TicketSla.StartAsync(db, ticket, await Tickets.TicketSla.ClockAsync(clocks, logger, ct), ct);
@@ -520,7 +590,9 @@ public sealed class EmailIntakeProcessor(
         if (ids.Count == 0) return null;
         return await db.InboundEmails.AsNoTracking()
             .Where(e => e.Id != email.Id && e.CaseId != null && ((e.InternetMessageId != null && ids.Contains(e.InternetMessageId)) || (e.AckMessageId != null && ids.Contains(e.AckMessageId))))
-            .OrderBy(e => e.ReceivedAt).Select(e => e.CaseId).FirstOrDefaultAsync(ct);
+            .OrderBy(e => e.ReceivedAt).Select(e => e.CaseId).FirstOrDefaultAsync(ct)
+            // …or an answer to one of our Customer Reply emails.
+            ?? await db.CaseEmailMessages.AsNoTracking().Where(m => ids.Contains(m.MessageId)).OrderBy(m => m.CreatedAt).Select(m => (Guid?)m.CaseId).FirstOrDefaultAsync(ct);
     }
 
     /// <summary>A case quoted in the subject — only when it was opened from an email of the same verified organisation, so nobody can add to another client's case by naming it.</summary>

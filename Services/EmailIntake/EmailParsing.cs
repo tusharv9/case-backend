@@ -143,7 +143,7 @@ public static partial class EmailParsing
         return m.Success ? m.Groups[1].Value.ToUpperInvariant() : null;
     }
 
-    [GeneratedRegex(@"\[(?:Ticket\s*)?([A-Za-z]{1,6}-\d{4,}(?:-[A-Za-z]\d{2})?)\]", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"\[(?:(?:Ticket|Case)\s*)?([A-Za-z]{1,6}-\d{4,}(?:-[A-Za-z]\d{2})?)\]", RegexOptions.IgnoreCase)]
     private static partial Regex SubjectCaseNumber();
 
     /// <summary>A ticket number quoted in a subject as our acknowledgement writes it: "[Ticket T-00012]".</summary>

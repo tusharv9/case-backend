@@ -103,6 +103,10 @@ public sealed class TicketDetailDto
     public string? PreferredLanguage { get; set; }
     public string SenderVerification { get; set; } = string.Empty;
     public string? SenderNote { get; set; }
+    /// <summary>The registered sender who wrote it (still registered): the case is offered for their organisation, with them as the contact.</summary>
+    public Guid? OrganisationContactId { get; set; }
+    public string? OrganisationName { get; set; }
+    public string? ContactName { get; set; }
     public string Status { get; set; } = string.Empty;
     public string? CloseReason { get; set; }
     public Guid? CaseId { get; set; }
@@ -120,21 +124,6 @@ public sealed class TicketDetailDto
     public List<TicketAttachmentDto> Attachments { get; set; } = new();
     /// <summary>Replies received on the ticket's email thread, oldest first (the first email is the ticket itself).</summary>
     public List<TicketMessageDto> Replies { get; set; } = new();
-}
-
-/// <summary>Raise a ticket by hand. Multipart: these fields plus any number of <c>files</c>.</summary>
-public sealed class CreateTicketDto
-{
-    public Guid MailboxId { get; set; }
-    public string RequesterName { get; set; } = string.Empty;
-    public string RequesterEmail { get; set; } = string.Empty;
-    public string? RequesterPhone { get; set; }
-    public string Subject { get; set; } = string.Empty;
-    public string Description { get; set; } = string.Empty;
-    public string? Priority { get; set; }
-    public string? CaseType { get; set; }
-    public Guid? DepartmentId { get; set; }
-    public string? SubCategory { get; set; }
 }
 
 /// <summary>
@@ -162,5 +151,14 @@ public sealed record AccessibleMailboxDto(Guid Id, string Name, string Address,
     Guid? DefaultDepartmentId, string? DefaultCaseType, string? DefaultSubCategory, string? DefaultPriority, string? DefaultPreferredLanguage);
 
 /// <summary>Who could take a ticket's case in a department's team, as the manual Assign &amp; Reassign rules judge them.</summary>
-public sealed record TicketAssigneeDto(Guid Id, string Name, string? Role, string TeamName, bool IsTeamLead, bool IsCrossTeam,
+
+
+/// <summary>Someone who could take a new case of a department, or why they cannot (Create Case and ticket assignment alike).</summary>
+public sealed record AssigneeOptionDto(Guid Id, string Name, string? Role, string TeamName, bool IsTeamLead, bool IsCrossTeam,
     bool IsEligible, string? Reason, string Status, int OpenCases, int Capacity);
+
+/// <summary>
+/// How a new case would be given out: the department's team, the algorithm that applies to the case's source (email cases may
+/// have their own), and whether the person creating or converting it must choose the agent (Manual).
+/// </summary>
+public sealed record AssignmentRuleDto(Guid TeamId, string TeamName, string Algorithm, string CaseSource, bool OwnerRequired);

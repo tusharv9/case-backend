@@ -59,6 +59,7 @@ public class AppDbContext : DbContext
     public DbSet<EmailVerifiedSender> EmailVerifiedSenders { get; set; } = null!;
     public DbSet<EmailMailboxTeam> EmailMailboxTeams { get; set; } = null!;
     public DbSet<Ticket> Tickets { get; set; } = null!;
+    public DbSet<CaseEmailMessage> CaseEmailMessages { get; set; } = null!;
     public DbSet<TicketAttachment> TicketAttachments { get; set; } = null!;
 
     // Bookkeeping for one-time seed steps (see DbSeeder)
@@ -324,6 +325,9 @@ public class AppDbContext : DbContext
             e.Property(s => s.DisplayName).HasMaxLength(100);
             e.Property(s => s.Description).HasMaxLength(500);
             e.HasOne(s => s.VerifiedDomain).WithMany(d => d.Senders).HasForeignKey(s => s.VerifiedDomainId).OnDelete(DeleteBehavior.Cascade);
+            // Deleting a mailbox or a team clears the mapping; the sender stays registered.
+            e.HasOne(s => s.Mailbox).WithMany().HasForeignKey(s => s.MailboxId).OnDelete(DeleteBehavior.SetNull);
+            e.HasOne(s => s.Team).WithMany().HasForeignKey(s => s.TeamId).OnDelete(DeleteBehavior.SetNull);
         });
         modelBuilder.Entity<InboundEmail>(e =>
         {
@@ -669,11 +673,38 @@ public class AppDbContext : DbContext
             .HasFilter("\"SlaOutcome\" = 'Breached'")
             .HasDatabaseName("IX_Cases_SlaOutcome_Breached");
 
-        // At most one settings row per team (the row without a team is the global default).
+        // At most one settings row per team (the row without a team is the global default), and one global row per case source.
         modelBuilder.Entity<AssignmentConfiguration>()
             .HasIndex(ac => ac.TeamId)
             .IsUnique()
             .HasFilter("\"TeamId\" IS NOT NULL");
+        modelBuilder.Entity<AssignmentConfiguration>()
+            .HasIndex(ac => ac.CaseSource)
+            .IsUnique()
+            .HasFilter("\"TeamId\" IS NULL")
+            .HasDatabaseName("IX_AssignmentConfigurations_Global_CaseSource");
+        modelBuilder.Entity<AssignmentConfiguration>().Property(ac => ac.CaseSource).HasMaxLength(20).HasDefaultValue(AssignmentCaseSources.Default);
+        modelBuilder.Entity<Case>().Property(c => c.ContactEmail).HasMaxLength(254);
+        // An organisation or sender that is deleted later leaves its cases and tickets in place, without the link.
+        modelBuilder.Entity<Case>().HasOne(c => c.Organisation).WithMany().HasForeignKey(c => c.OrganisationId).OnDelete(DeleteBehavior.SetNull);
+        modelBuilder.Entity<Case>().HasOne(c => c.ContactSender).WithMany().HasForeignKey(c => c.ContactSenderId).OnDelete(DeleteBehavior.SetNull);
+        modelBuilder.Entity<Ticket>().HasOne(t => t.Organisation).WithMany().HasForeignKey(t => t.OrganisationId).OnDelete(DeleteBehavior.SetNull);
+        modelBuilder.Entity<Ticket>().HasOne(t => t.VerifiedSender).WithMany().HasForeignKey(t => t.VerifiedSenderId).OnDelete(DeleteBehavior.SetNull);
+        modelBuilder.Entity<Case>().HasOne(c => c.ReplyMailbox).WithMany().HasForeignKey(c => c.ReplyMailboxId).OnDelete(DeleteBehavior.SetNull);
+        modelBuilder.Entity<CaseEmailMessage>(e =>
+        {
+            e.HasOne(m => m.Case).WithMany().HasForeignKey(m => m.CaseId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(m => m.CaseEvent).WithOne(ev => ev.EmailMessage).HasForeignKey<CaseEmailMessage>(m => m.CaseEventId).OnDelete(DeleteBehavior.SetNull);
+            e.HasOne(m => m.Mailbox).WithMany().HasForeignKey(m => m.MailboxId).OnDelete(DeleteBehavior.SetNull);
+            e.HasIndex(m => m.MessageId).IsUnique();            // a reply to it finds its case by this
+            e.HasIndex(m => new { m.Status, m.NextAttemptAt }); // the sender's queue
+            e.HasIndex(m => m.CaseId);
+            e.Property(m => m.ToAddress).HasMaxLength(254);
+            e.Property(m => m.Subject).HasMaxLength(500);
+            e.Property(m => m.MessageId).HasMaxLength(500);
+            e.Property(m => m.Status).HasMaxLength(20);
+            e.Property(m => m.Version).IsConcurrencyToken();
+        });
 
         modelBuilder.Entity<TeamAssignmentPointer>()
             .HasKey(p => p.TeamId);

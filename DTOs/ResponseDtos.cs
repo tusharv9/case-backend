@@ -74,6 +74,13 @@ public class CaseSummaryDto
 
 public class CaseDetailDto : CaseSummaryDto
 {
+    /// <summary>Where Customer Reply emails go (null when the case's preferred channel is not Email).</summary>
+    public string? ContactEmail { get; set; }
+    /// <summary>For an organisation's case: the organisation, and the registered sender who is the contact person.</summary>
+    public Guid? OrganisationId { get; set; }
+    public string? OrganisationName { get; set; }
+    public string? ContactName { get; set; }
+    public string? ContactSenderEmail { get; set; }
     /// <summary>For a case made from a ticket: when the customer's request arrived (the case's SLA starts when it was made).</summary>
     public DateTime? RequestReceivedAt { get; set; }
     public Guid? SourceTicketId { get; set; }
@@ -158,6 +165,16 @@ public class CaseEventDto
     public string UserName { get; set; } = string.Empty;
     public bool IsInternal { get; set; } = true;
     public string? Channel { get; set; }
+    /// <summary>What the entry records, e.g. EMAIL_REPLY_RECEIVED for an email the customer sent to the case.</summary>
+    public string? ActionType { get; set; }
+    /// <summary>For a Customer Reply sent by email: the email and how its delivery stands (Pending, Sending, Sent, Failed).</summary>
+    public Guid? EmailId { get; set; }
+    public string? EmailStatus { get; set; }
+    public string? EmailTo { get; set; }
+    public string? EmailError { get; set; }
+    public DateTime? EmailSentAt { get; set; }
+    /// <summary>Failed and no longer retried automatically: Retry is offered.</summary>
+    public bool EmailCanRetry { get; set; }
 }
 
 public class ParticipantDto
