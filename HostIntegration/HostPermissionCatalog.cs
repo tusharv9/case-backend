@@ -53,6 +53,9 @@ public static class HostPermissionCatalog
             // Dashboard (formerly Reports) sits below the operational Cases row. Its key stays "dashboard" so existing links and pages.js keep working.
             new("case-management", "Cases", "Briefcase", 10, "View"),
             new("dashboard", "Dashboard", "PieChart", 20, "View"),
+            // Agent Assignment (once a tab of SLA Maintenance): the cases waiting for an agent are for supervisors; its Rules
+            // tab is edited with Manage case configuration, checked on the page and by the settings endpoints.
+            new("agent-assignment", "Agent Assignment", "UserCheck", 30, "Supervise"),
         ]),
         new("customers", "Case Customers", 20,
         [
@@ -65,7 +68,8 @@ public static class HostPermissionCatalog
             new("Manage", "Manage teams", "Create, edit and staff teams.", Permissions.TeamsManage),
         ],
         [
-            new("teams", "Teams", "Users", 10, "Manage"),
+            new("teams", "My Teams", "Users", 10, "Manage"),
+            new("team-management", "Team Management", "UserCheck", 20, "Manage"),
         ]),
         new("monitoring", "Team Monitoring", 40,
         [
@@ -80,7 +84,7 @@ public static class HostPermissionCatalog
             new("View", "View case audit trail", "See who changed which case, and when.", Permissions.AuditView),
         ],
         [
-            new("case-audit", "Case Audit Trail", "FileText", 10, "View"),
+            new("case-audit", "Audit Logs", "FileText", 10, "View"),
         ]),
         new("email", "Email Inbox", 55,
         [
@@ -107,8 +111,10 @@ public static class HostPermissionCatalog
             new("Manage", "Manage case configuration", "Change forms, lists, SLA, routing and assignment settings.", Permissions.ConfigManage),
         ],
         [
-            new("cases-sla-routing", "SLA & Routing", "Clock", 10, "Manage"),
-            new("configurable-settings", "Case Settings", "Sliders", 20, "Manage"),
+            // Escalation Maintenance was a tab of SLA Maintenance; it is its own page now.
+            new("cases-sla-routing", "SLA Maintenance", "Clock", 10, "Manage"),
+            new("escalation-maintenance", "Escalation Maintenance", "Layers", 15, "Manage"),
+            new("configurable-settings", "Configurable Settings", "Sliders", 20, "Manage"),
         ]),
         new("pii", "Customer Data", 70,
         [

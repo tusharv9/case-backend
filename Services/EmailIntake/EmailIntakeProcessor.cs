@@ -405,7 +405,7 @@ public sealed class EmailIntakeProcessor(
         var mailbox = await db.EmailMailboxes.AsNoTracking().FirstAsync(m => m.Id == email.MailboxId, ct);
         var clock = await Tickets.TicketSla.ClockAsync(clocks, logger, ct);
         if (ReviewSla.Start(email, mailbox, clock, DateTime.UtcNow))
-            await ReviewAlerts.NotifyAsync(db, notifications, ReviewAlerts.Kind.Needed, email, mailbox, logger, ct);
+            await ReviewAlerts.NotifyAsync(db, notifications, ReviewAlerts.Kind.Needed, email, mailbox, logger, ct, clock);
     }
 
     private static string OrganisationOf(EmailVerifiedDomain domain) => domain.Organisation?.Name ?? domain.OrganisationName;
@@ -479,11 +479,9 @@ public sealed class EmailIntakeProcessor(
             RequesterEmail = email.FromAddress,
             Subject = EmailParsing.Truncate(string.IsNullOrWhiteSpace(email.Subject) ? $"Email from {email.FromAddress}" : email.Subject, 500),
             Description = string.IsNullOrWhiteSpace(body) ? "(The email has no text.)" : body,
-            // A domain says who wrote, not what about: the mailbox's suggestions are the starting point; the assigner decides.
-            CaseType = mailbox.DefaultCaseType,
-            DepartmentId = mailbox.DefaultDepartmentId,
-            SubCategory = mailbox.DefaultSubCategory,
-            Priority = mailbox.DefaultPriority,
+            // What the email is about (department, sub-category, case type, priority, language) is decided by the person who
+            // makes a case of it, not by the mailbox: a mailbox only says which teams work its emails. A ticket without a
+            // priority waits under the "Tickets without a priority" assign-within time.
             SenderVerification = verification,
             SenderNote = EmailParsing.Truncate(note, 1000),
             // A registered sender writes for their organisation: the case made from this ticket is for it, with them as the contact.

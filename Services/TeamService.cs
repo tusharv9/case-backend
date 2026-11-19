@@ -153,6 +153,7 @@ public class TeamService : ITeamService
 
         var policy = await _settings.GetPolicyAsync(ct);
         var wanted = WantedMembers(dto.Members, dto.MemberUserIds);
+        EnsureLeadIsMember(dto.TeamLeadId, wanted);
         var departmentIds = (dto.DepartmentIds ?? new List<Guid>()).Distinct().ToList();
         var form = await CheckFormAsync(policy, name, dto.Code, dto.Function, departmentIds, dto.TeamLeadId, wanted ?? new(), dto.IsActive,
             dto.CustomAttributes, new Dictionary<string, string>(), ct);
@@ -214,6 +215,7 @@ public class TeamService : ITeamService
         var current = department.Members.ToList();
         var leadAfter = dto.TeamLeadId ?? department.OwnerId;
         var wanted = WantedMembers(dto.Members, dto.MemberUserIds);
+        EnsureLeadIsMember(leadAfter, wanted, keptCurrentLead: dto.TeamLeadId == null);
         var membersAfter = wanted ?? current.Where(m => m.IsActive).Select(m => (m.UserId, m.IsAssignable)).ToList();
         var linkedBefore = department.DepartmentLinks.Select(l => l.DepartmentId).ToHashSet();
         var activeAfter = dto.IsActive ?? department.IsActive;
@@ -294,7 +296,7 @@ public class TeamService : ITeamService
     // ------------------------------------------------------------------------------------------------ Teams settings
 
     /// <summary>
-    /// The Create/Edit Team form as configured (Case Settings → Teams → Create Team Form): every built-in field's required flag and
+    /// The Create/Edit Team form as configured (Configurable Settings → Teams → Create Team Form): every built-in field's required flag and
     /// format, and every custom field, checked by the same engine as Create Case. Also the save-time team rules that look only at
     /// this team (one department, members, a lead). Returns the custom field values to store, canonical; on update a custom field
     /// that was not sent keeps its stored value (and is validated as such).
@@ -323,16 +325,32 @@ public class TeamService : ITeamService
         var errors = result.Errors.ToList();
 
         if (!policy.AllowMultipleDepartments && departmentIds.Count > 1)
-            errors.Add(new FieldError(TeamFormFields.Departments, "A team can serve only one department (Case Settings → Teams → Team Rules)."));
+            errors.Add(new FieldError(TeamFormFields.Departments, "A team can serve only one department (Configurable Settings → Teams → Team Rules)."));
         if (!policy.AllowTeamsWithoutMembers && memberIds.Count == 0)
-            errors.Add(new FieldError(TeamFormFields.Members, "Add at least one member: a team cannot be saved without members (Case Settings → Teams → Team Rules)."));
+            errors.Add(new FieldError(TeamFormFields.Members, "Add at least one member: a team cannot be saved without members (Configurable Settings → Teams → Team Rules)."));
         if (policy.RequireTeamLead && isActive && leadId == null)
-            errors.Add(new FieldError(TeamFormFields.TeamLead, "Choose a team lead: every active team needs one (Case Settings → Teams → Team Rules)."));
+            errors.Add(new FieldError(TeamFormFields.TeamLead, "Choose a team lead: every active team needs one (Configurable Settings → Teams → Team Rules)."));
 
         if (errors.Count > 0) throw new FieldValidationException(errors.GroupBy(e => e.Field).Select(g => g.First()));
 
         return custom.Where(kv => result.Normalized.ContainsKey(kv.Key) || kv.Value.Length == 0)
             .ToDictionary(kv => kv.Key, kv => result.Normalized.TryGetValue(kv.Key, out var v) ? v : kv.Value, StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// The team lead is chosen from the team's members: when a save names the members, the lead must be one of them. A save
+    /// that sends no member list (only the lead changed, or the form hides Members) keeps the members the team has, and the
+    /// lead is made one of them as before.
+    /// </summary>
+    /// <param name="keptCurrentLead">An edit that did not name a lead keeps the current one, so the current lead was unticked:
+    /// a new lead is needed, or the lead is removed on its own (with a reason, which the team's history keeps).</param>
+    internal static void EnsureLeadIsMember(Guid? leadId, IReadOnlyCollection<(Guid UserId, bool IsAssignable)>? members, bool keptCurrentLead = false)
+    {
+        if (leadId is not { } lead || members is null) return;
+        if (!members.Any(m => m.UserId == lead))
+            throw new FieldValidationException(new[] { new FieldError(TeamFormFields.TeamLead, keptCurrentLead
+                ? "The current team lead is no longer ticked as a member. Choose a new lead from the members, or remove the lead from the team's details (a reason is kept)."
+                : "The team lead must be one of the team's members. Tick them under Members first.") });
     }
 
     /// <summary>"A team with open cases can be deactivated" switched off: refuse while it holds any.</summary>
@@ -342,7 +360,7 @@ public class TeamService : ITeamService
         var open = await _context.Cases.CountAsync(c => c.TeamId == team.Id && c.Status != CaseStatus.Resolved && c.Status != CaseStatus.Closed && c.Status != CaseStatus.Cancelled, ct);
         if (open > 0)
             throw new FieldValidationException(new[] { new FieldError("isActive",
-                $"'{team.Name}' still holds {open} open {(open == 1 ? "case" : "cases")}. Move or resolve {(open == 1 ? "it" : "them")} before deactivating the team (Case Settings → Teams → Team Rules).") });
+                $"'{team.Name}' still holds {open} open {(open == 1 ? "case" : "cases")}. Move or resolve {(open == 1 ? "it" : "them")} before deactivating the team (Configurable Settings → Teams → Team Rules).") });
     }
 
     /// <summary>The team's custom field values become exactly <paramref name="values"/>; a blank value removes the stored one.</summary>
@@ -385,7 +403,7 @@ public class TeamService : ITeamService
             if (otherTeam != null)
             {
                 var name = await _context.Users.AsNoTracking().Where(u => u.Id == leadId).Select(u => u.Name).FirstOrDefaultAsync(ct);
-                errors.Add(new FieldError(TeamFormFields.TeamLead, $"{name} already leads {otherTeam}. A person can lead only one team (Case Settings → Teams → Team Rules)."));
+                errors.Add(new FieldError(TeamFormFields.TeamLead, $"{name} already leads {otherTeam}. A person can lead only one team (Configurable Settings → Teams → Team Rules)."));
             }
         }
 
@@ -398,7 +416,7 @@ public class TeamService : ITeamService
                     .Where(m => m.IsActive && m.UserId == leadId && m.TeamId != teamId && m.Team.OwnerId != m.UserId)
                     .Select(m => new { m.User.Name, Team = m.Team.Name }).FirstOrDefaultAsync(ct);
                 if (memberOf != null)
-                    errors.Add(new FieldError(TeamFormFields.TeamLead, $"{memberOf.Name} is a member of {memberOf.Team}. A team lead cannot also be a member of another team (Case Settings → Teams → Team Rules)."));
+                    errors.Add(new FieldError(TeamFormFields.TeamLead, $"{memberOf.Name} is a member of {memberOf.Team}. A team lead cannot also be a member of another team (Configurable Settings → Teams → Team Rules)."));
             }
             if (members != null)
             {
@@ -408,7 +426,7 @@ public class TeamService : ITeamService
                     .Select(d => new { d.Owner!.Name, Team = d.Name }).OrderBy(x => x.Name).ToListAsync(ct);
                 if (leaders.Count > 0)
                     errors.Add(new FieldError(TeamFormFields.Members,
-                        $"{string.Join(", ", leaders.Take(5).Select(x => $"{x.Name} (leads {x.Team})"))}: a team lead cannot also be a member of another team (Case Settings → Teams → Team Rules)."));
+                        $"{string.Join(", ", leaders.Take(5).Select(x => $"{x.Name} (leads {x.Team})"))}: a team lead cannot also be a member of another team (Configurable Settings → Teams → Team Rules)."));
             }
         }
 
@@ -423,7 +441,7 @@ public class TeamService : ITeamService
             {
                 var shown = elsewhere.Take(5).Select(x => $"{x.Name} ({x.Team})");
                 errors.Add(new FieldError(TeamFormFields.Members,
-                    $"Already in another team: {string.Join(", ", shown)}{(elsewhere.Count > 5 ? $" and {elsewhere.Count - 5} more" : "")}. A person can belong to only one team (Case Settings → Teams → Team Rules)."));
+                    $"Already in another team: {string.Join(", ", shown)}{(elsewhere.Count > 5 ? $" and {elsewhere.Count - 5} more" : "")}. A person can belong to only one team (Configurable Settings → Teams → Team Rules)."));
             }
         }
 
@@ -559,7 +577,7 @@ public class TeamService : ITeamService
         {
             var others = await _context.TeamMembers.CountAsync(m => m.TeamId == teamId && m.IsActive && m.UserId != userId && m.UserId != team.OwnerId, ct);
             if (others == 0)
-                throw new InvalidOperationException($"{member.User?.Name} is the last member of {team.Name}, and a team cannot be left without members (Case Settings → Teams → Team Rules).");
+                throw new InvalidOperationException($"{member.User?.Name} is the last member of {team.Name}, and a team cannot be left without members (Configurable Settings → Teams → Team Rules).");
         }
 
         var name = member.User?.Name ?? userId.ToString();
@@ -577,7 +595,7 @@ public class TeamService : ITeamService
 
         var policy = await _settings.GetPolicyAsync(ct);
         if (policy.RequireTeamLead && team.IsActive)
-            throw new InvalidOperationException($"Every active team needs a lead (Case Settings → Teams → Team Rules). Choose a new lead for {team.Name} by editing the team, or turn that rule off.");
+            throw new InvalidOperationException($"Every active team needs a lead (Configurable Settings → Teams → Team Rules). Choose a new lead for {team.Name} by editing the team, or turn that rule off.");
 
         var leadId = team.OwnerId.Value;
         var leadName = team.Owner?.Name ?? leadId.ToString();
@@ -609,7 +627,7 @@ public class TeamService : ITeamService
         if (department.IsActive) await EnsureCanDeactivateAsync(policy, department, ct);
         else if (policy.RequireTeamLead && department.OwnerId == null)
             throw new FieldValidationException(new[] { new FieldError(TeamFormFields.TeamLead,
-                $"'{department.Name}' has no lead. Every active team needs one (Case Settings → Teams → Team Rules): choose a lead first.") });
+                $"'{department.Name}' has no lead. Every active team needs one (Configurable Settings → Teams → Team Rules): choose a lead first.") });
 
         await RunGuardedAsync(async () =>
         {
@@ -620,7 +638,7 @@ public class TeamService : ITeamService
                 // Coming back: the team takes on the departments chosen for it (each active and handled by no other team).
                 var chosen = departmentIds.Distinct().ToList();
                 if (!policy.AllowMultipleDepartments && chosen.Count > 1)
-                    throw new FieldValidationException(new[] { new FieldError(TeamFormFields.Departments, "A team can serve only one department (Case Settings → Teams → Team Rules).") });
+                    throw new FieldValidationException(new[] { new FieldError(TeamFormFields.Departments, "A team can serve only one department (Configurable Settings → Teams → Team Rules).") });
                 var linked = await _context.TeamDepartments.Where(l => l.TeamId == id).Select(l => l.DepartmentId).ToListAsync(ct);
                 await CheckDepartmentsAsync(chosen, linked.ToHashSet(), ct);
                 await DepartmentTeams.EnsureNotMappedElsewhereAsync(_context, chosen, id, TeamFormFields.Departments, ct);

@@ -106,6 +106,14 @@ public class CasesController : BaseApiController
         return Ok(new { message = "Status updated successfully." });
     }
 
+    /// <summary>Handle: the person holding an Open case starts working on it (Open → In Progress). 403 for anyone else, 409 if already started.</summary>
+    [HttpPost("{id:guid}/handle")]
+    public async Task<IActionResult> Handle(Guid id)
+    {
+        await _caseService.HandleCaseAsync(id, CurrentUserId);
+        return Ok(await _caseService.GetCaseDetailsAsync(id));
+    }
+
     [HttpPut("{id:guid}/assign")]
     public async Task<IActionResult> AssignCase(Guid id, [FromBody] AssignCaseDto dto, [FromServices] ICurrentUserAccessor user)
     {
@@ -194,8 +202,8 @@ public class CasesController : BaseApiController
         [FromServices] ICaseAccessScope access, CancellationToken ct)
     {
         if (!await access.CanSeeAsync(id, ct)) throw new KeyNotFoundException("Case not found.");
+        await _caseService.EnsureWorkMayStartAsync(id, CurrentUserId);
         var attachment = await _attachments.UploadAttachmentAsync(id, file, note, CurrentUserId, ct);
-        await _caseService.MarkWorkStartedAsync(id, CurrentUserId, "a file was attached");
         return Ok(attachment);
     }
 
@@ -278,8 +286,8 @@ public class CasesController : BaseApiController
     [HttpPost("{id:guid}/collaboration/notes")]
     public async Task<IActionResult> AddCollaborationNote(Guid id, [FromBody] AddCollaborationNoteDto dto)
     {
+        await _caseService.EnsureWorkMayStartAsync(id, CurrentUserId);
         var activity = await _collaboration.AddCollaborationNoteAsync(id, dto?.Content ?? string.Empty, CurrentUserId);
-        await _caseService.MarkWorkStartedAsync(id, CurrentUserId, "a collaboration note was added");
         return Ok(activity);
     }
 

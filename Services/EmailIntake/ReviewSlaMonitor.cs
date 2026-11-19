@@ -52,7 +52,7 @@ public sealed class ReviewSlaMonitor(AppDbContext db, ICaseNotificationSink? sin
                     {
                         CaseId = null, EventType = EventType.Other, CreatedAt = nowUtc, IsInternal = true, Module = "EmailReview", EntityName = "InboundEmail",
                         ActionType = "REVIEW_SLA_ESCALATED",
-                        Message = $"An email from {e.FromAddress} in {mailbox.Address} passed its review deadline ({e.ReviewDueAt:dd MMM HH:mm} UTC) and was escalated to "
+                        Message = $"An email from {e.FromAddress} in {mailbox.Address} passed its review deadline ({clock.Display(e.ReviewDueAt!.Value)}) and was escalated to "
                             + (mailbox.ReviewEscalateTo == ReviewEscalationTargets.Administrators ? "the administrators." : "the leads of the mailbox's teams."),
                         NewValue = System.Text.Json.JsonSerializer.Serialize(new { EmailId = e.Id, e.ReviewStartedAt, e.ReviewDueAt, EscalatedAt = nowUtc, mailbox.ReviewEscalateTo }),
                     });
@@ -69,7 +69,7 @@ public sealed class ReviewSlaMonitor(AppDbContext db, ICaseNotificationSink? sin
         }
 
         foreach (var (email, kind) in alerts)
-            await ReviewAlerts.NotifyAsync(db, sink, kind, email, mailboxes[email.MailboxId], logger, ct);
+            await ReviewAlerts.NotifyAsync(db, sink, kind, email, mailboxes[email.MailboxId], logger, ct, clock);
         return (alerts.Count(a => a.Kind == ReviewAlerts.Kind.Reminder), alerts.Count(a => a.Kind == ReviewAlerts.Kind.Escalated));
     }
 }

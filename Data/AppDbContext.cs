@@ -268,7 +268,10 @@ public class AppDbContext : DbContext
             entity.ToTable(t => t.HasCheckConstraint("CK_Cases_CustomerReference",
                 "(\"CustomerSource\" = 'Local' AND \"CustomerId\" IS NOT NULL AND \"ExternalCustomerId\" IS NULL AND \"CustomerLookupKeyEncrypted\" IS NULL)" +
                 " OR (\"CustomerSource\" = 'Customer360' AND \"CustomerId\" IS NULL AND \"CustomerType\" IN ('Individual','NonIndividual')" +
-                " AND \"ExternalCustomerId\" IS NOT NULL AND \"CustomerLookupType\" IS NOT NULL AND \"CustomerLookupKeyEncrypted\" IS NOT NULL AND \"CustomerLookupKeyHash\" IS NOT NULL)"));
+                " AND \"ExternalCustomerId\" IS NOT NULL AND \"CustomerLookupType\" IS NOT NULL AND \"CustomerLookupKeyEncrypted\" IS NOT NULL AND \"CustomerLookupKeyHash\" IS NOT NULL)" +
+                // A registered organisation, with the registered sender as contact: no person customer and no Customer 360 identifiers.
+                // OrganisationId may become null later (the organisation deleted), so it is required only by the code that makes the case.
+                " OR (\"CustomerSource\" = 'Organisation' AND \"CustomerId\" IS NULL AND \"ExternalCustomerId\" IS NULL AND \"CustomerLookupKeyEncrypted\" IS NULL)"));
         });
 
         // Audit trail pages a global CreatedAt DESC ordering; case detail reads one case's timeline.

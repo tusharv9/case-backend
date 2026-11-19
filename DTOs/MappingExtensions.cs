@@ -1,6 +1,7 @@
 namespace CaseManagement.Api.DTOs;
 
 using CaseManagement.Api.Models;
+using CaseManagement.Api.Services;
 using System.Linq;
 
 public static class MappingExtensions
@@ -152,7 +153,8 @@ ExternalCustomerId = c.ExternalCustomerId,
                     EventType = e.EventType.ToString(),
                     Message = e.Message,
                     CreatedAt = e.CreatedAt,
-                    UserName = e.User != null ? e.User.Name : string.Empty,
+                    // A background worker's event is stored under a person only because an event must name one: it is the system's.
+                    UserName = e.User != null && !AutomaticEvents.IsAutomatic(e.Message) ? e.User.Name : string.Empty,
                     IsInternal = e.IsInternal,
                     Channel = e.Channel,
                     ActionType = e.ActionType,

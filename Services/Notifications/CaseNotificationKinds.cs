@@ -141,7 +141,7 @@ public static class CaseNotificationKinds
         new(EmailReviewEscalated, "Email review overdue", "When an email waits for review past its mailbox's deadline.",
             "The leads of the mailbox's teams, or the administrators (set per mailbox)", DefaultToAdministrators: true, Severity: "Warning",
             Message: "An email in {mailbox} {verb:passed} its review deadline", Context: "{match} · waiting since {since}", Tone: "disable", Icon: "ShieldAlert"),
-        new(SettingsChanged, "Case settings changed", "When someone changes Case Management configuration (case types and similar).", "People who manage Case Settings",
+        new(SettingsChanged, "Case settings changed", "When someone changes Case Management configuration (case types and similar).", "People who manage Configurable Settings",
             Message: "{actor} {verb:changed} Case Management settings", Context: "{detail}", Tone: "update", Icon: "Settings"),
     ];
 

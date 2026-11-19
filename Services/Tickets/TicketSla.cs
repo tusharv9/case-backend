@@ -49,6 +49,9 @@ public sealed class TicketSlaClock(BusinessCalendar calendar, decimal? approachi
     /// <summary>A ticket clock on the case clock's calendar and approaching percent.</summary>
     public static TicketSlaClock From(SlaClock clock) => new(clock.Calendar, clock.ApproachingPercent);
 
+    /// <summary>A moment as people read it in messages: in the platform time zone, with its offset ("19 Nov 09:00 (GMT+8)").</summary>
+    public string Display(DateTime utc) => BusinessCalendar.Display(utc, calendar.TimeZone);
+
     public DateTime? DueAt(DateTime receivedAtUtc, int targetMinutes) =>
         targetMinutes > 0 ? calendar.AddBusinessMinutes(receivedAtUtc, targetMinutes) : null;
 

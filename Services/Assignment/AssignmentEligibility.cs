@@ -290,7 +290,7 @@ public static class AssignmentSettings
         }
 
         return active.FirstOrDefault(c => c.TeamId == null && c.CaseSource == AssignmentCaseSources.Default)
-            ?? throw new InvalidOperationException("No assignment settings are configured. Set the assignment algorithm under Cases SLA & Routing.");
+            ?? throw new InvalidOperationException("No assignment settings are configured. Set the assignment algorithm under SLA Maintenance.");
     }
 
     /// <summary>

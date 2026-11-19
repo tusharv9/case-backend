@@ -101,7 +101,7 @@ public class DepartmentService : IDepartmentService
                     var policy = _settings != null ? await _settings.GetPolicyAsync(ct) : null;
                     if (policy is { AllowMultipleDepartments: false } && await _context.TeamDepartments.AnyAsync(l => l.TeamId == team.Id, ct))
                         throw new FieldValidationException(new[] { new FieldError("teamId",
-                            $"'{team.Name}' already handles a department, and a team may handle only one (Case Settings → Teams → Team Rules).") });
+                            $"'{team.Name}' already handles a department, and a team may handle only one (Configurable Settings → Teams → Team Rules).") });
                     _context.TeamDepartments.Add(new TeamDepartment { TeamId = team.Id, DepartmentId = id, LinkedAt = DateTime.UtcNow });
                     _context.CaseEvents.Add(Audit("UPDATE", department.Name, $"Assigned department '{department.Name}' to team '{team.Name}'", "Unassigned", team.Name, actingUserId));
                 }

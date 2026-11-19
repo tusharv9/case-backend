@@ -9,14 +9,13 @@ using Microsoft.EntityFrameworkCore;
 /// Which cases the caller may see. Being able to open Case Management is not a licence to read every team's cases.
 /// </summary>
 /// <remarks>
-/// <para>A person sees a case when they hold it, take part in it (co-worker, participant), lead its team, or are an
-/// ACTIVE member of its team. <see cref="Permissions.CasesViewAll"/> (Host capability <c>cases:ViewAll</c>) and the
-/// Host administrator see every case. Team membership never grants permissions: the person still needs
-/// <c>cases.read</c> to reach any case endpoint at all.</para>
+/// <para>A person sees a case when they hold it (the primary handler), were added to it as a collaborator (or watcher),
+/// or lead its team. <see cref="Permissions.CasesViewAll"/> (Host capability <c>cases:ViewAll</c>) and the Host
+/// administrator see every case. Being an ordinary member of a team does NOT show its other agents' cases: an agent sees
+/// their own cases and the ones they collaborate on. The person still needs <c>cases.read</c> to reach any case endpoint.</para>
 ///
-/// <para>The rule is one SQL predicate over the live <c>TeamMembers</c> table, evaluated on every request — removing
-/// someone from a team, or the case moving to another team, takes effect on their next request, with nothing cached
-/// in the browser or the server to go stale.</para>
+/// <para>The rule is one SQL predicate, evaluated on every request — removing a collaborator, a new team lead, or the case
+/// moving to another holder takes effect on their next request, with nothing cached to go stale.</para>
 ///
 /// <para>Work with no caller (the SLA monitor, reconciliation, background jobs) is not a person and is not scoped.</para>
 /// </remarks>
@@ -40,12 +39,10 @@ public sealed class CaseAccessScope(AppDbContext context, ICurrentUserAccessor? 
     {
         if (SeesAll) return cases;
         var me = currentUser!.LocalUserId!.Value;
-        var members = db.TeamMembers;
         return cases.Where(c =>
             c.OwnerId == me
             || c.Participants.Any(p => p.UserId == me)
-            || c.Team.OwnerId == me
-            || members.Any(m => m.UserId == me && m.IsActive && m.TeamId == c.TeamId));
+            || c.Team.OwnerId == me);
     }
 
     public Task<bool> CanSeeAsync(Guid caseId, CancellationToken ct = default) =>

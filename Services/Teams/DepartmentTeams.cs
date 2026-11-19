@@ -51,7 +51,7 @@ public static class DepartmentTeams
 
     /// <summary>The refusal for a department that no team handles (Create Case, routing, transfer).</summary>
     public static string NoTeamMessage(string departmentName) =>
-        $"No team is currently assigned to {departmentName}. An administrator must assign it to a team (Teams, or Case Settings → Departments) before cases can be created for it.";
+        $"No team is currently assigned to {departmentName}. An administrator must assign it to a team (Teams, or Configurable Settings → Departments) before cases can be created for it.";
 
     /// <summary>The refusal for a department whose team is inactive.</summary>
     public static string InactiveTeamMessage(string departmentName, string teamName) =>

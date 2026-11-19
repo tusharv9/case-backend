@@ -9,13 +9,21 @@ using CaseManagement.Api.Models;
 public sealed class CaseLockedException(string message) : Exception(message);
 
 /// <summary>
+/// The case is not in the state this step needs (409): an Open case has not been handled yet by the person holding it, or
+/// someone else started it first. The message says what to do; nothing was changed.
+/// </summary>
+public sealed class CaseHandleException(string message) : Exception(message);
+
+/// <summary>
 /// The case status lifecycle, in one place: which status may follow which, and what the Resolve and Escalate workflows may
 /// start from. Every endpoint that changes a case's status checks it here, and the case detail tells the screen the same
 /// answer (<c>CaseWorkflowDto</c>), so a button and the server cannot disagree.
 /// </summary>
 /// <remarks>
 /// <list type="bullet">
-/// <item>Open → In Progress only; work on an Open case (a note, a reply, resolving it) moves it there by itself, and it never goes back to Open.</item>
+/// <item>Open → In Progress only through Handle, by the person holding the case; nothing else moves it (viewing it, a note,
+/// a reply) and work on an Open case waits for Handle. A supervisor's resolution of an Open case passes through In Progress.
+/// It never goes back to Open.</item>
 /// <item>In Progress ↔ Waiting on Customer (the SLA clock pauses while waiting).</item>
 /// <item>In Progress, Waiting on Customer and Escalated may be resolved or escalated (Escalate is its own workflow, and needs a recipient).</item>
 /// <item>Escalated → In Progress / Waiting on Customer, but only by the person it was escalated to or a supervisor.</item>

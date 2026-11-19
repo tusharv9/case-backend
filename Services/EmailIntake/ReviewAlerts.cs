@@ -1,5 +1,7 @@
 namespace CaseManagement.Api.Services.EmailIntake;
 
+using CaseManagement.Api.Services.Tickets;
+
 using CaseManagement.Api.Data;
 using CaseManagement.Api.Models;
 using CaseManagement.Api.Services.Notifications;
@@ -15,9 +17,11 @@ public static class ReviewAlerts
 {
     public enum Kind { Needed, Reminder, Escalated }
 
-    public static async Task NotifyAsync(AppDbContext db, ICaseNotificationSink? sink, Kind kind, InboundEmail email, EmailMailbox mailbox, ILogger logger, CancellationToken ct)
+    public static async Task NotifyAsync(AppDbContext db, ICaseNotificationSink? sink, Kind kind, InboundEmail email, EmailMailbox mailbox, ILogger logger, CancellationToken ct,
+        TicketSlaClock? clock = null)
     {
         if (sink == null) return;
+        string Shown(DateTime utc) => (clock ?? TicketSlaClock.RoundTheClock).Display(utc);
         try
         {
             var recipients = kind == Kind.Escalated && mailbox.ReviewEscalateTo == ReviewEscalationTargets.Administrators
@@ -31,8 +35,9 @@ public static class ReviewAlerts
                 {
                     ["mailbox"] = mailbox.Name,
                     ["match"] = MatchLabel(email.MatchKind),
-                    ["due"] = email.ReviewDueAt?.ToString("dd MMM HH:mm 'UTC'") ?? "no deadline",
-                    ["since"] = email.ReviewStartedAt?.ToString("dd MMM HH:mm 'UTC'"),
+                    // In the platform time zone (the Host's), as every other time people read.
+                    ["due"] = email.ReviewDueAt is { } due ? Shown(due) : "no deadline",
+                    ["since"] = email.ReviewStartedAt is { } since ? Shown(since) : null,
                 },
                 Link: $"inbox/{email.Id}"));
         }

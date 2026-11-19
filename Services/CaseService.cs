@@ -55,13 +55,18 @@ public class CaseService : ICaseService
     {
         var lockReason = CaseWorkflow.LockReason(c, actorId, CallerSupervises, holderName);
         var locked = lockReason != null;
+        // An Open case waits for Handle: the status menu offers nothing (Handle is the way out of Open), and only a supervisor
+        // may resolve it before its holder has started.
+        var open = c.Status == CaseStatus.Open;
         return new CaseWorkflowDto
         {
             IsLocked = locked,
             LockedReason = lockReason,
             CanSupervise = CallerSupervises,
-            AllowedStatuses = locked ? new() : CaseWorkflow.StatusChangesFrom(c.Status).Select(x => x.ToString()).ToList(),
-            CanResolve = !locked && CaseWorkflow.CanResolveFrom(c.Status),
+            AwaitingHandle = open,
+            CanHandle = open && c.OwnerId == actorId,
+            AllowedStatuses = locked || open ? new() : CaseWorkflow.StatusChangesFrom(c.Status).Select(x => x.ToString()).ToList(),
+            CanResolve = !locked && CaseWorkflow.CanResolveFrom(c.Status) && (!open || CallerSupervises),
             CanEscalate = !locked && CaseWorkflow.CanEscalateFrom(c.Status),
             CanReopen = c.Status == CaseStatus.Resolved,
         };
@@ -181,10 +186,14 @@ public class CaseService : ICaseService
         // back is canonical (configured spelling, resolved records), so nothing downstream guesses or defaults.
         var validated = await ValidateCreateCaseAsync(dto);
 
-        // Manual (for this case's source): a person chooses the agent — the same rule for Create Case and a ticket's conversion.
-        if (chosenOwnerId == null
-            && await AssignmentRules.ForDepartmentAsync(_context, _configCache, validated.Department.Id, dto.SourceChannel) is { OwnerRequired: true } manualRule)
-            throw AssignmentRules.AgentRequired(manualRule, origin != null ? "ownerId" : "assigneeId");
+        // The configuration decides who takes a new case — the same rule for Create Case and a ticket's conversion: under Manual a
+        // person must choose the agent; under an automatic algorithm nobody may choose one.
+        if (await AssignmentRules.ForDepartmentAsync(_context, _configCache, validated.Department.Id, dto.SourceChannel) is { } rule)
+        {
+            var field = origin != null ? "ownerId" : "assigneeId";
+            if (rule.OwnerRequired && chosenOwnerId == null) throw AssignmentRules.AgentRequired(rule, field);
+            if (!rule.OwnerRequired && chosenOwnerId != null) throw AssignmentRules.AgentNotChosenByHand(rule, field);
+        }
 
         // 1. Resolve the priority: the sub-category's configured priority is authoritative; otherwise the
         //    requested one, which must be a configured priority. Never silently defaulted.
@@ -481,10 +490,33 @@ public class CaseService : ICaseService
         return paged;
     }
 
-    public async Task UpdateCaseStatusAsync(Guid caseId, UpdateCaseStatusDto dto)
+    public Task UpdateCaseStatusAsync(Guid caseId, UpdateCaseStatusDto dto) => UpdateCaseStatusAsync(caseId, dto, viaHandle: false);
+
+    /// <summary>
+    /// Handle: the person holding an Open case starts working on it. It moves to In Progress through the same status change
+    /// as any other (transition checked, first response recorded, timeline and audit), and only for its holder. Two clicks
+    /// (or two people) at once: the database lets one through, the other is told it was already started.
+    /// </summary>
+    public async Task HandleCaseAsync(Guid caseId, Guid userId)
+    {
+        var c = await _caseRepository.GetByIdAsync(caseId) ?? throw new KeyNotFoundException("Case not found");
+        if (c.Status != CaseStatus.Open)
+            throw new CaseHandleException($"{c.CaseNumber} has already been started: it is {CaseWorkflow.Label(c.Status)}.");
+        if (c.OwnerId != userId)
+        {
+            var holder = c.Owner?.Name ?? await _context.Users.AsNoTracking().Where(u => u.Id == c.OwnerId).Select(u => u.Name).FirstOrDefaultAsync();
+            throw new CaseLockedException($"Only {holder ?? "the person holding this case"} can handle {c.CaseNumber}.");
+        }
+        await UpdateCaseStatusAsync(caseId, new UpdateCaseStatusDto { Status = nameof(CaseStatus.InProgress), UserId = userId }, viaHandle: true);
+    }
+
+    private async Task UpdateCaseStatusAsync(Guid caseId, UpdateCaseStatusDto dto, bool viaHandle)
     {
         var existingCase = await _caseRepository.GetByIdAsync(caseId);
         if (existingCase == null) throw new KeyNotFoundException("Case not found");
+
+        if (existingCase.Status == CaseStatus.Open && !viaHandle)
+            throw new CaseHandleException($"{existingCase.CaseNumber} is Open: the person holding it starts it with Handle.");
 
         if (existingCase.Status == CaseStatus.Resolved)
             throw new InvalidOperationException("A resolved case cannot change status. Reopen it first.");
@@ -542,6 +574,13 @@ public class CaseService : ICaseService
 
         await ExecuteInTransactionAsync(async () =>
         {
+            // Leaving Open is claimed in the database first: of two Handles at once, the second finds the case no longer Open.
+            if (oldStatus == CaseStatus.Open && _context.Database.IsRelational())
+            {
+                var claimed = await _context.Cases.Where(x => x.Id == caseId && x.Status == CaseStatus.Open)
+                    .ExecuteUpdateAsync(set => set.SetProperty(x => x.Status, newStatus));
+                if (claimed == 0) throw new CaseHandleException($"{existingCase.CaseNumber} was started by someone else a moment ago.");
+            }
             await _caseRepository.UpdateAsync(existingCase);
             await _caseRepository.AddEventAsync(caseEvent);
         });
@@ -680,15 +719,23 @@ public class CaseService : ICaseService
     }
 
     /// <summary>
-    /// The first piece of real work on an Open case — a note, a customer reply, a collaboration note, an attachment —
-    /// moves it to In Progress, exactly as choosing In Progress by hand would (it counts as the first response). Viewing a
-    /// case, or routing work such as assigning, transferring or escalating it, is not work on it. Only an Open case moves:
-    /// every other status (Waiting on Customer, Escalated, Resolved, Closed, Cancelled) is left alone, so a repeated action
-    /// never transitions twice. Returns the status event to store with the action, or null when nothing changed.
+    /// Work on an Open case (a note, a customer reply, a collaboration note, an attachment, a resolution) waits until the
+    /// person holding it has handled it: nothing moves a case out of Open on its own any more. Supervisors are not made to
+    /// Handle, so their administrative work (Bulk Resolve, a resolution) carries on; a supervisor's resolution of an Open
+    /// case passes through In Progress, recorded, as before (<paramref name="passThrough"/>). Work with no signed-in person
+    /// (background jobs) is not refused. Returns that status event to store with the action, or null.
     /// </summary>
-    private async Task<CaseEvent?> StartWorkIfOpenAsync(Case c, Guid userId, string action)
+    private async Task<CaseEvent?> EnsureStartedAsync(Case c, Guid userId, string action, bool passThrough = false)
     {
         if (c.Status != CaseStatus.Open) return null;
+        if (!CallerSupervises && _currentUser?.LocalUserId != null)
+        {
+            if (c.OwnerId == userId)
+                throw new CaseHandleException($"Handle {c.CaseNumber} first: it is still Open.");
+            var holder = c.Owner?.Name ?? await _context.Users.AsNoTracking().Where(u => u.Id == c.OwnerId).Select(u => u.Name).FirstOrDefaultAsync();
+            throw new CaseHandleException($"{holder ?? "The person holding it"} has not started {c.CaseNumber} yet. It can be worked once they handle it.");
+        }
+        if (!passThrough) return null;
 
         var at = DateTime.UtcNow;
         c.Status = CaseStatus.InProgress;
@@ -703,19 +750,10 @@ public class CaseService : ICaseService
         };
     }
 
-    public async Task<bool> MarkWorkStartedAsync(Guid caseId, Guid userId, string action)
+    public async Task EnsureWorkMayStartAsync(Guid caseId, Guid userId)
     {
-        var existingCase = await _caseRepository.GetByIdAsync(caseId);
-        if (existingCase == null) throw new KeyNotFoundException("Case not found");
-
-        var started = await StartWorkIfOpenAsync(existingCase, userId, action);
-        if (started == null) return false;
-        await ExecuteInTransactionAsync(async () =>
-        {
-            await _caseRepository.UpdateAsync(existingCase);
-            await _caseRepository.AddEventAsync(started);
-        });
-        return true;
+        var existingCase = await _caseRepository.GetByIdAsync(caseId) ?? throw new KeyNotFoundException("Case not found");
+        await EnsureStartedAsync(existingCase, userId, string.Empty);
     }
 
     public async Task AddNoteAsync(Guid caseId, AddNoteDto dto)
@@ -731,7 +769,7 @@ public class CaseService : ICaseService
             CreatedAt = DateTime.UtcNow,
             UserId = dto.UserId
         };
-        var started = await StartWorkIfOpenAsync(existingCase, dto.UserId, "a note was added");
+        var started = await EnsureStartedAsync(existingCase, dto.UserId, "a note was added");
         await ExecuteInTransactionAsync(async () =>
         {
             await _caseRepository.AddEventAsync(caseEvent);
@@ -1118,8 +1156,8 @@ public class CaseService : ICaseService
 
         await EnsureNotLockedAsync(existingCase, dto.UserId);
 
-        // Resolving an Open case is work on it: it passes through In Progress (recorded) first.
-        var started = await StartWorkIfOpenAsync(existingCase, dto.UserId, bulk ? "bulk resolution" : "resolution");
+        // Resolving an Open case: only a supervisor may (its holder handles it first); it passes through In Progress, recorded.
+        var started = await EnsureStartedAsync(existingCase, dto.UserId, bulk ? "bulk resolution" : "resolution", passThrough: true);
 
         var resolvedAt = DateTime.UtcNow;
         var previous = existingCase.Status;
@@ -1257,7 +1295,7 @@ public class CaseService : ICaseService
             UserId = userId
         };
 
-        var started = await StartWorkIfOpenAsync(existingCase, userId, dto.IsInternal ? "an internal note was added" : "the customer was replied to");
+        var started = await EnsureStartedAsync(existingCase, userId, dto.IsInternal ? "an internal note was added" : "the customer was replied to");
         var recordsFirstResponse = !dto.IsInternal && !existingCase.FirstResponseActualAt.HasValue;
         if (recordsFirstResponse)
             (await GetClockAsync()).RecordFirstResponse(existingCase, DateTime.UtcNow);
@@ -1317,7 +1355,7 @@ public class CaseService : ICaseService
     {
         var lowered = priority.ToLower();
         return await _context.PrioritySlaRules.AsNoTracking().FirstOrDefaultAsync(r => r.Priority.ToLower() == lowered)
-            ?? throw new InvalidOperationException($"No SLA rule is configured for priority '{priority}'. Configure it under Cases SLA & Routing.");
+            ?? throw new InvalidOperationException($"No SLA rule is configured for priority '{priority}'. Configure it under SLA Maintenance.");
     }
 
     /// <summary>
@@ -1370,7 +1408,7 @@ public class CaseService : ICaseService
 
         if (result.BlockedReason == null && result.Levels.Count == 0)
             result.BlockedReason = policy.ActiveLevels.Count == 0
-                ? "No complete escalation level is configured. An administrator sets them up under SLA & Routing → Escalation Matrix."
+                ? "No complete escalation level is configured. An administrator sets them up under Escalation Maintenance."
                 : $"This case is at the highest escalation level ({result.CurrentLevelName}).";
         result.CanEscalate = result.BlockedReason == null;
         return result;
@@ -1533,6 +1571,8 @@ public class CaseService : ICaseService
                 Channel = e.Channel
             })
             .ToListAsync(ct);
+        // A background worker's event names a person only because an event must: show it as the system's.
+        foreach (var ev in events.Where(ev => AutomaticEvents.IsAutomatic(ev.Message))) ev.UserName = string.Empty;
 
         return new PagedResponseDto<CaseEventDto>
         {

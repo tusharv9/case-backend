@@ -31,7 +31,7 @@ public interface IConfigurableSettingsService
     Task<bool> DeleteSubCategoryAsync(Guid id, CancellationToken ct = default);
 
     // Priority ("severity") master data. Priorities live in PrioritySlaRules — the same rows the
-    // Cases SLA & Routing screen edits — so there is exactly one list and one set of SLA targets.
+    // SLA Maintenance screen edits — so there is exactly one list and one set of SLA targets.
     Task<IEnumerable<SeverityDto>> GetSeverityConfigurationsAsync(CancellationToken ct = default);
     Task<SeverityDto> AddSeverityAsync(CreateSeverityDto dto, CancellationToken ct = default);
     Task<SeverityDto?> UpdateSeverityAsync(Guid id, UpdateSeverityDto dto, CancellationToken ct = default);

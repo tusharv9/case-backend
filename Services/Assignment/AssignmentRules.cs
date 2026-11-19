@@ -34,6 +34,21 @@ public static class AssignmentRules
             : "Cases are assigned by hand: choose the agent who takes this case.")]);
 
     /// <summary>
+    /// The refusal when the rule gives cases out automatically and an agent was chosen anyway: the configuration decides who
+    /// takes a new case (Agent Assignment → Rules), not the form that creates it.
+    /// </summary>
+    public static FieldValidationException AgentNotChosenByHand(AssignmentRuleDto rule, string field) =>
+        new([new FieldError(field, $"{(rule.CaseSource == AssignmentCaseSources.Email ? "Email cases" : "Cases")} of {rule.TeamName} are given out " +
+            $"automatically ({AlgorithmName(rule.Algorithm)}), so no agent can be chosen here. Leave the agent empty.")]);
+
+    private static string AlgorithmName(string algorithm) => algorithm switch
+    {
+        AssignmentAlgorithms.RoundRobin => "round robin",
+        AssignmentAlgorithms.LeastOccupancy => "least occupancy",
+        _ => algorithm,
+    };
+
+    /// <summary>
     /// Who in a department's team could take a new case, as the Assign &amp; Reassign rules judge them, with the reason anyone cannot.
     /// Empty when the department has no active team.
     /// </summary>

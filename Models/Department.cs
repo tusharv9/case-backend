@@ -36,7 +36,7 @@ public class TeamDepartment
     public DateTime LinkedAt { get; set; } = DateTime.UtcNow;
 }
 
-/// <summary>The value of one administrator-defined field of the Create/Edit Team form (Case Settings → Teams → Create Team Form).</summary>
+/// <summary>The value of one administrator-defined field of the Create/Edit Team form (Configurable Settings → Teams → Create Team Form).</summary>
 public class TeamCustomAttribute
 {
     public Guid Id { get; set; } = Guid.NewGuid();

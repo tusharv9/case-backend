@@ -345,16 +345,25 @@ public class EscalationLevelRulesTests
     }
 
     [Fact]
-    public void A_role_without_Case_Management_access_is_refused_unless_the_level_already_had_it()
+    public void A_role_without_Case_Management_access_is_refused_even_when_the_level_already_had_it()
     {
+        // A stored role the Host no longer grants (or never had) is not kept: the level must be given an eligible role.
         var allowed = new[] { "Team Lead" };
 
         var fresh = EscalationLevelRules.Validate(new[] { L(1, "Team Lead", 50), L(2, "Teller", 75) }, allowed);
         var kept = EscalationLevelRules.Validate(new[] { L(1, "Team Lead", 50), L(2, "Teller", 80) }, allowed,
             new Dictionary<int, string> { [2] = "Teller" });
 
-        Assert.Contains(fresh, e => e.Field == "Level 2" && e.Message.Contains("does not have access to Case Management"));
-        Assert.Empty(kept);
+        Assert.Contains(fresh, e => e.Field == "Level 2" && e.Message.Contains("Teller is not a Host role with Case Management access"));
+        Assert.Contains(kept, e => e.Field == "Level 2" && e.Message.Contains("Select an eligible role"));
+    }
+
+    [Fact]
+    public void With_no_eligible_role_at_all_every_level_is_refused()
+    {
+        var errors = EscalationLevelRules.Validate(new[] { L(1, "Team Lead", 50) }, Array.Empty<string>());
+
+        Assert.Contains(errors, e => e.Field == "Level 1");
     }
 }
 

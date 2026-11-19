@@ -249,13 +249,6 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
             var active = await db.Teams.AsNoTracking().Where(t => distinct.Contains(t.Id) && t.IsActive).CountAsync(ct);
             if (active != distinct.Count) errors.Add(new("teamIds", "Choose active teams only."));
         }
-        if (dto.DefaultDepartmentId is { } dept && !await db.Departments.AsNoTracking().AnyAsync(d => d.Id == dept && d.IsActive, ct))
-            errors.Add(new("defaultDepartmentId", "Choose an active department, or leave it empty."));
-        void Max(string field, string? value, int max) { if (value?.Trim().Length > max) errors.Add(new(field, $"At most {max} characters.")); }
-        Max("defaultCaseType", dto.DefaultCaseType, 100);
-        Max("defaultSubCategory", dto.DefaultSubCategory, 200);
-        Max("defaultPriority", dto.DefaultPriority, 100);
-        Max("defaultPreferredLanguage", dto.DefaultPreferredLanguage, 100);
 
         // The review deadline: 0 switches it off; otherwise remind before it and escalate at or after it, within a working week.
         const int Limit = 7 * 24 * 60;
@@ -275,11 +268,13 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
 
     private static void ApplyTeams(EmailMailbox m, SaveMailboxDto dto)
     {
-        m.DefaultDepartmentId = dto.DefaultDepartmentId;
-        m.DefaultCaseType = Blank(dto.DefaultCaseType);
-        m.DefaultSubCategory = Blank(dto.DefaultSubCategory);
-        m.DefaultPriority = Blank(dto.DefaultPriority);
-        m.DefaultPreferredLanguage = Blank(dto.DefaultPreferredLanguage);
+        // A mailbox no longer carries case details (they are chosen when an email becomes a case): saving it clears any left
+        // from before, so nothing hidden is kept. The columns stay for history; nothing reads them for new tickets.
+        m.DefaultDepartmentId = null;
+        m.DefaultCaseType = null;
+        m.DefaultSubCategory = null;
+        m.DefaultPriority = null;
+        m.DefaultPreferredLanguage = null;
         if (dto.ReviewSlaMinutes is { } sla) m.ReviewSlaMinutes = sla;
         if (dto.ReviewReminderMinutes is { } reminder) m.ReviewReminderMinutes = reminder;
         if (dto.ReviewEscalationMinutes is { } escalation) m.ReviewEscalationMinutes = escalation;

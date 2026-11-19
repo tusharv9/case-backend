@@ -93,7 +93,7 @@ public static class EscalationLevelRules
     /// a role without Case Management access, and thresholds that do not rise with the level.
     /// </summary>
     /// <param name="allowedRoles">The Host roles granted Case Management access; null skips that check.</param>
-    /// <param name="unchangedRoles">Level number → role already stored there, which stays allowed even if no longer offered.</param>
+    /// <param name="unchangedRoles">No longer used (a stored role is held to the same rule); kept so callers compile.</param>
     public static IReadOnlyList<FieldError> Validate(IReadOnlyList<Input> levels, IReadOnlyCollection<string>? allowedRoles,
         IReadOnlyDictionary<int, string>? unchangedRoles = null)
     {
@@ -127,10 +127,11 @@ public static class EscalationLevelRules
                 else
                     seenRoles[role] = l.LevelNumber;
 
-                var keptAsIs = unchangedRoles != null && unchangedRoles.TryGetValue(l.LevelNumber, out var stored)
-                               && string.Equals(stored?.Trim(), role, StringComparison.OrdinalIgnoreCase);
-                if (allowed != null && !allowed.Contains(role) && !keptAsIs)
-                    errors.Add(new FieldError(key, $"{key}: the role '{role}' does not have access to Case Management in OmniConnect."));
+                // Every level names a role the Host has AND has granted Case Management access, whatever was stored before: a
+                // level is never saved (again) with a role nobody can hold. A save that leaves the matrix untouched is not
+                // checked here at all (SlaRoutingService skips it), so a revoked role never blocks an unrelated SLA save.
+                if (allowed != null && !allowed.Contains(role))
+                    errors.Add(new FieldError(key, $"{key}: {role} is not a Host role with Case Management access. Select an eligible role."));
             }
 
             if (l.TriggerValue.HasValue && previousThreshold.HasValue && l.TriggerValue.Value <= previousThreshold.Value)

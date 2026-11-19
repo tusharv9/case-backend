@@ -13,6 +13,10 @@ public class CaseWorkflowDto
     public string? LockedReason { get; set; }
     /// <summary>The caller may supervise cases (bulk operations, acting on escalated cases).</summary>
     public bool CanSupervise { get; set; }
+    /// <summary>The case is Open: it waits for its holder to Handle it before work on it starts.</summary>
+    public bool AwaitingHandle { get; set; }
+    /// <summary>The caller holds this Open case and may Handle it.</summary>
+    public bool CanHandle { get; set; }
 }
 
 /// <summary>The levels a case can be escalated to by hand, each with the people who may receive it.</summary>

@@ -849,7 +849,7 @@ public class ConfigurableSettingsService : IConfigurableSettingsService
     }
 
     // ===== PRIORITY ("SEVERITY") MASTER DATA =====
-    // A priority is one PrioritySlaRule row. The Cases SLA & Routing screen edits its targets and which
+    // A priority is one PrioritySlaRule row. The SLA Maintenance screen edits its targets and which
     // sub-categories map to it; this screen edits its name, order, active flag and (in whole hours) its
     // targets. Same rows, so the two screens can never disagree.
 

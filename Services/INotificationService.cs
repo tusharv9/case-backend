@@ -28,7 +28,7 @@ public interface INotificationService
     /// </summary>
     Task CreateBulkReassignedNotificationAsync(Guid recipientUserId, IReadOnlyList<(Guid CaseId, string CaseNumber)> cases, CancellationToken ct = default);
 
-    /// <summary>Tells the people who manage Case Settings that configuration changed. <paramref name="message"/> is the detail line.</summary>
+    /// <summary>Tells the people who manage Configurable Settings that configuration changed. <paramref name="message"/> is the detail line.</summary>
     Task CreateConfigChangedNotificationAsync(string title, string message, CancellationToken ct = default);
 }
 

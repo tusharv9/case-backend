@@ -192,7 +192,7 @@ public class EmailIntakeTests : IDisposable
         Assert.Equal(("T-00001", TicketStatuses.New, TicketSources.Email), (ticket.TicketNumber, ticket.Status, ticket.Source));
         Assert.Equal(("Ravi Kumar", "ravi@sbi.co.in", "Refund not received"), (ticket.RequesterName, ticket.RequesterEmail, ticket.Subject));
         Assert.Equal("I was charged twice.", ticket.Description);
-        Assert.Equal("Enquiry", ticket.CaseType);   // the mailbox's suggestion
+        Assert.Null(ticket.CaseType);   // a mailbox no longer suggests case details: they are chosen when the case is made
         Assert.Equal(SenderMatchKinds.RegisteredSender, email.MatchKind);
         Assert.Empty(db.Cases);
     }
@@ -249,8 +249,9 @@ public class EmailIntakeTests : IDisposable
     }
 
     [Fact]
-    public async Task An_email_ticket_starts_its_assign_within_clock_from_the_mailbox_prioritys_target()
+    public async Task An_email_ticket_takes_no_case_details_from_its_mailbox_and_waits_under_the_no_priority_time()
     {
+        // A mailbox only says which teams work its emails; a value left on it from before is not copied onto the ticket.
         var rule = db.PrioritySlaRules.Single(r => r.Priority == "High");
         rule.TicketAssignValue = 15;
         rule.TicketAssignMinutes = 15;
@@ -261,7 +262,8 @@ public class EmailIntakeTests : IDisposable
         await Receive(Email("ravi@sbi.co.in", "Refund not received", "I was charged twice."));
 
         var ticket = await db.Tickets.SingleAsync();
-        Assert.Equal((15, ticket.ReceivedAt.AddMinutes(15)), (ticket.AssignTargetMinutes, ticket.AssignDueAt));
+        Assert.Null(ticket.Priority);
+        Assert.NotEqual(15, ticket.AssignTargetMinutes);
     }
 
     [Fact]

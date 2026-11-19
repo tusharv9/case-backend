@@ -39,13 +39,24 @@ public sealed class BusinessCalendar
         foreach (var day in Enum.GetValues<DayOfWeek>())
         {
             if (!week.ContainsKey(day))
-                throw new InvalidOperationException($"Business hours are not configured for {day}. Configure all seven days under Cases SLA & Routing.");
+                throw new InvalidOperationException($"Business hours are not configured for {day}. Configure all seven days under SLA Maintenance.");
         }
         _week = week;
         _holidays = holidays.GroupBy(h => h.Date.Date).ToDictionary(g => g.Key, g => g.First().Name);
 
         if (!_week.Values.Any(d => d.Enabled && d.End > d.Start))
             throw new InvalidOperationException("The business calendar has no working time: enable at least one day with an opening time before its closing time.");
+    }
+
+    /// <summary>A UTC moment as text in <paramref name="zone"/>, with its offset: "19 Nov 09:00 (GMT+8)". For messages and audit text.</summary>
+    public static string Display(DateTime utc, TimeZoneInfo zone)
+    {
+        var at = DateTime.SpecifyKind(utc, DateTimeKind.Utc);
+        var offset = zone.GetUtcOffset(at);
+        var sign = offset < TimeSpan.Zero ? "-" : "+";
+        var abs = offset.Duration();
+        var gmt = offset == TimeSpan.Zero ? "GMT" : abs.Minutes == 0 ? $"GMT{sign}{abs.Hours}" : $"GMT{sign}{abs.Hours}:{abs.Minutes:00}";
+        return $"{TimeZoneInfo.ConvertTimeFromUtc(at, zone):dd MMM HH:mm} ({gmt})";
     }
 
     private DateTime ToLocal(DateTime utc) => TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(utc, DateTimeKind.Utc), TimeZone);

@@ -204,9 +204,12 @@ public sealed class TicketService(
 
         // When the setting for these cases is Manual, the person converting chooses the agent: the server insists, whatever the screen sent.
         // Checked here too (case creation checks it again) so a refused conversion never leaves a customer made from the requester behind.
-        if (dto.OwnerId == null && caseDto.DepartmentId is { } deptId
-            && await AssignmentRules.ForDepartmentAsync(db, null, deptId, caseDto.SourceChannel, ct) is { OwnerRequired: true } rule)
-            throw AssignmentRules.AgentRequired(rule, "ownerId");
+        // Under an automatic algorithm the configuration picks the agent: one chosen anyway is refused.
+        if (caseDto.DepartmentId is { } deptId && await AssignmentRules.ForDepartmentAsync(db, null, deptId, caseDto.SourceChannel, ct) is { } rule)
+        {
+            if (rule.OwnerRequired && dto.OwnerId == null) throw AssignmentRules.AgentRequired(rule, "ownerId");
+            if (!rule.OwnerRequired && dto.OwnerId != null) throw AssignmentRules.AgentNotChosenByHand(rule, "ownerId");
+        }
         if (caseDto.OrganisationContactId is { } contact && contact != ticket.VerifiedSenderId)
             throw new FieldValidationException([new FieldError("selectCustomer", "The organisation contact must be the registered sender who wrote this ticket.")]);
         if (caseDto.CustomerId == null && caseDto.Customer360 == null && caseDto.OrganisationContactId == null)

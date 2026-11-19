@@ -1,7 +1,7 @@
 namespace CaseManagement.Api.Models;
 
 /// <summary>
-/// Case Settings → Teams → Team Rules. One row of team policies, enforced by <c>TeamService</c> on every team save whatever the
+/// Configurable Settings → Teams → Team Rules. One row of team policies, enforced by <c>TeamService</c> on every team save whatever the
 /// screen. Every policy starts at the behaviour from before it existed, so existing teams stay valid; tightening one is
 /// refused while existing teams break it (the refusal names them). The Create/Edit Team form itself is configured as
 /// <c>FieldConfiguration</c> rows (module CaseManagement, section <see cref="TeamFormFields.SectionKey"/>).

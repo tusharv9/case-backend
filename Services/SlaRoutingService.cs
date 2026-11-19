@@ -20,10 +20,13 @@ public class SlaRoutingService : ISlaRoutingService
     private readonly IConfigCache? _cache;
     private readonly IOrgDirectory? _directory;
     private readonly IDbContextFactory<AppDbContext>? _contexts;
+    private readonly IHostTimeZone? _hostZone;
 
     public SlaRoutingService(AppDbContext context, ILogger<SlaRoutingService> logger, IEscalationService escalation,
-        IConfigCache? cache = null, IOrgDirectory? directory = null, IDbContextFactory<AppDbContext>? contexts = null)
+        IConfigCache? cache = null, IOrgDirectory? directory = null, IDbContextFactory<AppDbContext>? contexts = null,
+        IHostTimeZone? hostZone = null)
     {
+        _hostZone = hostZone;
         _context = context;
         _logger = logger;
         _escalation = escalation;
@@ -56,6 +59,21 @@ public class SlaRoutingService : ISlaRoutingService
 
         var errors = EscalationLevelRules.Validate(levels, allowed, unchanged);
         if (errors.Count > 0) throw new FieldValidationException(errors);
+    }
+
+    /// <summary>The matrix in the request is the stored one, field for field (what Apply would write).</summary>
+    private static bool SameMatrix(IReadOnlyList<EscalationLevelConfig> stored, IReadOnlyList<EscalationLevelConfigDto> input)
+    {
+        if (stored.Count != input.Count) return false;
+        var byNumber = stored.ToDictionary(l => l.LevelNumber);
+        foreach (var i in input)
+        {
+            if (!byNumber.TryGetValue(i.LevelNumber, out var l)) return false;
+            var probe = new EscalationLevelConfig { LevelNumber = i.LevelNumber };
+            Apply(probe, i);
+            if (InputOf(probe) != InputOf(l) || probe.Name != l.Name || probe.IsActive != l.IsActive) return false;
+        }
+        return true;
     }
 
     private static void Apply(EscalationLevelConfig target, EscalationLevelConfigDto input)
@@ -146,6 +164,10 @@ public class SlaRoutingService : ISlaRoutingService
         await rolesTask;
         if (_contexts == null) await ReadRoles();
 
+        // The time zone is the Host's (Settings → Manage Time Zone); the stored one is shown only when the Host cannot be read.
+        var hostZone = _hostZone == null ? null : await _hostZone.GetAsync(ct);
+        if (hostZone != null) timeZoneId = hostZone;
+
         var ruleDtos = rules.Select(r => new PrioritySlaRuleDto
         {
             Id = r.Id,
@@ -199,6 +221,7 @@ public class SlaRoutingService : ISlaRoutingService
             RolesUnavailableMessage = rolesUnavailable,
             NotificationPriorities = EscalationNotificationPriorities.All.ToList(),
             TimeZoneId = timeZoneId,
+            TimeZoneFromHost = hostZone != null,
             TicketDefaultAssignValue = ticketDefault.Value,
             TicketDefaultAssignUnit = ticketDefault.Unit,
             AvailableTimeZones = TimeZoneInfo.GetSystemTimeZones().Select(z => z.Id).Where(id => id.Contains('/')).OrderBy(id => id).ToList(),
@@ -353,16 +376,20 @@ public class SlaRoutingService : ISlaRoutingService
                     }
                 }
 
-                // 1b. Time zone of the working calendar
-                if (!string.IsNullOrWhiteSpace(request.TimeZoneId))
+                // 1b. Time zone of the working calendar: the Host's, never chosen here. The stored copy is only the fallback for
+                //     when the Host cannot be read, so a save refreshes it to the Host's zone. Without a Host (standalone) the
+                //     request's zone is kept, as before.
+                var zoneToStore = (_hostZone == null ? null : await _hostZone.GetAsync(ct))
+                                  ?? (_hostZone == null ? request.TimeZoneId?.Trim() : null);
+                if (!string.IsNullOrWhiteSpace(zoneToStore))
                 {
-                    BusinessTimeService.FindTimeZone(request.TimeZoneId);   // throws a clear error for an unknown zone
+                    BusinessTimeService.FindTimeZone(zoneToStore);   // throws a clear error for an unknown zone
                     var setting = await _context.BusinessCalendarSettings.FirstOrDefaultAsync(ct);
                     if (setting == null)
-                        _context.BusinessCalendarSettings.Add(new BusinessCalendarSetting { Id = Guid.NewGuid(), TimeZoneId = request.TimeZoneId.Trim(), CreatedAt = now });
-                    else if (setting.TimeZoneId != request.TimeZoneId.Trim())
+                        _context.BusinessCalendarSettings.Add(new BusinessCalendarSetting { Id = Guid.NewGuid(), TimeZoneId = zoneToStore, CreatedAt = now });
+                    else if (setting.TimeZoneId != zoneToStore)
                     {
-                        setting.TimeZoneId = request.TimeZoneId.Trim();
+                        setting.TimeZoneId = zoneToStore;
                         setting.UpdatedAt = now;
                     }
                 }
@@ -420,21 +447,27 @@ public class SlaRoutingService : ISlaRoutingService
                 }
 
                 // 3. Update Escalation Level Configs (the whole matrix is checked first; an incomplete level is never stored)
+                // A save from SLA Maintenance carries the escalation matrix back exactly as it was read: then it is left alone
+                // (not checked, not rewritten), so a role the Host has since revoked does not block fixing an SLA. Any change
+                // to the matrix is checked in full, roles included.
                 var inputLevels = request.EscalationLevels.OrderBy(l => l.LevelNumber).ToList();
-                await ValidateMatrixAsync(inputLevels.Select(InputOf).ToList(), ct);
-
                 var existingLevels = await _context.EscalationLevelConfigs.ToListAsync(ct);
-                _context.EscalationLevelConfigs.RemoveRange(existingLevels);
-                await _context.SaveChangesAsync(ct);
-
-                foreach (var inputLvl in inputLevels)
+                if (!SameMatrix(existingLevels, inputLevels))
                 {
-                    var level = new EscalationLevelConfig { Id = Guid.NewGuid(), LevelNumber = inputLvl.LevelNumber, CreatedAt = now };
-                    Apply(level, inputLvl);
-                    _context.EscalationLevelConfigs.Add(level);
+                    await ValidateMatrixAsync(inputLevels.Select(InputOf).ToList(), ct);
+
+                    _context.EscalationLevelConfigs.RemoveRange(existingLevels);
+                    await _context.SaveChangesAsync(ct);
+
+                    foreach (var inputLvl in inputLevels)
+                    {
+                        var level = new EscalationLevelConfig { Id = Guid.NewGuid(), LevelNumber = inputLvl.LevelNumber, CreatedAt = now };
+                        Apply(level, inputLvl);
+                        _context.EscalationLevelConfigs.Add(level);
+                    }
+                    await _context.SaveChangesAsync(ct);
+                    await ClampCaseLevelsAsync(ct);
                 }
-                await _context.SaveChangesAsync(ct);
-                await ClampCaseLevelsAsync(ct);
 
                 // 4. Record Audit Log in CaseEvents
                 _context.CaseEvents.Add(new CaseEvent
@@ -443,7 +476,7 @@ public class SlaRoutingService : ISlaRoutingService
                     CaseId = null,
                     EventType = EventType.Other,
                     Module = "SlaEscalation",
-                    EntityName = "Cases SLA & Routing Configuration",
+                    EntityName = "SLA Maintenance Configuration",
                     ActionType = "UPDATE_CONFIG",
                     Message = "Administrator saved updated Cases SLA Matrix, Business Hours, and Escalation Matrix.",
                     UserId = actingUserId,
@@ -459,7 +492,7 @@ public class SlaRoutingService : ISlaRoutingService
             catch (Exception ex)
             {
                 await transaction.RollbackAsync(ct);
-                _logger.LogError(ex, "Failed to save Cases SLA & Routing configuration atomically.");
+                _logger.LogError(ex, "Failed to save SLA Maintenance configuration atomically.");
                 throw;
             }
         });
@@ -789,7 +822,7 @@ public class SlaRoutingService : ISlaRoutingService
 
         // No built-in numbers to fall back on: a missing rule is a configuration error and must be loud.
         return rule ?? throw new InvalidOperationException(
-            $"No SLA rule is configured for priority '{priority}'. Configure it under Cases SLA & Routing.");
+            $"No SLA rule is configured for priority '{priority}'. Configure it under SLA Maintenance.");
     }
 
     public async Task<CaseEscalationStatusDto?> GetCaseEscalationStatusAsync(Guid caseId, CancellationToken ct = default)
@@ -814,7 +847,7 @@ public class SlaRoutingService : ISlaRoutingService
             NextTargetRole = nextConfig?.TargetRole,
             IsMaxLevel = isMax,
             MaxLevelNotice = isMax ? (policy.ActiveLevels.Count == 0
-                ? "No complete escalation level is configured. An administrator sets them up under SLA & Routing → Escalation Matrix."
+                ? "No complete escalation level is configured. An administrator sets them up under Escalation Maintenance."
                 : $"This case has reached the highest configured escalation level ({currentName}). Further escalation is not allowed.") : null,
             TriggerDescription = nextConfig != null ? EscalationTriggers.Describe(nextConfig.TriggerType, nextConfig.TriggerValue) : string.Empty,
             ActionDescription = nextConfig?.ActionDescription ?? string.Empty

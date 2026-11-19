@@ -194,6 +194,8 @@ public class SlaRoutingConfigResponseDto
 
     /// <summary>The zone the business hours are written in (IANA id).</summary>
     public string TimeZoneId { get; set; } = string.Empty;
+    /// <summary>True when <see cref="TimeZoneId"/> is the Host's managed zone (false: the stored fallback, Host unreachable).</summary>
+    public bool TimeZoneFromHost { get; set; }
     public List<string> AvailableTimeZones { get; set; } = new();
 
     /// <summary>How long a ticket without a (configured) priority may wait to be assigned. 0 = no target.</summary>

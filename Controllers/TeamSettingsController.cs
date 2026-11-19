@@ -6,7 +6,7 @@ using CaseManagement.Api.Services;
 using Microsoft.AspNetCore.Mvc;
 
 /// <summary>
-/// Case Settings → Teams → Team Rules: the team policies. Reading needs any Case Management access (the team form follows
+/// Configurable Settings → Teams → Team Rules: the team policies. Reading needs any Case Management access (the team form follows
 /// these rules); saving needs config.manage. The form itself is configured through the field-configuration API.
 /// </summary>
 [ApiController]

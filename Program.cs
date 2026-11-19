@@ -331,6 +331,8 @@ builder.Services.Configure<AuthServiceOptions>(builder.Configuration.GetSection(
 builder.Services.AddHttpClient<HostUserDirectoryClient>();
 // Roles and the people holding them, read from AuthService (escalation matrix, escalation recipients, Supervisors).
 builder.Services.AddHttpClient<IOrgDirectory, HostOrgDirectory>();
+// The platform time zone, managed in the Host: every SLA clock, business-hours check and time in a message follows it.
+builder.Services.AddHttpClient<IHostTimeZone, HostTimeZone>();
 builder.Services.AddHttpClient<HostSignInHistoryClient>();
 // People deleted in the Host: their open cases go back to the team lead to be assigned, and leads and Supervisors are told.
 builder.Services.AddHttpClient<IHostUserStatusClient, HostUserStatusClient>();

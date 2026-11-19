@@ -191,11 +191,12 @@ public class CaseLifecycleTests : IDisposable
     }
 
     [Fact]
-    public async Task Resolving_an_Open_case_records_that_work_started_first()
+    public async Task A_supervisor_resolving_an_Open_case_records_that_work_started_first()
     {
+        // An agent handles a case before resolving it (HandleCaseTests); a supervisor is not made to.
         var c = AddCase(CaseStatus.Open, agent.Id);
 
-        await Cases(agent.Id).ResolveCaseAsync(c.Id, new ResolveCaseDto { Disposition = "Fixed", UserId = agent.Id });
+        await Cases(supervisor.Id, Permissions.CasesSupervise).ResolveCaseAsync(c.Id, new ResolveCaseDto { Disposition = "Fixed", UserId = supervisor.Id });
 
         Assert.True(await db.CaseEvents.AnyAsync(e => e.CaseId == c.Id && e.Message.StartsWith("Status changed to In Progress")));
         Assert.Equal(CaseStatus.Resolved, (await db.Cases.AsNoTracking().FirstAsync(x => x.Id == c.Id)).Status);

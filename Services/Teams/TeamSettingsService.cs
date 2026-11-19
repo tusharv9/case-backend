@@ -15,7 +15,7 @@ public interface ITeamSettingsService
 }
 
 /// <summary>
-/// Reads and saves the team rules (Case Settings → Teams → Team Rules). A policy can only be tightened when the existing teams already
+/// Reads and saves the team rules (Configurable Settings → Teams → Team Rules). A policy can only be tightened when the existing teams already
 /// satisfy it: turning "several teams per person" off while two people are in two teams is refused with their names, rather than
 /// silently removing anyone from a team. Saving is guarded by the loaded version, so a newer save is never overwritten.
 /// </summary>
