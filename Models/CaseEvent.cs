@@ -25,5 +25,11 @@ public class CaseEvent
 
     // Case Details Drawer Timeline Interaction & Mentions
     public bool IsInternal { get; set; } = true;
+
+    /// <summary>For an email received on the case: that email, whose original (HTML, signature, inline pictures) the timeline shows.</summary>
+    public Guid? InboundEmailId { get; set; }
+
+    /// <summary>For a meeting scheduled, moved or cancelled: that meeting.</summary>
+    public Guid? MeetingId { get; set; }
     public string? Channel { get; set; }
 }

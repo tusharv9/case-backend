@@ -210,10 +210,17 @@ public class CaseRepository : ICaseRepository
 
             if (!string.IsNullOrWhiteSpace(status) && !status.Equals("all", StringComparison.OrdinalIgnoreCase))
             {
+                // A system status ("InProgress", or "In Progress") matches cases in that status and no custom one; any other
+                // value is a configured custom status's key.
                 string normStatus = status.Trim().Replace(" ", "").Replace("_", "");
-                if (Enum.TryParse<CaseStatus>(normStatus, true, out var parsedStatus))
+                if (Enum.TryParse<CaseStatus>(normStatus, true, out var parsedStatus) && Enum.IsDefined(parsedStatus))
                 {
-                    query = query.Where(c => c.Status == parsedStatus);
+                    query = query.Where(c => c.Status == parsedStatus && c.StatusKey == null);
+                }
+                else
+                {
+                    var key = status.Trim();
+                    query = query.Where(c => c.StatusKey == key);
                 }
             }
 
@@ -491,8 +498,11 @@ public class CaseRepository : ICaseRepository
             else if (cleanAction.Contains("cowork"))
                 query = query.Where(ce => ce.EventType == EventType.Cowork);
             else if (cleanAction.Contains("status"))
-                // A status change is recorded as a note whose text says so (or, when the agent wrote one, the agent's note).
-                query = query.Where(ce => ce.CaseId != null && ce.ActionType == null && ce.Message.ToLower().StartsWith("status changed"));
+                // A status change (STATUS_CHANGED, older ones a note whose text says so) and the automatic pause-limit action.
+                query = query.Where(ce => ce.CaseId != null && (ce.ActionType == "STATUS_CHANGED" || ce.ActionType == "SLA_PAUSE_LIMIT"
+                    || (ce.ActionType == null && ce.Message.ToLower().StartsWith("status changed"))));
+            else if (cleanAction.Contains("meeting"))
+                query = query.Where(ce => ce.ActionType == "MEETING_SCHEDULED" || ce.ActionType == "MEETING_RESCHEDULED" || ce.ActionType == "MEETING_CANCELLED");
             else if (cleanAction == "view" || cleanAction.Contains("viewed"))
                 query = query.Where(ce => ce.EventType == EventType.View);
             else if (cleanAction.Contains("nudge"))
@@ -500,7 +510,9 @@ public class CaseRepository : ICaseRepository
             else if (cleanAction.Contains("team"))
                 query = query.Where(ce => ce.Module == "Teams" || ce.Module == "Departments");
             else if (cleanAction.Contains("config"))
-                query = query.Where(ce => ce.Module == "Configurable Settings" || (ce.ActionType != null && ce.ActionType != "NUDGE" && ce.Module != "Teams" && ce.Module != "Departments"));
+                // Configuration is not about one case: settings, statuses, SLA and routing changes (case events are never here).
+                query = query.Where(ce => ce.Module == "Configurable Settings"
+                    || (ce.CaseId == null && ce.ActionType != null && ce.ActionType != "NUDGE" && ce.Module != "Teams" && ce.Module != "Departments"));
         }
 
         // "Done by this person" never includes what a background worker recorded under their name.

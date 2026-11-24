@@ -15,12 +15,14 @@ public static class AutomaticEvents
 
     public static readonly Expression<Func<CaseEvent, bool>> IsPersonal = e =>
         !(e.Message.StartsWith("[Automatic Escalation]")
+          || e.Message.StartsWith("[Pause limit]")
           || e.Message.StartsWith("SLA reached ")
           || e.Message.Contains(" by data reconciliation ("));
 
     public static bool IsAutomatic(string? message) =>
         message != null
         && (message.StartsWith("[Automatic Escalation]", StringComparison.Ordinal)
+            || message.StartsWith("[Pause limit]", StringComparison.Ordinal)
             || message.StartsWith("SLA reached ", StringComparison.Ordinal)
             || message.Contains(" by data reconciliation (", StringComparison.Ordinal));
 }

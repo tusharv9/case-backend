@@ -46,13 +46,16 @@ public static class HostPermissionCatalog
             new("Transfer", "Transfer cases", "Move a case to another team.", Permissions.CasesTransfer),
             new("Resolve", "Resolve and close cases", "Resolve, close, cancel and reopen cases.", Permissions.CasesResolve),
             new("Assign", "Assign any case", "Assign, reassign and transfer cases outside the person's own teams.", Permissions.CasesAssign),
-            new("ViewAll", "See every team's cases", "See all cases, not only those of the person's own teams and assignments.", Permissions.CasesViewAll),
+            new("ViewTeam", "See the cases of teams they lead", "See every case of the teams the person leads in Team Management, not only the cases assigned to them.", Permissions.CasesViewTeam),
+            new("ViewAll", "See every team's cases", "See all cases, not only the ones assigned to the person or that they collaborate on.", Permissions.CasesViewAll),
             new("Supervise", "Supervise cases", "Bulk reassign and bulk resolve, take over escalated cases, and be asked for help as a Supervisor in Request Swarm.", Permissions.CasesSupervise),
         ],
         [
             // Dashboard (formerly Reports) sits below the operational Cases row. Its key stays "dashboard" so existing links and pages.js keep working.
             new("case-management", "Cases", "Briefcase", 10, "View"),
             new("dashboard", "Dashboard", "PieChart", 20, "View"),
+            // Calendar: case creations, SLA deadlines, meetings and pause limits of the cases the person may see.
+            new("calendar", "Calendar", "Calendar", 25, "View"),
             // Agent Assignment (once a tab of SLA Maintenance): the cases waiting for an agent are for supervisors; its Rules
             // tab is edited with Manage case configuration, checked on the page and by the settings endpoints.
             new("agent-assignment", "Agent Assignment", "UserCheck", 30, "Supervise"),

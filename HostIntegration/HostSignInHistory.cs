@@ -6,11 +6,12 @@ using CaseManagement.Api.DTOs;
 using Microsoft.Extensions.Options;
 
 /// <summary>
-/// A person's sign-ins and sign-outs, from the Host's own audit log (AuthService <c>GET /api/audit-logs</c>), read with the
+/// A person's sign-ins and sign-outs, from the platform's audit trail (the Audit Service's <c>GET /api/audit-logs</c>), read with the
 /// VIEWER's token. Case Management never records sign-ins itself: the Host does, and it shows them only to people it allows
 /// (System Audit Logs: View). Someone without that access is told so, rather than shown an empty history as if nothing happened.
 /// </summary>
-public sealed class HostSignInHistoryClient(HttpClient http, IHttpContextAccessor httpContext, IOptions<AuthServiceOptions> options, ILogger<HostSignInHistoryClient> logger)
+public sealed class HostSignInHistoryClient(HttpClient http, IHttpContextAccessor httpContext, IOptions<AuthServiceOptions> options, ILogger<HostSignInHistoryClient> logger,
+    IConfiguration? configuration = null)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -25,9 +26,11 @@ public sealed class HostSignInHistoryClient(HttpClient http, IHttpContextAccesso
 
     public async Task<PagedResponseDto<CaseAuditEventDto>> ListAsync(string hostUserId, Guid caseUserId, DateTime? from, DateTime? to, int page, int pageSize, CancellationToken ct)
     {
-        var baseUrl = options.Value.BaseUrl;
+        // The platform's audit trail lives in the Audit Service since 2026-11-23 (AuditService:BaseUrl); AuthService's old
+        // GET api/audit-logs is gone. AuthService:BaseUrl is only the fallback for a platform not yet moved.
+        var baseUrl = configuration?["AuditService:BaseUrl"] is { Length: > 0 } audit ? audit : options.Value.BaseUrl;
         if (string.IsNullOrWhiteSpace(baseUrl))
-            throw new UnavailableException(503, "Sign-in history comes from the Host, which is not connected (AuthService:BaseUrl is not set).");
+            throw new UnavailableException(503, "Sign-in history comes from the platform's Audit Service, which is not connected (AuditService:BaseUrl is not set).");
 
         // "auth.log" matches the Host's auth.login_succeeded, auth.login_failed and auth.logout.
         var query = $"api/audit-logs?ActorUserId={Uri.EscapeDataString(hostUserId)}&Action=auth.log&page={Math.Max(page, 1)}&pageSize={Math.Clamp(pageSize, 1, 50)}&sortDir=desc";
@@ -70,10 +73,15 @@ public sealed class HostSignInHistoryClient(HttpClient http, IHttpContextAccesso
 
     private static CaseAuditEventDto Map(Item i, Guid caseUserId)
     {
+        // A refusal is a failed sign-in whatever its key: Login Security adds its own (auth.login_refused_locked,
+        // auth.login_refused_ip …, Result = Failure), and only a successful one may read "Signed in".
+        var failed = string.Equals(i.Result, "Failure", StringComparison.OrdinalIgnoreCase)
+            || i.Action.Contains("failed", StringComparison.OrdinalIgnoreCase) || i.Action.Contains("refused", StringComparison.OrdinalIgnoreCase);
+        var why = string.IsNullOrWhiteSpace(i.FailureReason) ? (i.Action.Contains("locked", StringComparison.OrdinalIgnoreCase) ? " (account locked)" : "") : $" ({i.FailureReason})";
         var (type, label, text) = i.Action switch
         {
             "auth.logout" => ("SIGN_OUT", "Signed out", "Signed out of OmniConnect"),
-            "auth.login_failed" => ("SIGN_IN_FAILED", "Sign-in failed", "Sign-in attempt failed" + (string.IsNullOrWhiteSpace(i.FailureReason) ? "" : $" ({i.FailureReason})")),
+            _ when failed => ("SIGN_IN_FAILED", "Sign-in failed", "Sign-in attempt failed" + why),
             _ => ("SIGN_IN", "Signed in", "Signed in to OmniConnect" + (string.IsNullOrWhiteSpace(i.AuthMethod) ? "" : $" ({i.AuthMethod})")),
         };
         return new CaseAuditEventDto

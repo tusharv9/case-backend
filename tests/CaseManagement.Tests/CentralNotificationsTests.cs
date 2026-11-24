@@ -48,9 +48,8 @@ public class CentralNotificationsTests : IDisposable
     private NotificationService Service(NotificationOptions? options = null) =>
         new(db, new ConfiguredPermissionProvider(Options.Create(new HostIntegrationOptions())), Options.Create(options ?? new NotificationOptions()), sink);
 
-    private static CaseNotificationDispatcher Dispatcher() =>
-        new(new ServiceCollection().BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
-            Options.Create(new HostIntegrationOptions { AppKey = "casemanagement" }), NullLogger<CaseNotificationDispatcher>.Instance);
+    private Task<OmniConnect.Outbox.NotificationEventContract?> Build(CaseNotificationRequest request) =>
+        CaseNotificationBuilder.BuildAsync(db, request, "casemanagement", DateTimeOffset.UtcNow, default);
 
     [Fact]
     public void Every_event_the_code_raises_maps_to_a_declared_kind_and_every_kind_is_on_by_default()
@@ -88,30 +87,30 @@ public class CentralNotificationsTests : IDisposable
     [Fact]
     public async Task A_card_is_sent_to_the_hosts_id_names_the_case_by_number_and_never_carries_the_title()
     {
-        var built = await Dispatcher().BuildAsync(db, new CaseNotificationRequest(CaseNotificationKinds.Assigned, [owner, stranger], caseId,
-            ActorExternalId: Guid.NewGuid().ToString(), ActorName: "Lena Lead"), default);
+        var built = await Build(new CaseNotificationRequest(CaseNotificationKinds.Assigned, [owner, stranger], caseId,
+            ActorExternalId: Guid.NewGuid().ToString(), ActorName: "Lena Lead"));
 
         Assert.NotNull(built);
         Assert.Equal("remote.casemanagement.cases:case.assigned", built!.Kind);
         Assert.Equal(new[] { Guid.Parse(ownerHostId) }, built.SubjectUserIds);          // the person without a Host id is skipped
-        Assert.Equal("C-01001", built.Values["record"]);
+        Assert.Equal("C-01001", built.Values!["record"]);
         Assert.Equal("Complaint", built.Values["caseType"]);
         Assert.DoesNotContain(built.Values.Values, v => v != null && v.Contains("Jane Customer"));
         Assert.Equal($"/apps/casemanagement/case-management/{caseId}", built.Link);
-        Assert.Single(built.ExcludedUserIds);                                              // the actor is never told about their own action
+        Assert.Single(built.ExcludedUserIds!);                                              // the actor is never told about their own action
     }
 
     [Fact]
     public async Task Nobody_the_host_knows_means_nothing_is_sent()
     {
-        Assert.Null(await Dispatcher().BuildAsync(db, new CaseNotificationRequest(CaseNotificationKinds.Assigned, [stranger], caseId), default));
+        Assert.Null(await Build(new CaseNotificationRequest(CaseNotificationKinds.Assigned, [stranger], caseId)));
     }
 
     [Fact]
     public void The_same_event_key_gives_the_same_event_id_so_AuthService_writes_it_once()
     {
-        Assert.Equal(CaseNotificationDispatcher.DeterministicGuid("case.sla_breached:k"), CaseNotificationDispatcher.DeterministicGuid("case.sla_breached:k"));
-        Assert.NotEqual(CaseNotificationDispatcher.DeterministicGuid("case.sla_breached:k"), CaseNotificationDispatcher.DeterministicGuid("case.sla_breached:k2"));
+        Assert.Equal(CaseNotificationBuilder.DeterministicGuid("case.sla_breached:k"), CaseNotificationBuilder.DeterministicGuid("case.sla_breached:k"));
+        Assert.NotEqual(CaseNotificationBuilder.DeterministicGuid("case.sla_breached:k"), CaseNotificationBuilder.DeterministicGuid("case.sla_breached:k2"));
     }
 
     [Fact]

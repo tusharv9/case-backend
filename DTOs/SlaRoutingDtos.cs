@@ -93,10 +93,33 @@ public class EscalationLevelConfigDto
     public bool NotifyTeamLead { get; set; }
     public string NotificationPriority { get; set; } = "High";
 
+    // ---- Organisational hierarchy ----
+    /// <summary>The Host roles at this level (a role belongs to one level). Older clients send <see cref="TargetRole"/> instead.</summary>
+    public List<EscalationRoleDto> Roles { get; set; } = new();
+    /// <summary>The initial handlers' level (lowest level only): where cases start; no trigger, never a target.</summary>
+    public bool IsInitial { get; set; }
+    /// <summary>Team | AllHolders | OneHolder | SpecificUser (TargetUserId).</summary>
+    public string RoutingStrategy { get; set; } = "Team";
+    /// <summary>NextLevel | Administrators | Hold — when the routing finds nobody.</summary>
+    public string FallbackPolicy { get; set; } = "NextLevel";
+    /// <summary>Automatic escalation hands the case to the person found when exactly one is.</summary>
+    public bool AssignOnAuto { get; set; } = true;
+    /// <summary>People may escalate to this level by hand.</summary>
+    public bool ManualAllowed { get; set; } = true;
+    /// <summary>Automatic escalation applies to these priorities only; empty = every priority.</summary>
+    public List<string> TriggerPriorities { get; set; } = new();
+
     /// <summary>Read only: what this level still needs before it can run (empty when complete).</summary>
     public List<string> MissingFields { get; set; } = new();
     /// <summary>Read only: the role no longer has Case Management access in OmniConnect.</summary>
     public bool RoleUnavailable { get; set; }
+}
+
+/// <summary>A Host role: its id (its name without the Host) and its name.</summary>
+public class EscalationRoleDto
+{
+    public string Key { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
 }
 
 public class CreateEscalationLevelDto
@@ -187,6 +210,10 @@ public class SlaRoutingConfigResponseDto
     public List<EscalationLevelConfigDto> EscalationLevels { get; set; } = new();
     /// <summary>The Host roles granted Case Management access — the only roles a level may be given.</summary>
     public List<string> AvailableRoles { get; set; } = new();
+    /// <summary>The same roles with their Host ids (what a level stores).</summary>
+    public List<EscalationRoleDto> AvailableRoleRefs { get; set; } = new();
+    public List<string> RoutingStrategies { get; set; } = new();
+    public List<string> FallbackPolicies { get; set; } = new();
     /// <summary>Set when the Host's roles could not be read (the editor says so instead of offering an empty list).</summary>
     public string? RolesUnavailableMessage { get; set; }
     public List<string> NotificationPriorities { get; set; } = new();

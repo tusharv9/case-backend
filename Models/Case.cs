@@ -11,7 +11,28 @@ public class Case : AuditableEntity
     public string Title { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
     
-    public CaseStatus Status { get; set; }
+    private CaseStatus _status;
+
+    /// <summary>
+    /// The case's status as the workflow understands it: one of the system statuses (Open, In Progress, Waiting on Customer,
+    /// Escalated, Resolved). A configured custom status is stored in <see cref="StatusKey"/>, with this holding its category's
+    /// system status, so every rule written for the five statuses keeps working. Setting a system status here clears the custom
+    /// one (EF reads and writes the field directly, so loading a case does not).
+    /// </summary>
+    public CaseStatus Status
+    {
+        get => _status;
+        set { _status = value; StatusKey = null; }
+    }
+
+    /// <summary>A custom status (<see cref="CaseStatusDefinition.Key"/>) the case is in; null when it is in a system status.</summary>
+    public string? StatusKey { get; set; }
+
+    /// <summary>When the case entered its current status (set whenever the status changes); the start of a status's pause limit.</summary>
+    public DateTime? StatusEnteredAt { get; set; }
+
+    /// <summary>The status key the case is in: its custom status, or its system status.</summary>
+    public string EffectiveStatusKey => StatusKey ?? _status.ToString();
     public string Severity { get; set; } = string.Empty; // Name of a configured priority (PrioritySlaRules); always set by case creation
     
     public string SourceChannel { get; set; } = "Voice";
@@ -61,6 +82,9 @@ public class Case : AuditableEntity
     // Escalation Matrix Tracking
     /// <summary>The escalation-matrix level the case has reached: 0 = not escalated, n = the matrix's Level n.</summary>
     public int EscalationLevel { get; set; } = 0;
+
+    /// <summary>Counts the case's SLA periods (a reopen starts a new one); escalation history is unique per case, period and level.</summary>
+    public int EscalationCycle { get; set; }
 
     /// <summary>True once the "approaching SLA" reminder (the first escalation level's trigger) has been sent for this case.</summary>
     public bool SlaReminderSent { get; set; } = false;

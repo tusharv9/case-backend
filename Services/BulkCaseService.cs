@@ -65,7 +65,7 @@ public class BulkCaseService(
             .Skip((page - 1) * pageSize).Take(pageSize)
             .Select(c => new BulkCaseRowDto
             {
-                Id = c.Id, CaseNumber = c.CaseNumber, Title = c.Title, Status = c.Status.ToString(), Priority = c.Severity,
+                Id = c.Id, CaseNumber = c.CaseNumber, Title = c.Title, Status = c.Status.ToString(), StatusKey = c.StatusKey, Priority = c.Severity,
                 DepartmentId = c.DepartmentId, DepartmentName = c.Department != null ? c.Department.Name : null,
                 TeamId = c.TeamId, TeamName = c.Team.Name, OwnerId = c.OwnerId, OwnerName = c.Owner.Name,
                 EscalationLevel = c.EscalationLevel, CreatedAt = c.CreatedAt,

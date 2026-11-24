@@ -7,6 +7,8 @@ public class CaseSummaryDto
     public string CaseNumber { get; set; } = string.Empty;
     public string Title { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
+    /// <summary>The configured custom status the case is in (Configurable Settings → Status), or null for a system status.</summary>
+    public string? StatusKey { get; set; }
     public string Severity { get; set; } = string.Empty;
     public DateTime SlaStartTime { get; set; }
     public int SlaTargetHours { get; set; }
@@ -169,6 +171,10 @@ public class CaseEventDto
     public string? ActionType { get; set; }
     /// <summary>For a Customer Reply sent by email: the email and how its delivery stands (Pending, Sending, Sent, Failed).</summary>
     public Guid? EmailId { get; set; }
+    /// <summary>For an email received on the case: that email (its original can be shown).</summary>
+    public Guid? InboundEmailId { get; set; }
+    /// <summary>For a meeting scheduled, moved or cancelled: that meeting (the timeline shows its card).</summary>
+    public Guid? MeetingId { get; set; }
     public string? EmailStatus { get; set; }
     public string? EmailTo { get; set; }
     public string? EmailError { get; set; }

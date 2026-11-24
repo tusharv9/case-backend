@@ -441,7 +441,7 @@ public sealed class EmailIntakeProcessor(
         db.CaseEvents.Add(new CaseEvent
         {
             CaseId = caseId, EventType = EventType.Comment, Channel = "Email", IsInternal = false, CreatedAt = DateTime.UtcNow, UserId = systemUser,
-            Module = "EmailIntake", ActionType = "EMAIL_REPLY_RECEIVED",
+            Module = "EmailIntake", ActionType = "EMAIL_REPLY_RECEIVED", InboundEmailId = email.Id,
             Message = $"Email received from {Sender(email)}: {email.Subject}\n\n{excerpt}",
         });
         email.CaseId = caseId;

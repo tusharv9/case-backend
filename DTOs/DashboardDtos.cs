@@ -12,6 +12,9 @@ public class DashboardSummaryDto
     public int EscalatedCases { get; set; }
     public int ResolvedCases { get; set; }
     public int UnassignedCases { get; set; }
+
+    /// <summary>Cases per status (custom statuses included), in the configured order. The tiles above count by category.</summary>
+    public List<StatusCaseCount> CasesByStatus { get; set; } = new();
     public int SlaBreachedCases { get; set; }
     public int SlaAtRiskCases { get; set; }
     public int SlaHealthyCases { get; set; }
@@ -134,4 +137,14 @@ public class FilterOptionDto
 {
     public string Value { get; set; } = string.Empty;
     public string Label { get; set; } = string.Empty;
+}
+
+public class StatusCaseCount
+{
+    public string Key { get; set; } = string.Empty;
+    public string Label { get; set; } = string.Empty;
+    public string Category { get; set; } = string.Empty;
+    public string Color { get; set; } = string.Empty;
+    public int Level { get; set; }
+    public int Count { get; set; }
 }

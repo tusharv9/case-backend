@@ -188,12 +188,12 @@ public class HandleCaseTests : IDisposable
         new CaseAccessScope(db, new Caller(who, permissions)).CanSeeAsync(c.Id);
 
     [Fact]
-    public async Task A_teammate_does_not_see_another_agents_case_but_the_holder_and_the_team_lead_do()
+    public async Task A_teammate_does_not_see_another_agents_case_but_the_holder_and_the_team_lead_with_ViewTeam_do()
     {
         var c = AddCase(CaseStatus.Open, agent.Id);
 
         Assert.True(await Sees(agent.Id, c));
-        Assert.True(await Sees(lead.Id, c));
+        Assert.True(await Sees(lead.Id, c, Permissions.CasesViewTeam));
         Assert.False(await Sees(teammate.Id, c));
         Assert.True(await Sees(supervisor.Id, c, Permissions.CasesViewAll));
     }

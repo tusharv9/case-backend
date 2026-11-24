@@ -22,10 +22,12 @@ public class NotificationService : INotificationService
     private readonly ICaseNotificationSink _sink;
     private readonly ICurrentUserAccessor? _currentUser;
     private readonly ILogger<NotificationService> _logger;
+    private readonly IOrgDirectory? _directory;
 
     public NotificationService(AppDbContext context, IPermissionProvider permissions, IOptions<NotificationOptions> options, ICaseNotificationSink sink,
-        ICurrentUserAccessor? currentUser = null, ILogger<NotificationService>? logger = null)
+        ICurrentUserAccessor? currentUser = null, ILogger<NotificationService>? logger = null, IOrgDirectory? directory = null)
     {
+        _directory = directory;
         _context = context;
         _permissions = permissions;
         _options = options.Value;
@@ -144,15 +146,24 @@ public class NotificationService : INotificationService
     {
         try
         {
-            // Only the people who can change configuration hear about it (the roles the Host grants that permission to).
-            var roles = _permissions.RolesGranting(Permissions.ConfigManage);
-            var managers = _context.Users.AsNoTracking().Where(u => u.IsActive && u.ExternalUserId != null);
-            if (roles != null)
+            // Only the people who can change configuration hear about it: those the Host grants settings:Manage, and its
+            // administrators — asked of the Host, never inferred from a role's name.
+            List<Guid> ids;
+            if (_directory != null)
             {
-                var roleList = roles.Select(r => r.ToLower()).ToList();
-                managers = managers.Where(u => roleList.Contains(u.Role.ToLower()));
+                ids = (await _directory.ConfigManagersAsync(ct)).Select(u => u.Id).ToList();
             }
-            var ids = await managers.Select(u => u.Id).ToListAsync(ct);
+            else
+            {
+                var roles = _permissions.RolesGranting(Permissions.ConfigManage);
+                var managers = _context.Users.AsNoTracking().Where(u => u.IsActive && u.ExternalUserId != null);
+                if (roles != null)
+                {
+                    var roleList = roles.Select(r => r.ToLower()).ToList();
+                    managers = managers.Where(u => roleList.Contains(u.Role.ToLower()));
+                }
+                ids = await managers.Select(u => u.Id).ToListAsync(ct);
+            }
             if (ids.Count == 0) return;
 
             var (actorId, actorName) = Actor();

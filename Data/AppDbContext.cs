@@ -3,8 +3,10 @@ namespace CaseManagement.Api.Data;
 using CaseManagement.Api.Models;
 using Microsoft.EntityFrameworkCore;
 
-public class AppDbContext : DbContext
+public class AppDbContext : DbContext, OmniConnect.Outbox.IOutboxContext
 {
+    public const string AuditOutboxTable = "AuditOutboxMessages";
+
     public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
 
     public DbSet<Case> Cases { get; set; } = null!;
@@ -61,6 +63,18 @@ public class AppDbContext : DbContext
     public DbSet<Ticket> Tickets { get; set; } = null!;
     public DbSet<CaseEmailMessage> CaseEmailMessages { get; set; } = null!;
     public DbSet<TicketAttachment> TicketAttachments { get; set; } = null!;
+    public DbSet<StoredFile> StoredFiles { get; set; } = null!;
+    public DbSet<CaseStatusDefinition> CaseStatusDefinitions { get; set; } = null!;
+    public DbSet<CaseStatusTransition> CaseStatusTransitions { get; set; } = null!;
+    public DbSet<CaseSlaPause> CaseSlaPauses { get; set; } = null!;
+    public DbSet<CaseMeeting> CaseMeetings { get; set; } = null!;
+    public DbSet<EscalationLevelRole> EscalationLevelRoles { get; set; } = null!;
+    public DbSet<CaseEscalation> CaseEscalations { get; set; } = null!;
+    /// <summary>
+    /// The audit outbox (<c>AuditOutboxMessages</c>): each new timeline / audit event's central copy, saved with it and delivered
+    /// to the platform's Audit Service (OmniConnect.Outbox). Notifications have their own outbox table (<see cref="NotificationOutboxDbContext"/>).
+    /// </summary>
+    public DbSet<OmniConnect.Outbox.OutboxMessage> OutboxMessages { get; set; } = null!;
 
     // Bookkeeping for one-time seed steps (see DbSeeder)
     public DbSet<SeedHistoryEntry> SeedHistory { get; set; } = null!;
@@ -279,6 +293,17 @@ public class AppDbContext : DbContext
             .HasIndex(ce => ce.CreatedAt)
             .IsDescending();
 
+        // The received email a timeline entry shows (its original is rendered from the stored .eml).
+        modelBuilder.Entity<CaseEvent>()
+            .HasOne<InboundEmail>().WithMany().HasForeignKey(ce => ce.InboundEmailId)
+            .IsRequired(false).OnDelete(DeleteBehavior.SetNull);
+
+        modelBuilder.Entity<StoredFile>(e =>
+        {
+            e.HasKey(f => f.Key);
+            e.Property(f => f.Key).HasMaxLength(200);
+        });
+
         modelBuilder.Entity<CaseEvent>()
             .HasIndex(ce => new { ce.CaseId, ce.CreatedAt })
             .IsDescending(false, true);
@@ -492,7 +517,65 @@ public class AppDbContext : DbContext
         // Enums mapping to strings
         modelBuilder.Entity<Case>()
             .Property(c => c.Status)
-            .HasConversion(caseStatusConverter);
+            .HasConversion(caseStatusConverter)
+            .HasField("_status")
+            .UsePropertyAccessMode(PropertyAccessMode.Field);   // loading a case must not clear its StatusKey (the setter does)
+        modelBuilder.Entity<Case>().Property(c => c.StatusKey).HasMaxLength(50);
+        modelBuilder.Entity<Case>().HasIndex(c => c.StatusKey).HasFilter("\"StatusKey\" IS NOT NULL");   // the board and filters by custom status
+        modelBuilder.Entity<Case>().Ignore(c => c.EffectiveStatusKey);
+
+        // Configurable statuses (Configurable Settings → Status).
+        modelBuilder.Entity<CaseStatusDefinition>(e =>
+        {
+            e.HasKey(d => d.Key);
+            e.Property(d => d.Key).HasMaxLength(50);
+            e.Property(d => d.Label).HasMaxLength(60);
+            e.Property(d => d.Category).HasMaxLength(20);
+            e.Property(d => d.SlaBehaviour).HasMaxLength(20);
+            e.Property(d => d.OnPauseExpiry).HasMaxLength(20);
+            e.Property(d => d.PauseExpiryStatusKey).HasMaxLength(50);
+            e.Property(d => d.Color).HasMaxLength(20);
+        });
+        modelBuilder.Entity<CaseMeeting>(e =>
+        {
+            e.HasOne(m => m.Case).WithMany().HasForeignKey(m => m.CaseId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(m => m.Organizer).WithMany().HasForeignKey(m => m.OrganizerUserId).OnDelete(DeleteBehavior.Restrict);
+            e.HasIndex(m => new { m.CaseId, m.StartUtc });
+            e.HasIndex(m => m.StartUtc);   // the calendar reads meetings by date range
+            e.Property(m => m.Title).HasMaxLength(200);
+            e.Property(m => m.TimeZone).HasMaxLength(64);
+            e.Property(m => m.Agenda).HasMaxLength(4000);
+            e.Property(m => m.JoinUrl).HasMaxLength(1000);
+            e.Property(m => m.Provider).HasMaxLength(20);
+            e.Property(m => m.ProviderMeetingId).HasMaxLength(200);
+            e.Property(m => m.AttendeeEmail).HasMaxLength(254);
+            e.Property(m => m.AttendeeName).HasMaxLength(200);
+            e.Property(m => m.Status).HasMaxLength(20);
+            e.Property(m => m.IcsUid).HasMaxLength(200);
+            e.Property(m => m.CancelReason).HasMaxLength(500);
+            e.Property(m => m.Version).IsConcurrencyToken();
+        });
+        modelBuilder.Entity<CaseEvent>()
+            .HasOne<CaseMeeting>().WithMany().HasForeignKey(ce => ce.MeetingId)
+            .IsRequired(false).OnDelete(DeleteBehavior.SetNull);
+        modelBuilder.Entity<CaseEmailMessage>().Property(m => m.CalendarMethod).HasMaxLength(10);
+
+        modelBuilder.Entity<CaseSlaPause>(e =>
+        {
+            e.HasOne(p => p.Case).WithMany().HasForeignKey(p => p.CaseId).OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(p => new { p.CaseId, p.StartedAt });
+            e.HasIndex(p => p.EndedAt).HasFilter("\"EndedAt\" IS NULL");   // the open pauses the pause-limit check reads
+            e.Property(p => p.StatusKey).HasMaxLength(50);
+            e.Property(p => p.EndReason).HasMaxLength(20);
+        });
+        modelBuilder.Entity<CaseStatusTransition>(e =>
+        {
+            e.HasKey(t => new { t.FromKey, t.ToKey });
+            e.Property(t => t.FromKey).HasMaxLength(50);
+            e.Property(t => t.ToKey).HasMaxLength(50);
+            e.HasOne<CaseStatusDefinition>().WithMany().HasForeignKey(t => t.FromKey).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne<CaseStatusDefinition>().WithMany().HasForeignKey(t => t.ToKey).OnDelete(DeleteBehavior.Cascade);
+        });
             
         var eventTypeConverter = new Microsoft.EntityFrameworkCore.Storage.ValueConversion.ValueConverter<EventType, string>(
             v => v.ToString(),
@@ -562,6 +645,39 @@ public class AppDbContext : DbContext
             .HasForeignKey(e => e.TargetUserId)
             .IsRequired(false)
             .OnDelete(DeleteBehavior.SetNull);
+
+        modelBuilder.Entity<EscalationLevelConfig>(e =>
+        {
+            e.Property(l => l.RoutingStrategy).HasMaxLength(20).HasDefaultValue(EscalationRouting.Team);
+            e.Property(l => l.FallbackPolicy).HasMaxLength(20).HasDefaultValue(EscalationFallbacks.NextLevel);
+            // AssignOnAuto and ManualAllowed default to true for existing rows in the migration (not here: EF would treat false as "unset").
+            e.Property(l => l.TriggerPriorities).HasMaxLength(500);
+            e.HasMany(l => l.Roles).WithOne(r => r.Level!).HasForeignKey(r => r.LevelId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<EscalationLevelRole>(e =>
+        {
+            e.Property(r => r.RoleKey).HasMaxLength(100);
+            e.Property(r => r.RoleName).HasMaxLength(200);
+            e.HasIndex(r => r.RoleKey).IsUnique();   // a role sits at one level only
+        });
+
+        modelBuilder.Entity<CaseEscalation>(e =>
+        {
+            e.HasOne(x => x.Case).WithMany().HasForeignKey(x => x.CaseId).OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(x => new { x.CaseId, x.Cycle, x.ToLevel }).IsUnique();   // a level is reached once per SLA period
+            e.HasIndex(x => x.CreatedAt);
+            e.Property(x => x.ToLevelName).HasMaxLength(200);
+            e.Property(x => x.Type).HasMaxLength(20);
+            e.Property(x => x.Trigger).HasMaxLength(500);
+            e.Property(x => x.ReasonText).HasMaxLength(1000);
+            e.Property(x => x.Comment).HasMaxLength(2000);
+            e.Property(x => x.FallbackNote).HasMaxLength(1000);
+            e.Property(x => x.SlaConsumedPercent).HasPrecision(7, 2);
+        });
+
+        OmniConnect.Outbox.OutboxModelBuilderExtensions.AddOutbox(modelBuilder, AuditOutboxTable);
+        NotificationOutboxTable.Map(modelBuilder);   // the notification outbox's table, created by these migrations
 
         // Teams and their members
         modelBuilder.Entity<TeamMember>()
@@ -728,13 +844,61 @@ public class AppDbContext : DbContext
     public override int SaveChanges()
     {
         UpdateAuditableEntities();
+        TrackStatusAndPauses();
         return base.SaveChanges();
     }
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
         UpdateAuditableEntities();
+        TrackStatusAndPauses();
         return base.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Whatever changed a case's status or paused/resumed its SLA (a status move, Resolve, Escalate, Reopen, the pause limit,
+    /// bulk work), the history follows here, in one place: when the case entered its status, and each pause as a row of
+    /// <see cref="CaseSlaPause"/> — opened when the clock pauses, closed with its minutes when it resumes.
+    /// </summary>
+    private void TrackStatusAndPauses()
+    {
+        var now = DateTime.UtcNow;
+        foreach (var entry in ChangeTracker.Entries<Case>().Where(e => e.State is EntityState.Added or EntityState.Modified).ToList())
+        {
+            var c = entry.Entity;
+            if (entry.State == EntityState.Added)
+            {
+                c.StatusEnteredAt ??= c.CreatedAt == default ? now : c.CreatedAt;
+                if (c.SlaPausedAt != null) CaseSlaPauses.Add(new CaseSlaPause { CaseId = c.Id, StatusKey = c.EffectiveStatusKey, StartedAt = c.SlaPausedAt.Value });
+                continue;
+            }
+
+            var statusChanged = !Equals(entry.Property(x => x.Status).OriginalValue, c.Status)
+                                || !Equals(entry.Property(x => x.StatusKey).OriginalValue, c.StatusKey);
+            if (statusChanged && !entry.Property(x => x.StatusEnteredAt).IsModified) c.StatusEnteredAt = now;
+
+            var pausedBefore = entry.Property(x => x.SlaPausedAt).OriginalValue;
+            if (pausedBefore == null && c.SlaPausedAt != null)
+            {
+                CaseSlaPauses.Add(new CaseSlaPause { CaseId = c.Id, StatusKey = c.EffectiveStatusKey, StartedAt = c.SlaPausedAt.Value });
+            }
+            else if (pausedBefore != null && c.SlaPausedAt == null)
+            {
+                var open = CaseSlaPauses.Local.Where(p => p.CaseId == c.Id && p.EndedAt == null).OrderByDescending(p => p.StartedAt).FirstOrDefault()
+                           ?? CaseSlaPauses.Where(p => p.CaseId == c.Id && p.EndedAt == null).OrderByDescending(p => p.StartedAt).FirstOrDefault();
+                if (open != null)
+                {
+                    open.EndedAt = now;
+                    open.PausedMinutes = Math.Max(0, c.SlaTotalPausedMinutes - entry.Property(x => x.SlaTotalPausedMinutes).OriginalValue);
+                    open.EndReason ??= c.Status switch
+                    {
+                        CaseStatus.Resolved or CaseStatus.Closed or CaseStatus.Cancelled => "Resolved",
+                        CaseStatus.Escalated => "Escalated",
+                        _ => statusChanged ? "StatusChange" : "Resumed",
+                    };
+                }
+            }
+        }
     }
 
     private void UpdateAuditableEntities()

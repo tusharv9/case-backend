@@ -12,6 +12,8 @@
        (Backend/Shared), so the Docker build context is Backend/ — see Dockerfile. -->
   <ItemGroup>
     <ProjectReference Include="..\Shared\OmniConnect.Hosting\OmniConnect.Hosting.csproj" />
+    <!-- The platform's transactional outbox: notifications and the central audit copy leave through it (NOTIFICATION-AND-AUDIT-SERVICES.md). -->
+    <ProjectReference Include="..\Shared\OmniConnect.Outbox\OmniConnect.Outbox.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -19,6 +21,7 @@
     <PackageReference Include="DotNetEnv" Version="3.2.0" />
     <PackageReference Include="FluentValidation.AspNetCore" Version="11.3.1" />
     <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="12.1.1" />
+    <PackageReference Include="HtmlSanitizer" Version="9.2.1039" />
     <PackageReference Include="MailKit" Version="5.0.0" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.9" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.8" />

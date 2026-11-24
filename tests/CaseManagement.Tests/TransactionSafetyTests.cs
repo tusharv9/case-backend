@@ -237,7 +237,9 @@ public class TransactionSafetyTests
 
         db.EscalationLevelConfigs.AddRange(
             new EscalationLevelConfig { LevelNumber = 1, Name = "Level 1", AssignmentType = "Role", TargetRole = "Team Lead", TriggerType = "SlaPercentage", TriggerValue = 70, ActionDescription = "Lead review", IsActive = true },
-            new EscalationLevelConfig { LevelNumber = 2, Name = "Level 2", AssignmentType = "Role", TargetRole = supervisor.Role, TriggerType = "SlaPercentage", TriggerValue = 90, ActionDescription = "Supervisor review", IsActive = true });
+            new EscalationLevelConfig { LevelNumber = 2, Name = "Level 2", AssignmentType = "Role", TargetRole = supervisor.Role, TriggerType = "SlaPercentage", TriggerValue = 90, ActionDescription = "Supervisor review", IsActive = true, RoutingStrategy = EscalationRouting.AllHolders });
+        // The agent's case already sits at Level 1: the next level is the Supervisor's.
+        testCase.EscalationLevel = 1;
         await db.SaveChangesAsync();
 
         var service = new CaseService(

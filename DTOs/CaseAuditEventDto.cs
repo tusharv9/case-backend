@@ -71,6 +71,7 @@ public static class AuditLabels
         ("escalate", "Case escalated"),
         ("transfer", "Team transferred"),
         ("cowork", "Co-worker added"),
+        ("meeting", "Meetings"),
         ("resolve", "Case resolved"),
         ("close", "Case closed"),
         ("view", "Case viewed"),

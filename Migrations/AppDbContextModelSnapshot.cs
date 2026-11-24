@@ -22,6 +22,63 @@ namespace CaseManagement.Api.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("CaseManagement.Api.Data.NotificationOutboxTable", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("EventId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
+                    b.Property<DateTimeOffset?>("LeaseUntil")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("NextAttemptAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Payload")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<DateTimeOffset?>("SentAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("Topic")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedAt")
+                        .HasDatabaseName("IX_NotificationOutboxMessages_CreatedAt");
+
+                    b.HasIndex("EventId")
+                        .HasDatabaseName("IX_NotificationOutboxMessages_EventId");
+
+                    b.HasIndex("Status", "NextAttemptAt")
+                        .HasDatabaseName("IX_NotificationOutboxMessages_Due")
+                        .HasFilter("\"Status\" IN ('pending', 'sending')");
+
+                    b.ToTable("NotificationOutboxMessages", (string)null);
+                });
+
             modelBuilder.Entity("CaseManagement.Api.Models.AssignmentConfiguration", b =>
                 {
                     b.Property<Guid>("Id")
@@ -200,6 +257,9 @@ namespace CaseManagement.Api.Migrations
                     b.Property<string>("Disposition")
                         .HasColumnType("text");
 
+                    b.Property<int>("EscalationCycle")
+                        .HasColumnType("integer");
+
                     b.Property<int>("EscalationLevel")
                         .HasColumnType("integer");
 
@@ -306,6 +366,13 @@ namespace CaseManagement.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<DateTime?>("StatusEnteredAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("StatusKey")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
                     b.Property<string>("SubcaseType")
                         .IsRequired()
                         .HasColumnType("text");
@@ -357,6 +424,9 @@ namespace CaseManagement.Api.Migrations
                     b.HasIndex("SlaStartTime")
                         .HasDatabaseName("IX_Cases_Open_SlaStart")
                         .HasFilter("\"Status\" NOT IN ('Resolved', 'Closed', 'Cancelled')");
+
+                    b.HasIndex("StatusKey")
+                        .HasFilter("\"StatusKey\" IS NOT NULL");
 
                     b.HasIndex("CustomerType", "ExternalCustomerId")
                         .HasDatabaseName("IX_Cases_CustomerType_ExternalCustomerId");
@@ -563,6 +633,13 @@ namespace CaseManagement.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("CalendarIcs")
+                        .HasColumnType("text");
+
+                    b.Property<string>("CalendarMethod")
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)");
+
                     b.Property<Guid?>("CaseEventId")
                         .HasColumnType("uuid");
 
@@ -634,6 +711,88 @@ namespace CaseManagement.Api.Migrations
                     b.ToTable("CaseEmailMessages");
                 });
 
+            modelBuilder.Entity("CaseManagement.Api.Models.CaseEscalation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("ActorUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("CaseEventId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("CaseId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Comment")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("Cycle")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("FallbackNote")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<int>("FromLevel")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid?>("FromOwnerId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ReasonText")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<string>("RecipientIds")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("RecipientNames")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<decimal?>("SlaConsumedPercent")
+                        .HasPrecision(7, 2)
+                        .HasColumnType("numeric(7,2)");
+
+                    b.Property<int>("ToLevel")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("ToLevelName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<Guid?>("ToOwnerId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Trigger")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("Type")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.HasIndex("CaseId", "Cycle", "ToLevel")
+                        .IsUnique();
+
+                    b.ToTable("CaseEscalations");
+                });
+
             modelBuilder.Entity("CaseManagement.Api.Models.CaseEvent", b =>
                 {
                     b.Property<Guid>("Id")
@@ -659,8 +818,14 @@ namespace CaseManagement.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<Guid?>("InboundEmailId")
+                        .HasColumnType("uuid");
+
                     b.Property<bool>("IsInternal")
                         .HasColumnType("boolean");
+
+                    b.Property<Guid?>("MeetingId")
+                        .HasColumnType("uuid");
 
                     b.Property<string>("Message")
                         .IsRequired()
@@ -683,6 +848,10 @@ namespace CaseManagement.Api.Migrations
                     b.HasIndex("CreatedAt")
                         .IsDescending();
 
+                    b.HasIndex("InboundEmailId");
+
+                    b.HasIndex("MeetingId");
+
                     b.HasIndex("CaseId", "CreatedAt")
                         .IsDescending(false, true);
 
@@ -690,6 +859,98 @@ namespace CaseManagement.Api.Migrations
                         .IsDescending(false, true);
 
                     b.ToTable("CaseEvents");
+                });
+
+            modelBuilder.Entity("CaseManagement.Api.Models.CaseMeeting", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Agenda")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.Property<string>("AttendeeEmail")
+                        .IsRequired()
+                        .HasMaxLength(254)
+                        .HasColumnType("character varying(254)");
+
+                    b.Property<string>("AttendeeName")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("CancelReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<Guid>("CaseId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("EndUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("IcsUid")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("JoinUrl")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<Guid>("OrganizerUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("ProviderMeetingId")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<int>("Sequence")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("StartUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("TimeZone")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OrganizerUserId");
+
+                    b.HasIndex("StartUtc");
+
+                    b.HasIndex("CaseId", "StartUtc");
+
+                    b.ToTable("CaseMeetings");
                 });
 
             modelBuilder.Entity("CaseManagement.Api.Models.CaseParticipant", b =>
@@ -731,6 +992,123 @@ namespace CaseManagement.Api.Migrations
                     b.HasKey("CaseId");
 
                     b.ToTable("CaseSlaAlerts");
+                });
+
+            modelBuilder.Entity("CaseManagement.Api.Models.CaseSlaPause", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("CaseId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("EndReason")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<DateTime?>("EndedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("LimitReachedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int?>("PausedMinutes")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("StartedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("StatusKey")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EndedAt")
+                        .HasFilter("\"EndedAt\" IS NULL");
+
+                    b.HasIndex("CaseId", "StartedAt");
+
+                    b.ToTable("CaseSlaPauses");
+                });
+
+            modelBuilder.Entity("CaseManagement.Api.Models.CaseStatusDefinition", b =>
+                {
+                    b.Property<string>("Key")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<string>("Category")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("Color")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsSystem")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Label")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)");
+
+                    b.Property<int>("Level")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("MaxPauseMinutes")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("OnPauseExpiry")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("PauseExpiryStatusKey")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<string>("SlaBehaviour")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("UpdatedById")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Key");
+
+                    b.ToTable("CaseStatusDefinitions");
+                });
+
+            modelBuilder.Entity("CaseManagement.Api.Models.CaseStatusTransition", b =>
+                {
+                    b.Property<string>("FromKey")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<string>("ToKey")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.HasKey("FromKey", "ToKey");
+
+                    b.HasIndex("ToKey");
+
+                    b.ToTable("CaseStatusTransitions");
                 });
 
             modelBuilder.Entity("CaseManagement.Api.Models.CaseSwarmRequest", b =>
@@ -1405,6 +1783,9 @@ namespace CaseManagement.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<bool>("AssignOnAuto")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("AssignmentType")
                         .IsRequired()
                         .HasColumnType("text");
@@ -1415,11 +1796,24 @@ namespace CaseManagement.Api.Migrations
                     b.Property<int>("DisplayOrder")
                         .HasColumnType("integer");
 
+                    b.Property<string>("FallbackPolicy")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("NextLevel");
+
                     b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsInitial")
                         .HasColumnType("boolean");
 
                     b.Property<int>("LevelNumber")
                         .HasColumnType("integer");
+
+                    b.Property<bool>("ManualAllowed")
+                        .HasColumnType("boolean");
 
                     b.Property<string>("Name")
                         .IsRequired()
@@ -1441,6 +1835,13 @@ namespace CaseManagement.Api.Migrations
                     b.Property<bool>("ReassignOwner")
                         .HasColumnType("boolean");
 
+                    b.Property<string>("RoutingStrategy")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("Team");
+
                     b.Property<string>("TargetRole")
                         .IsRequired()
                         .HasColumnType("text");
@@ -1451,6 +1852,10 @@ namespace CaseManagement.Api.Migrations
                     b.Property<string>("TriggerDescription")
                         .IsRequired()
                         .HasColumnType("text");
+
+                    b.Property<string>("TriggerPriorities")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
 
                     b.Property<string>("TriggerType")
                         .IsRequired()
@@ -1470,6 +1875,35 @@ namespace CaseManagement.Api.Migrations
                     b.HasIndex("TargetUserId");
 
                     b.ToTable("EscalationLevelConfigs");
+                });
+
+            modelBuilder.Entity("CaseManagement.Api.Models.EscalationLevelRole", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("LevelId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("RoleKey")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("RoleName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LevelId");
+
+                    b.HasIndex("RoleKey")
+                        .IsUnique();
+
+                    b.ToTable("EscalationLevelRoles");
                 });
 
             modelBuilder.Entity("CaseManagement.Api.Models.FieldConfiguration", b =>
@@ -2132,6 +2566,27 @@ namespace CaseManagement.Api.Migrations
                     b.ToTable("SeedHistory", (string)null);
                 });
 
+            modelBuilder.Entity("CaseManagement.Api.Models.StoredFile", b =>
+                {
+                    b.Property<string>("Key")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<byte[]>("Content")
+                        .IsRequired()
+                        .HasColumnType("bytea");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("Length")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Key");
+
+                    b.ToTable("StoredFiles");
+                });
+
             modelBuilder.Entity("CaseManagement.Api.Models.Team", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2613,6 +3068,63 @@ namespace CaseManagement.Api.Migrations
                     b.ToTable("UserPreferences");
                 });
 
+            modelBuilder.Entity("OmniConnect.Outbox.OutboxMessage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("EventId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
+                    b.Property<DateTimeOffset?>("LeaseUntil")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("NextAttemptAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Payload")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<DateTimeOffset?>("SentAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("Topic")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedAt")
+                        .HasDatabaseName("IX_AuditOutboxMessages_CreatedAt");
+
+                    b.HasIndex("EventId")
+                        .HasDatabaseName("IX_AuditOutboxMessages_EventId");
+
+                    b.HasIndex("Status", "NextAttemptAt")
+                        .HasDatabaseName("IX_AuditOutboxMessages_Due")
+                        .HasFilter("\"Status\" IN ('pending', 'sending')");
+
+                    b.ToTable("AuditOutboxMessages", (string)null);
+                });
+
             modelBuilder.Entity("CaseManagement.Api.Models.AssignmentConfiguration", b =>
                 {
                     b.HasOne("CaseManagement.Api.Models.Team", "Team")
@@ -2798,11 +3310,32 @@ namespace CaseManagement.Api.Migrations
                     b.Navigation("Mailbox");
                 });
 
+            modelBuilder.Entity("CaseManagement.Api.Models.CaseEscalation", b =>
+                {
+                    b.HasOne("CaseManagement.Api.Models.Case", "Case")
+                        .WithMany()
+                        .HasForeignKey("CaseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Case");
+                });
+
             modelBuilder.Entity("CaseManagement.Api.Models.CaseEvent", b =>
                 {
                     b.HasOne("CaseManagement.Api.Models.Case", "Case")
                         .WithMany("Events")
                         .HasForeignKey("CaseId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("CaseManagement.Api.Models.InboundEmail", null)
+                        .WithMany()
+                        .HasForeignKey("InboundEmailId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("CaseManagement.Api.Models.CaseMeeting", null)
+                        .WithMany()
+                        .HasForeignKey("MeetingId")
                         .OnDelete(DeleteBehavior.SetNull);
 
                     b.HasOne("CaseManagement.Api.Models.User", "User")
@@ -2813,6 +3346,25 @@ namespace CaseManagement.Api.Migrations
                     b.Navigation("Case");
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("CaseManagement.Api.Models.CaseMeeting", b =>
+                {
+                    b.HasOne("CaseManagement.Api.Models.Case", "Case")
+                        .WithMany()
+                        .HasForeignKey("CaseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("CaseManagement.Api.Models.User", "Organizer")
+                        .WithMany()
+                        .HasForeignKey("OrganizerUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Case");
+
+                    b.Navigation("Organizer");
                 });
 
             modelBuilder.Entity("CaseManagement.Api.Models.CaseParticipant", b =>
@@ -2843,6 +3395,32 @@ namespace CaseManagement.Api.Migrations
                         .IsRequired();
 
                     b.Navigation("Case");
+                });
+
+            modelBuilder.Entity("CaseManagement.Api.Models.CaseSlaPause", b =>
+                {
+                    b.HasOne("CaseManagement.Api.Models.Case", "Case")
+                        .WithMany()
+                        .HasForeignKey("CaseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Case");
+                });
+
+            modelBuilder.Entity("CaseManagement.Api.Models.CaseStatusTransition", b =>
+                {
+                    b.HasOne("CaseManagement.Api.Models.CaseStatusDefinition", null)
+                        .WithMany()
+                        .HasForeignKey("FromKey")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("CaseManagement.Api.Models.CaseStatusDefinition", null)
+                        .WithMany()
+                        .HasForeignKey("ToKey")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("CaseManagement.Api.Models.CaseSwarmRequest", b =>
@@ -2963,6 +3541,17 @@ namespace CaseManagement.Api.Migrations
                         .OnDelete(DeleteBehavior.SetNull);
 
                     b.Navigation("TargetUser");
+                });
+
+            modelBuilder.Entity("CaseManagement.Api.Models.EscalationLevelRole", b =>
+                {
+                    b.HasOne("CaseManagement.Api.Models.EscalationLevelConfig", "Level")
+                        .WithMany("Roles")
+                        .HasForeignKey("LevelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Level");
                 });
 
             modelBuilder.Entity("CaseManagement.Api.Models.InboundEmail", b =>
@@ -3266,6 +3855,11 @@ namespace CaseManagement.Api.Migrations
             modelBuilder.Entity("CaseManagement.Api.Models.EmailVerifiedDomain", b =>
                 {
                     b.Navigation("Senders");
+                });
+
+            modelBuilder.Entity("CaseManagement.Api.Models.EscalationLevelConfig", b =>
+                {
+                    b.Navigation("Roles");
                 });
 
             modelBuilder.Entity("CaseManagement.Api.Models.LookupType", b =>

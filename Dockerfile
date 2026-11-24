@@ -12,10 +12,12 @@ WORKDIR /src
 # Manifests first, so the restore layer caches independently of source edits.
 COPY Directory.Build.props ./
 COPY Shared/OmniConnect.Hosting/OmniConnect.Hosting.csproj Shared/OmniConnect.Hosting/
+COPY Shared/OmniConnect.Outbox/OmniConnect.Outbox.csproj Shared/OmniConnect.Outbox/
 COPY case-backend/CaseManagement.Api.csproj case-backend/
 RUN dotnet restore case-backend/CaseManagement.Api.csproj
 
 COPY Shared/OmniConnect.Hosting/ Shared/OmniConnect.Hosting/
+COPY Shared/OmniConnect.Outbox/ Shared/OmniConnect.Outbox/
 COPY case-backend/ case-backend/
 RUN dotnet publish case-backend/CaseManagement.Api.csproj -c Release -o /app/publish --no-restore /p:UseAppHost=false
 

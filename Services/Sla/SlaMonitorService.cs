@@ -29,6 +29,8 @@ public class SlaMonitorService : ISlaMonitor
     private readonly ILogger<SlaMonitorService> _logger;
     private readonly Tickets.TicketSlaMonitor? _tickets;
     private readonly EmailIntake.ReviewSlaMonitor? _reviews;
+    private readonly PauseLimitService? _pauseLimits;
+    private readonly IEscalationExecutor _executor;
 
     public SlaMonitorService(
         AppDbContext context,
@@ -37,8 +39,12 @@ public class SlaMonitorService : ISlaMonitor
         INotificationService notifications,
         ILogger<SlaMonitorService> logger,
         Tickets.TicketSlaMonitor? tickets = null,
-        EmailIntake.ReviewSlaMonitor? reviews = null)
+        EmailIntake.ReviewSlaMonitor? reviews = null,
+        PauseLimitService? pauseLimits = null,
+        IEscalationExecutor? executor = null)
     {
+        _pauseLimits = pauseLimits;
+        _executor = executor ?? new EscalationExecutor(context);
         _context = context;
         _clockProvider = clockProvider;
         _escalation = escalation;
@@ -76,6 +82,13 @@ public class SlaMonitorService : ISlaMonitor
     {
         var clock = await _clockProvider.GetAsync(ct);
         var policy = await _escalation.GetPolicyAsync(ct);
+
+        // Statuses with a maximum pause (Configurable Settings → Status): act on the pauses that reached it, before evaluating SLAs.
+        if (_pauseLimits != null)
+        {
+            try { await _pauseLimits.ApplyAsync(clock, now, ct); }
+            catch (Exception ex) when (!ct.IsCancellationRequested) { _logger.LogError(ex, "Applying pause limits failed."); }
+        }
 
         int evaluated = 0, reminders = 0, escalations = 0;
         var breached = new List<SlaBreachCandidate>();
@@ -208,42 +221,26 @@ public class SlaMonitorService : ISlaMonitor
         if (snapshot.External.IsBreached)
             breached.Add(new SlaBreachCandidate(c.Id, c.CaseNumber, c.Title, c.OwnerId, c.SlaStartTime));
 
-        // Automatic escalation only NOTIFIES: the case keeps its holder and its status. Reaching a level records it on the
-        // case (so manual escalation continues from the next level) and tells whoever the level is configured to tell.
+        // The next level, when its trigger is met: one level per cycle, so no level is ever skipped (a case that missed several
+        // thresholds catches up a level every cycle). Who receives it follows the level's routing and fallback.
         var decision = _escalation.FindDueLevel(c, snapshot, policy, now);
         if (decision == null) return;
 
-        var level = decision.Level;
-        var recipients = await _escalation.NotificationRecipientsAsync(c, level, ct);
-        var names = recipients.Count == 0
-            ? new List<string>()
-            : await _context.Users.AsNoTracking().Where(u => recipients.Contains(u.Id)).OrderBy(u => u.Name).Select(u => u.Name).ToListAsync(ct);
-
-        var previous = c.EscalationLevel;
-        c.EscalationLevel = level.LevelNumber;
-        c.SlaReminderSent = true;
-        onEscalation();
-
-        var notified = names.Count > 0 ? string.Join(", ", names) : $"nobody — no active user holds '{level.TargetRole}'";
-        _context.CaseEvents.Add(new CaseEvent
+        var target = await _escalation.ResolveAsync(c, decision.Level, policy, null, ct);
+        var single = target.Recipients.Count == 1 ? target.Recipients[0].User.Id : (Guid?)null;
+        var reason = string.IsNullOrWhiteSpace(decision.Level.ActionDescription)
+            ? $"Escalated automatically because {decision.Reason}."
+            : $"Escalated automatically because {decision.Reason}. {decision.Level.ActionDescription.Trim()}";
+        try
         {
-            CaseId = c.Id,
-            EventType = EventType.Escalate,
-            ActionType = "AUTO_ESCALATION",
-            Module = "SlaEscalation",
-            OldValue = previous > 0 ? $"Level {previous}" : "Not escalated",
-            NewValue = level.Name,
-            Message = $"[Automatic Escalation] Reached {level.Name} ({level.TargetRole}). Trigger: {decision.Reason}. Reason: {level.ActionDescription}. Notified: {notified}.",
-            IsInternal = true,
-            CreatedAt = now,
-            UserId = c.OwnerId
-        });
-
-        foreach (var recipient in recipients)
+            await _executor.ApplyAsync(c, new EscalationCommand(EscalationTypes.Automatic, target,
+                NewOwnerId: target.Level.AssignOnAuto ? single : null, ReasonText: reason,
+                Trigger: decision.Trigger, SlaConsumedPercent: decision.SlaConsumedPercent), ct);
+            onEscalation();
+        }
+        catch (CaseHandleException ex)
         {
-            notifications.Add(new PendingNotification(recipient, "CASE_AUTOMATICALLY_ESCALATED", $"Escalation {level.Name}: Case {c.CaseNumber}",
-                $"Case {c.CaseNumber} ({c.Title}) reached {level.Name} — {decision.Reason}. {level.ActionDescription}",
-                c.Id, c.CaseNumber, level.NotificationPriority, $"escalation:{c.Id}:{level.LevelNumber}"));
+            _logger.LogInformation("Automatic escalation of {CaseNumber} skipped: {Message}", c.CaseNumber, ex.Message);
         }
     }
 

@@ -255,7 +255,7 @@ public sealed class TicketService(
                     db.CaseEvents.Add(new CaseEvent
                     {
                         CaseId = newCase.Id, EventType = EventType.Comment, Channel = "Email", IsInternal = false, CreatedAt = reply.ReceivedAt, UserId = actorId,
-                        Module = "EmailIntake", ActionType = "EMAIL_REPLY_RECEIVED",
+                        Module = "EmailIntake", ActionType = "EMAIL_REPLY_RECEIVED", InboundEmailId = reply.Id,
                         Message = $"Email received from {(string.IsNullOrWhiteSpace(reply.FromName) ? reply.FromAddress : $"{reply.FromName} <{reply.FromAddress}>")}: {reply.Subject}\n\n{EmailParsing.Truncate(reply.BodyText, 4000)}",
                     });
                 await db.SaveChangesAsync(ct);

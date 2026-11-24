@@ -352,7 +352,9 @@ public class ConfigurableSettingsService : IConfigurableSettingsService
 
     public async Task<IEnumerable<LookupTypeDto>> GetLookupTypesAsync(CancellationToken ct = default)
     {
-        var types = await _context.LookupTypes.AsNoTracking().OrderBy(t => t.Name).ToListAsync(ct);
+        // Case statuses moved to their own tab (Configurable Settings → Status), with SLA behaviour and allowed moves; the old
+        // label-only list is kept in the database but no longer offered, so there is one place to name a status.
+        var types = await _context.LookupTypes.AsNoTracking().Where(t => t.Code != "CASE_STATUS").OrderBy(t => t.Name).ToListAsync(ct);
         var fields = await _context.FieldConfigurations.AsNoTracking().Where(f => f.LookupTypeCode != null && f.LookupTypeCode != "")
             .Select(f => new { f.LookupTypeCode, f.ModuleKey, f.SectionKey, f.DisplayLabel }).ToListAsync(ct);
         return types.Select(t =>
@@ -375,7 +377,6 @@ public class ConfigurableSettingsService : IConfigurableSettingsService
     {
         ["SOURCE_CHANNEL"] = new[] { "Routing rules → Channel", "Team Monitoring → Queue health by source channel" },
         ["COMMUNICATION_CHANNEL"] = new[] { "Case details → Preferred channel" },
-        ["CASE_STATUS"] = new[] { "Case list and reports → Status names" },
         ["SLA_STATUS"] = new[] { "Reports → SLA status" },
     };
 

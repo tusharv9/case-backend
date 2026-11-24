@@ -131,6 +131,7 @@ public sealed class SlaClock
         c.SlaBreachedAt = null;
         c.SlaReminderSent = false;
         c.EscalationLevel = 0;
+        c.EscalationCycle++;   // a new SLA period: its escalation levels may be reached again
         c.FirstResponseActualAt = null;
         c.FirstResponseStatus = "Pending";
         SnapshotRule(c, rule);

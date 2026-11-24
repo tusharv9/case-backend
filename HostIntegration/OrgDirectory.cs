@@ -21,16 +21,32 @@ using Microsoft.Extensions.Options;
 /// given their local reference (the same projection a first sign-in creates), so a case can be escalated to them.</para>
 /// <para><b>Without AuthService</b> (standalone demo) the local users table is the directory, as everywhere else.</para>
 /// </remarks>
+/// <summary>A Host role: its id (<see cref="Key"/>; the name itself without the Host) and its current name.</summary>
+public sealed record HostRoleRef(string Key, string Name);
+
 public interface IOrgDirectory
 {
     /// <summary>Roles that may use Case Management (administrator roles included), by name.</summary>
     Task<IReadOnlyList<string>> CaseRolesAsync(CancellationToken ct = default);
+
+    /// <summary>The same roles with their Host ids, so a configuration can keep a role however it is renamed.</summary>
+    async Task<IReadOnlyList<HostRoleRef>> CaseRoleRefsAsync(CancellationToken ct = default) =>
+        (await CaseRolesAsync(ct)).Select(n => new HostRoleRef(n, n)).ToList();
+
+    /// <summary>Active people holding the role, as local users (by its Host id when it has one).</summary>
+    Task<IReadOnlyList<User>> UsersInRoleRefAsync(HostRoleRef role, CancellationToken ct = default) => UsersInRoleAsync(role.Name, ct);
 
     /// <summary>Active people holding <paramref name="role"/>, as local users (role name exact, any case).</summary>
     Task<IReadOnlyList<User>> UsersInRoleAsync(string role, CancellationToken ct = default);
 
     /// <summary>Active people whose role is granted <c>cases:Supervise</c>.</summary>
     Task<IReadOnlyList<User>> SupervisorsAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Active people who may change Case Management configuration: holders of a role granted <c>settings:Manage</c> in the
+    /// Host, and the Host administrators. Who hears about a configuration change.
+    /// </summary>
+    Task<IReadOnlyList<User>> ConfigManagersAsync(CancellationToken ct = default);
 
     /// <summary>
     /// Active OmniConnect administrators (Platform Administrator Access), as local users, by name. The last resort for work
@@ -73,6 +89,20 @@ public sealed class HostOrgDirectory(
         return roles.Select(r => r.Name).ToList();
     }
 
+    public async Task<IReadOnlyList<HostRoleRef>> CaseRoleRefsAsync(CancellationToken ct = default)
+    {
+        if (!HostConnected) return (await CaseRolesAsync(ct)).Select(n => new HostRoleRef(n, n)).ToList();
+        var roles = await GetCachedAsync<List<RoleRow>>($"internal/roles/with-app-access?app={Uri.EscapeDataString(AppFeature)}&includeAdministrators=true", ct);
+        return roles.Select(r => new HostRoleRef(r.Id.ToString(), r.Name)).ToList();
+    }
+
+    public async Task<IReadOnlyList<User>> UsersInRoleRefAsync(HostRoleRef role, CancellationToken ct = default)
+    {
+        if (!HostConnected || !Guid.TryParse(role.Key, out var id)) return await UsersInRoleAsync(role.Name, ct);
+        var people = await GetCachedAsync<List<UserRow>>($"internal/users?roleId={id}", ct);
+        return await LocalUsersAsync(people, role.Name, ct);
+    }
+
     public async Task<IReadOnlyList<User>> UsersInRoleAsync(string role, CancellationToken ct = default)
     {
         var name = role?.Trim() ?? string.Empty;
@@ -90,21 +120,32 @@ public sealed class HostOrgDirectory(
         return await LocalUsersAsync(people, name, ct);
     }
 
-    public async Task<IReadOnlyList<User>> SupervisorsAsync(CancellationToken ct = default)
+    public Task<IReadOnlyList<User>> SupervisorsAsync(CancellationToken ct = default) =>
+        HoldersAsync("cases", "Supervise", Permissions.CasesSupervise, ct);
+
+    public async Task<IReadOnlyList<User>> ConfigManagersAsync(CancellationToken ct = default)
+    {
+        var holders = await HoldersAsync("settings", "Manage", Permissions.ConfigManage, ct);
+        if (!HostConnected) return holders;
+        var admins = await AdministratorsAsync(ct);
+        return holders.Concat(admins).DistinctBy(u => u.Id).OrderBy(u => u.Name, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    /// <summary>Active people whose Host role is granted <paramref name="capability"/> on this app's <paramref name="module"/>.</summary>
+    private async Task<IReadOnlyList<User>> HoldersAsync(string module, string capability, string permission, CancellationToken ct)
     {
         if (!HostConnected)
         {
             // Standalone: the configured role map decides (null = every demo user holds the same permissions).
-            var roles = permissions.RolesGranting(Permissions.CasesSupervise);
-            var query = db.Users.AsNoTracking().Where(u => u.IsActive && u.ExternalUserId != null);
-            var all = await query.OrderBy(u => u.Name).ToListAsync(ct);
+            var roles = permissions.RolesGranting(permission);
+            var all = await db.Users.AsNoTracking().Where(u => u.IsActive && u.ExternalUserId != null).OrderBy(u => u.Name).ToListAsync(ct);
             return roles == null ? all : all.Where(u => roles.Contains(u.Role)).ToList();
         }
 
-        var supervisorRoles = await GetCachedAsync<List<RoleRow>>(
-            $"internal/roles?feature={Uri.EscapeDataString(AppFeature + ".cases")}&capability=Supervise", ct);
+        var grantedRoles = await GetCachedAsync<List<RoleRow>>(
+            $"internal/roles?feature={Uri.EscapeDataString($"{AppFeature}.{module}")}&capability={Uri.EscapeDataString(capability)}", ct);
         var result = new List<User>();
-        foreach (var role in supervisorRoles)
+        foreach (var role in grantedRoles)
         {
             var people = await GetCachedAsync<List<UserRow>>($"internal/users?roleId={role.Id}", ct);
             result.AddRange(await LocalUsersAsync(people, role.Name, ct));

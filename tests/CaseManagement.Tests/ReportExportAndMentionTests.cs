@@ -137,8 +137,8 @@ public class ReportExportAndMentionTests : IDisposable
 
         var rows = cases.Nav.OrderBy(n => n.SortOrder).Select(n => (n.Key, n.Label)).ToArray();
 
-        // Agent Assignment (for supervisors) follows them in the same group.
-        Assert.Equal(new[] { ("case-management", "Cases"), ("dashboard", "Dashboard"), ("agent-assignment", "Agent Assignment") }, rows);
+        // The Calendar follows the Dashboard; Agent Assignment (for supervisors) comes last in the same group.
+        Assert.Equal(new[] { ("case-management", "Cases"), ("dashboard", "Dashboard"), ("calendar", "Calendar"), ("agent-assignment", "Agent Assignment") }, rows);
     }
 
     // ------------------------------------------------------------------------------------------------ unstaffed team

@@ -1,6 +1,7 @@
 namespace CaseManagement.Api.Services;
 
 using CaseManagement.Api.Configuration;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
 /// <summary>
@@ -50,7 +51,7 @@ public class LocalDiskAttachmentStore : IAttachmentStore
     public Task<Stream> OpenReadAsync(string key, CancellationToken ct = default)
     {
         var path = PathFor(key);
-        if (!File.Exists(path)) throw new FileNotFoundException("This file is not stored on this server. It may have been received by another server that shares the database; open it there, or ask an administrator to set up shared file storage.");
+        if (!File.Exists(path)) throw new FileNotFoundException("This file is not stored on this server: it is still only on the server that received it. It opens here once that server has run the current version (which copies its files into shared storage).");
         return Task.FromResult<Stream>(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, useAsync: true));
     }
 
@@ -59,5 +60,99 @@ public class LocalDiskAttachmentStore : IAttachmentStore
         var path = PathFor(key);
         if (File.Exists(path)) File.Delete(path);
         return Task.CompletedTask;
+    }
+}
+
+/// <summary>
+/// Files kept in the shared database (<see cref="Models.StoredFile"/>), so any server sharing it can read them — the fix for
+/// "This file is not stored on this server" (404). A file not in the database is still looked for on this server's disk,
+/// where everything was saved before; <see cref="LocalFileImporter"/> copies those in.
+/// </summary>
+public sealed class DatabaseAttachmentStore(IDbContextFactory<Data.AppDbContext> contexts, LocalDiskAttachmentStore localDisk) : IAttachmentStore
+{
+    public async Task<string> SaveAsync(Stream content, string extension, CancellationToken ct = default)
+    {
+        using var buffer = new MemoryStream();
+        await content.CopyToAsync(buffer, ct);
+        var key = $"{Guid.NewGuid()}{extension}";
+        await using var db = await contexts.CreateDbContextAsync(ct);
+        db.StoredFiles.Add(new Models.StoredFile { Key = key, Content = buffer.ToArray(), Length = buffer.Length });
+        await db.SaveChangesAsync(ct);
+        return key;
+    }
+
+    public async Task<Stream> OpenReadAsync(string key, CancellationToken ct = default)
+    {
+        await using var db = await contexts.CreateDbContextAsync(ct);
+        var bytes = await db.StoredFiles.AsNoTracking().Where(f => f.Key == key).Select(f => f.Content).FirstOrDefaultAsync(ct);
+        if (bytes != null) return new MemoryStream(bytes, writable: false);
+        return await localDisk.OpenReadAsync(key, ct);   // saved before the switch; throws "not stored on this server" if absent here too
+    }
+
+    public async Task DeleteAsync(string key, CancellationToken ct = default)
+    {
+        await using var db = await contexts.CreateDbContextAsync(ct);
+        await db.StoredFiles.Where(f => f.Key == key).ExecuteDeleteAsync(ct);
+        await localDisk.DeleteAsync(key, ct);
+    }
+
+    /// <summary>Copies a file from this server's disk into the database, unless it is there already. True when it was copied.</summary>
+    public async Task<bool> ImportAsync(string key, CancellationToken ct = default)
+    {
+        await using var db = await contexts.CreateDbContextAsync(ct);
+        if (await db.StoredFiles.AnyAsync(f => f.Key == key, ct)) return false;
+        Stream source;
+        try { source = await localDisk.OpenReadAsync(key, ct); }
+        catch (Exception ex) when (ex is FileNotFoundException or ArgumentException) { return false; }
+        await using (source)
+        {
+            using var buffer = new MemoryStream();
+            await source.CopyToAsync(buffer, ct);
+            db.StoredFiles.Add(new Models.StoredFile { Key = key, Content = buffer.ToArray(), Length = buffer.Length });
+            await db.SaveChangesAsync(ct);
+        }
+        return true;
+    }
+}
+
+/// <summary>
+/// Once at startup: every file the database refers to (case attachments, ticket files, received emails) that is only on THIS
+/// server's disk is copied into the database. Each server that received files before the switch does this when it first runs
+/// the new version; it is idempotent, so it costs nothing afterwards.
+/// </summary>
+public sealed class LocalFileImporter(IServiceScopeFactory scopes, IOptions<AttachmentOptions> options, ILogger<LocalFileImporter> logger) : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        if (!options.Value.ImportLocalFilesOnStartup) return;
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);   // after migrations and warm-up
+            using var scope = scopes.CreateScope();
+            if (scope.ServiceProvider.GetRequiredService<IAttachmentStore>() is not DatabaseAttachmentStore store) return;
+            var db = scope.ServiceProvider.GetRequiredService<Data.AppDbContext>();
+
+            var keys = new List<string>();
+            keys.AddRange(await db.CaseAttachments.AsNoTracking().Select(a => a.StoragePath).ToListAsync(stoppingToken));
+            keys.AddRange(await db.TicketAttachments.AsNoTracking().Select(a => a.StorageKey).ToListAsync(stoppingToken));
+            keys.AddRange(await db.InboundEmails.AsNoTracking().Where(e => e.RawKey != null).Select(e => e.RawKey!).ToListAsync(stoppingToken));
+            var stored = (await db.StoredFiles.AsNoTracking().Select(f => f.Key).ToListAsync(stoppingToken)).ToHashSet();
+
+            var copied = 0;
+            foreach (var key in keys.Where(k => !string.IsNullOrWhiteSpace(k) && !stored.Contains(k)).Distinct())
+            {
+                try { if (await store.ImportAsync(key, stoppingToken)) copied++; }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    logger.LogWarning(ex, "Could not copy stored file {Key} into the database.", key);
+                }
+            }
+            if (copied > 0) logger.LogInformation("Copied {Count} file(s) from this server's disk into the shared database.", copied);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Copying this server's files into the database did not finish; it runs again on the next start.");
+        }
     }
 }

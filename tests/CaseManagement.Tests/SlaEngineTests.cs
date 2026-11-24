@@ -269,7 +269,7 @@ public class SlaClockTests
     }
 }
 
-/// <summary>Automatic escalation runs on SLA consumption only, between 1 and 100%.</summary>
+/// <summary>The triggers the engine executes, each read from what the SLA engine already keeps, with its own valid range.</summary>
 public class EscalationTriggerTests
 {
     [Theory]
@@ -278,19 +278,23 @@ public class EscalationTriggerTests
     [InlineData("SlaPercentage", null, false)]      // a threshold is required
     [InlineData("SlaPercentage", 0, false)]
     [InlineData("SlaPercentage", 101, false)]       // more than all of the SLA is not a consumption threshold
-    [InlineData("SlaBreached", null, false)]        // older trigger kinds are no longer executed
-    [InlineData("SlaPostBreachHours", 12, false)]
-    [InlineData("ManualOnly", null, false)]
-    public void Only_an_SLA_consumption_percentage_is_a_trigger(string type, int? value, bool valid)
+    [InlineData("SlaBreached", null, true)]
+    [InlineData("SlaPostBreachHours", 12, true)]
+    [InlineData("SlaPostBreachHours", null, false)]
+    [InlineData("StatusHours", 24, true)]
+    [InlineData("ManualOnly", null, true)]
+    [InlineData("FirstResponseBreached", null, false)]   // not executed, so never configurable
+    public void A_trigger_is_valid_only_with_the_value_it_needs(string type, int? value, bool valid)
     {
         Assert.Equal(valid, EscalationTriggers.Validate(type, value) == null);
     }
 
     [Fact]
-    public void The_description_is_derived_from_the_threshold()
+    public void The_description_is_derived_from_the_trigger()
     {
         Assert.Equal("SLA consumption reaches 90%", EscalationTriggers.Describe("SlaPercentage", 90m));
-        Assert.Equal(string.Empty, EscalationTriggers.Describe("SlaBreached", null));
+        Assert.Equal("SLA is breached", EscalationTriggers.Describe("SlaBreached", null));
+        Assert.Equal("Hours in the same status: 24", EscalationTriggers.Describe("StatusHours", 24m));
     }
 }
 
@@ -300,22 +304,31 @@ public class EscalationTriggerTests
 /// </summary>
 public class EscalationLevelRulesTests
 {
-    private static EscalationLevelRules.Input L(int n, string? role, decimal? pct, string? why = "Needs attention", bool notify = true) =>
-        new(n, role, "SlaPercentage", pct, why, notify, false, false, "High");
+    private static EscalationLevelRules.Input L(int n, string? role, decimal? pct, string? why = "Needs attention", bool initial = false,
+        string routing = "Team", string fallback = "NextLevel", string trigger = "SlaPercentage", bool manual = true, Guid? user = null) =>
+        new(n, role == null ? Array.Empty<string>() : [role], initial, trigger, pct, why, routing, user, fallback, manual);
+
+    private static EscalationLevelRules.Input Top(int n, string role, decimal pct) => L(n, role, pct, fallback: "Administrators");
 
     [Fact]
     public void An_incomplete_level_names_every_missing_field()
     {
-        var missing = EscalationLevelRules.MissingFields(null, "SlaPercentage", null, " ", false, false, false, "High");
+        var missing = EscalationLevelRules.MissingFields(L(2, null, null, why: " ", routing: "SpecificUser"));
 
-        Assert.Equal(new[] { EscalationLevelRules.RoleField, EscalationLevelRules.ThresholdField, EscalationLevelRules.DescriptionField, EscalationLevelRules.NotificationField }, missing);
+        Assert.Equal(new[] { EscalationLevelRules.RoleField, EscalationLevelRules.ThresholdField, EscalationLevelRules.DescriptionField, EscalationLevelRules.UserField }, missing);
+    }
+
+    [Fact]
+    public void The_initial_handlers_level_needs_only_its_roles()
+    {
+        Assert.Empty(EscalationLevelRules.MissingFields(L(1, "Agent", null, why: null, initial: true, trigger: "")));
     }
 
     [Fact]
     public void A_complete_matrix_with_rising_thresholds_and_distinct_roles_is_accepted()
     {
-        var errors = EscalationLevelRules.Validate(new[] { L(1, "Team Lead", 50), L(2, "Supervisor", 75), L(3, "Manager", 90) },
-            new[] { "Team Lead", "Supervisor", "Manager" });
+        var errors = EscalationLevelRules.Validate(new[] { L(1, "Agent", null, initial: true), L(2, "Team Lead", 50), L(3, "Supervisor", 75), Top(4, "Manager", 90) },
+            new[] { "Agent", "Team Lead", "Supervisor", "Manager" });
 
         Assert.Empty(errors);
     }
@@ -323,45 +336,65 @@ public class EscalationLevelRulesTests
     [Fact]
     public void A_role_used_on_two_levels_is_refused()
     {
-        var errors = EscalationLevelRules.Validate(new[] { L(1, "Team Lead", 50), L(2, "team lead", 75) }, null);
+        var errors = EscalationLevelRules.Validate(new[] { L(1, "Team Lead", 50), Top(2, "team lead", 75) }, null);
 
-        Assert.Contains(errors, e => e.Field == "Level 2" && e.Message.Contains("already assigned to Level 1"));
+        Assert.Contains(errors, e => e.Field == "Level 2" && e.Message.Contains("already at Level 1"));
     }
 
     [Fact]
     public void Thresholds_must_rise_with_the_level()
     {
-        var errors = EscalationLevelRules.Validate(new[] { L(1, "Team Lead", 75), L(2, "Supervisor", 75) }, null);
+        var errors = EscalationLevelRules.Validate(new[] { L(1, "Team Lead", 75), Top(2, "Supervisor", 75) }, null);
 
         Assert.Contains(errors, e => e.Field == "Level 2" && e.Message.Contains("must be higher than Level 1"));
     }
 
     [Fact]
+    public void Levels_are_numbered_without_gaps_and_only_the_lowest_can_be_the_initial_one()
+    {
+        var gap = EscalationLevelRules.Validate(new[] { L(1, "Team Lead", 50), Top(3, "Supervisor", 75) }, null);
+        var initialHigh = EscalationLevelRules.Validate(new[] { L(1, "Team Lead", 50), L(2, "Agent", null, initial: true), Top(3, "Manager", 90) }, null);
+
+        Assert.Contains(gap, e => e.Message.Contains("without gaps"));
+        Assert.Contains(initialHigh, e => e.Field == "Level 2" && e.Message.Contains("only the lowest level"));
+    }
+
+    [Fact]
+    public void The_highest_level_cannot_fall_back_to_a_level_above_it()
+    {
+        var errors = EscalationLevelRules.Validate(new[] { L(1, "Team Lead", 50), L(2, "Supervisor", 75, fallback: "NextLevel") }, null);
+
+        Assert.Contains(errors, e => e.Field == "Level 2" && e.Message.Contains("highest level"));
+    }
+
+    [Fact]
+    public void A_manual_only_level_that_cannot_be_chosen_by_hand_is_unreachable()
+    {
+        var errors = EscalationLevelRules.Validate(new[] { L(1, "Team Lead", 50), L(2, "Supervisor", null, trigger: "ManualOnly", manual: false, fallback: "Hold") }, null);
+
+        Assert.Contains(errors, e => e.Field == "Level 2" && e.Message.Contains("can never be reached"));
+    }
+
+    [Fact]
     public void A_new_level_is_refused_until_it_is_complete()
     {
-        var errors = EscalationLevelRules.Validate(new[] { L(1, "Team Lead", 50), L(2, null, null, why: null, notify: false) }, null);
+        var errors = EscalationLevelRules.Validate(new[] { L(1, "Team Lead", 50), L(2, null, null, why: null, fallback: "Hold") }, null);
 
         Assert.Contains(errors, e => e.Field == "Level 2" && e.Message.StartsWith("Level 2 is incomplete"));
     }
 
     [Fact]
-    public void A_role_without_Case_Management_access_is_refused_even_when_the_level_already_had_it()
+    public void A_role_without_Case_Management_access_is_refused()
     {
-        // A stored role the Host no longer grants (or never had) is not kept: the level must be given an eligible role.
-        var allowed = new[] { "Team Lead" };
+        var errors = EscalationLevelRules.Validate(new[] { L(1, "Team Lead", 50), Top(2, "Teller", 75) }, new[] { "Team Lead" });
 
-        var fresh = EscalationLevelRules.Validate(new[] { L(1, "Team Lead", 50), L(2, "Teller", 75) }, allowed);
-        var kept = EscalationLevelRules.Validate(new[] { L(1, "Team Lead", 50), L(2, "Teller", 80) }, allowed,
-            new Dictionary<int, string> { [2] = "Teller" });
-
-        Assert.Contains(fresh, e => e.Field == "Level 2" && e.Message.Contains("Teller is not a Host role with Case Management access"));
-        Assert.Contains(kept, e => e.Field == "Level 2" && e.Message.Contains("Select an eligible role"));
+        Assert.Contains(errors, e => e.Field == "Level 2" && e.Message.Contains("Teller is not a Host role with Case Management access"));
     }
 
     [Fact]
     public void With_no_eligible_role_at_all_every_level_is_refused()
     {
-        var errors = EscalationLevelRules.Validate(new[] { L(1, "Team Lead", 50) }, Array.Empty<string>());
+        var errors = EscalationLevelRules.Validate(new[] { Top(1, "Team Lead", 50) }, Array.Empty<string>());
 
         Assert.Contains(errors, e => e.Field == "Level 1");
     }
@@ -396,11 +429,34 @@ public class EscalationDecisionTests
     }
 
     [Fact]
-    public void When_several_thresholds_are_met_the_highest_is_reached()
+    public void When_several_thresholds_are_met_only_the_next_level_is_reached_so_none_is_skipped()
     {
-        var c = new Case { EscalationLevel = 0 };
+        var levels = new[] { Level(1, 50), Level(2, 75), Level(3, 90), Level(4, 100) };
 
-        Assert.Equal(3, Decide(c, Snapshot(95), Level(1, 50), Level(2, 75), Level(3, 90), Level(4, 100))!.Level.LevelNumber);
+        Assert.Equal(1, Decide(new Case { EscalationLevel = 0 }, Snapshot(95), levels)!.Level.LevelNumber);
+        Assert.Equal(2, Decide(new Case { EscalationLevel = 1 }, Snapshot(95), levels)!.Level.LevelNumber);
+        Assert.Equal(3, Decide(new Case { EscalationLevel = 2 }, Snapshot(95), levels)!.Level.LevelNumber);
+    }
+
+    [Fact]
+    public void The_initial_handlers_level_is_where_a_case_starts_and_never_a_target()
+    {
+        var initial = Level(1, 0);
+        initial.IsInitial = true;
+        var levels = new[] { initial, Level(2, 50), Level(3, 80) };
+
+        Assert.Equal(2, Decide(new Case { EscalationLevel = 0 }, Snapshot(60), levels)!.Level.LevelNumber);
+        Assert.Null(Decide(new Case { EscalationLevel = 0 }, Snapshot(40), levels));
+    }
+
+    [Fact]
+    public void A_priority_filter_limits_automatic_escalation_to_those_priorities()
+    {
+        var level = Level(1, 50);
+        level.TriggerPriorities = "Critical, High";
+
+        Assert.NotNull(Decide(new Case { Severity = "High" }, Snapshot(60), level));
+        Assert.Null(Decide(new Case { Severity = "Low" }, Snapshot(60), level));
     }
 
     [Fact]
@@ -436,7 +492,11 @@ public class EscalationRecipientTests
     private static User U(string name, string role, bool active = true) =>
         new() { Id = Guid.NewGuid(), Name = name, Email = name + "@x.test", Role = role, IsActive = active };
 
-    private static EscalationLevelConfig Level(string role) => new() { LevelNumber = 1, Name = "Level 1", TargetRole = role };
+    private static EscalationLevelConfig Level(string role, string routing = "Team", string fallback = "Hold") =>
+        new() { LevelNumber = 1, Name = "Level 1", TargetRole = role, RoutingStrategy = routing, FallbackPolicy = fallback };
+
+    private static async Task<IReadOnlyList<EscalationRecipient>> Recipients(AppDbContext db, Case c, EscalationLevelConfig level, Guid? caller) =>
+        (await Service(db).ResolveAsync(c, level, new EscalationPolicy([level]), caller)).Recipients;
 
     [Fact]
     public async Task Holders_of_the_role_in_the_cases_own_team_are_offered_first()
@@ -451,14 +511,14 @@ public class EscalationRecipientTests
         await db.SaveChangesAsync();
 
         var c = new Case { OwnerId = owner.Id, TeamId = team.Id };
-        var people = await Service(db).RecipientsAsync(c, Level("team lead"), owner.Id);
+        var people = await Recipients(db, c, Level("team lead"), owner.Id);
 
         Assert.Equal(new[] { ourLead.Id }, people.Select(p => p.User.Id));
         Assert.True(people[0].IsCaseTeam);
     }
 
     [Fact]
-    public async Task A_team_serving_the_cases_department_comes_next_then_everyone_in_the_role()
+    public async Task A_team_serving_the_cases_department_comes_next_and_nobody_unrelated_is_ever_chosen()
     {
         using var db = NewDb();
         var owner = U("Owner", "Agent");
@@ -472,11 +532,13 @@ public class EscalationRecipientTests
         db.TeamMembers.Add(new TeamMember { TeamId = servingTeam.Id, UserId = deptSupervisor.Id });
         await db.SaveChangesAsync();
 
-        var inDepartment = await Service(db).RecipientsAsync(new Case { OwnerId = owner.Id, TeamId = caseTeam.Id, DepartmentId = department.Id }, Level("Supervisor"), owner.Id);
-        var anywhere = await Service(db).RecipientsAsync(new Case { OwnerId = owner.Id, TeamId = caseTeam.Id }, Level("Supervisor"), owner.Id);
+        var inDepartment = await Recipients(db, new Case { OwnerId = owner.Id, TeamId = caseTeam.Id, DepartmentId = department.Id }, Level("Supervisor"), owner.Id);
+        var elsewhereOnly = await Recipients(db, new Case { OwnerId = owner.Id, TeamId = caseTeam.Id }, Level("Supervisor"), owner.Id);
+        var everyHolder = await Recipients(db, new Case { OwnerId = owner.Id, TeamId = caseTeam.Id }, Level("Supervisor", routing: "AllHolders"), owner.Id);
 
         Assert.Equal(new[] { deptSupervisor.Id }, inDepartment.Select(p => p.User.Id));
-        Assert.Equal(new[] { deptSupervisor.Id, elsewhere.Id }.OrderBy(x => x), anywhere.Select(p => p.User.Id).OrderBy(x => x));
+        Assert.Empty(elsewhereOnly);   // team routing never falls back to everyone holding the role
+        Assert.Equal(new[] { deptSupervisor.Id, elsewhere.Id }.OrderBy(x => x), everyHolder.Select(p => p.User.Id).OrderBy(x => x));
     }
 
     [Fact]
@@ -490,7 +552,7 @@ public class EscalationRecipientTests
         db.Users.AddRange(owner, me, gone, other);
         await db.SaveChangesAsync();
 
-        var people = await Service(db).RecipientsAsync(new Case { OwnerId = owner.Id, TeamId = Guid.NewGuid() }, Level("Manager"), me.Id);
+        var people = await Recipients(db, new Case { OwnerId = owner.Id, TeamId = Guid.NewGuid() }, Level("Manager", routing: "AllHolders"), me.Id);
 
         Assert.Equal(new[] { other.Id }, people.Select(p => p.User.Id));
     }

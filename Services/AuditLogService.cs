@@ -69,36 +69,34 @@ public class AuditLogService : IAuditLogService
         };
 
         var me = _currentUser?.LocalUserId;
-        var seesAll = SeesAll || me == null;
+        var seesAll = SeesAll || me == null || _access == null;
+        // Without ViewAll the choices come from the cases the caller may see (assigned, collaborating, or — with ViewTeam —
+        // their teams'), never from team membership: a filter list must not name people or teams whose cases they cannot open.
         await ParallelReads.RunAsync(_contexts, _context, ct,
             async db =>
             {
-                // People: everyone for someone who sees all; otherwise the people of the teams the caller leads or belongs to.
-                var teamIds = seesAll ? null : MyTeams(db, me!.Value);
+                var visible = seesAll ? null : _access!.Apply(db.Cases.AsNoTracking(), db).Select(c => c.Id);
                 result.Actors = await db.Users.AsNoTracking()
-                    .Where(u => seesAll ? true : db.TeamMembers.Any(m => m.UserId == u.Id && m.IsActive && teamIds!.Contains(m.TeamId)))
+                    .Where(u => seesAll || db.CaseEvents.Any(e => e.UserId == u.Id && e.CaseId != null && visible!.Contains(e.CaseId.Value)))
                     .OrderBy(u => u.Name).Select(u => new NamedOptionDto { Id = u.Id, Name = u.Name }).ToListAsync(ct);
             },
             async db =>
             {
-                var teamIds = seesAll ? null : MyTeams(db, me!.Value);
+                var teamIds = seesAll ? null : _access!.Apply(db.Cases.AsNoTracking(), db).Select(c => c.TeamId);
                 result.Teams = await db.Teams.AsNoTracking()
                     .Where(d => seesAll || teamIds!.Contains(d.Id))
                     .OrderBy(d => d.Name).Select(d => new NamedOptionDto { Id = d.Id, Name = d.Name }).ToListAsync(ct);
             },
             async db =>
             {
-                var teamIds = seesAll ? null : MyTeams(db, me!.Value);
+                var departmentIds = seesAll ? null : _access!.Apply(db.Cases.AsNoTracking(), db).Where(c => c.DepartmentId != null).Select(c => c.DepartmentId!.Value);
                 result.Departments = await db.Departments.AsNoTracking()
-                    .Where(o => seesAll || o.TeamLinks.Any(l => teamIds!.Contains(l.TeamId)))
+                    .Where(o => seesAll || departmentIds!.Contains(o.Id))
                     .OrderBy(o => o.DisplayOrder).ThenBy(o => o.Name).Select(o => new NamedOptionDto { Id = o.Id, Name = o.Name }).ToListAsync(ct);
             });
         return result;
     }
 
-    /// <summary>The teams a person leads or is an active member of.</summary>
-    private static IQueryable<Guid> MyTeams(AppDbContext db, Guid me) =>
-        db.Teams.Where(d => d.OwnerId == me || db.TeamMembers.Any(m => m.TeamId == d.Id && m.UserId == me && m.IsActive)).Select(d => d.Id);
 
     public async Task<ReportExport> ExportAsync(AuditFilter filter, int limit, CancellationToken ct = default)
     {

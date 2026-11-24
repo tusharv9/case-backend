@@ -26,6 +26,8 @@ public sealed class FakeOrgDirectory(AppDbContext db, IEnumerable<string>? caseR
     public async Task<IReadOnlyList<User>> SupervisorsAsync(CancellationToken ct = default) =>
         (await db.Users.AsNoTracking().Where(u => u.IsActive).ToListAsync(ct)).Where(u => _supervisorRoles.Contains(u.Role)).ToList();
 
+    public Task<IReadOnlyList<User>> ConfigManagersAsync(CancellationToken ct = default) => AdministratorsAsync(ct);
+
     private readonly HashSet<string> _administratorRoles = new(administratorRoles ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
 
     public async Task<IReadOnlyList<User>> AdministratorsAsync(CancellationToken ct = default) =>

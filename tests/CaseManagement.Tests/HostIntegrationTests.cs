@@ -45,9 +45,23 @@ public class PermissionProviderTests
     }
 
     [Fact]
-    public void RoleMatchIsCaseInsensitive_AndPermissionsAccumulateAcrossRoles()
+    public void A_role_name_grants_nothing_by_itself_only_the_Host_does()
     {
-        var granted = Provider().Resolve(P(new[] { "agent", "SUPERVISOR" }));
+        // There is no built-in "Agent"/"Admin" table: a role called Admin with no Host grant opens nothing.
+        var granted = Provider().Resolve(P(new[] { "Admin", "Agent", "Supervisor", "Team Lead" }));
+
+        Assert.Empty(granted);
+    }
+
+    [Fact]
+    public void An_explicitly_configured_role_map_is_matched_case_insensitively_and_accumulates()
+    {
+        var options = new HostIntegrationOptions();
+        options.RolePermissions["Agent"] = new[] { Permissions.CasesWrite };
+        options.RolePermissions["Supervisor"] = new[] { Permissions.TeamsManage };
+
+        var granted = Provider(options).Resolve(P(new[] { "agent", "SUPERVISOR" }));
+
         Assert.Contains(Permissions.CasesWrite, granted);
         Assert.Contains(Permissions.TeamsManage, granted);
     }
@@ -60,7 +74,21 @@ public class PermissionProviderTests
         var granted = Provider(options).Resolve(P(new[] { "CX-Ops", "Admin" }));
 
         Assert.Contains(Permissions.ConfigManage, granted);
-        Assert.DoesNotContain(Permissions.Everything, granted); // "Admin" is no longer defined once a map is configured
+        Assert.DoesNotContain(Permissions.Everything, granted); // "Admin" is only a name
+    }
+
+    [Fact]
+    public void ViewTeam_is_a_Host_capability_of_its_own()
+    {
+        var granted = Provider().Resolve(P(Array.Empty<string>(), new[] { "remote.casemanagement.cases:ViewTeam" }));
+
+        Assert.Equal(new[] { Permissions.CasesViewTeam }, granted.ToArray());
+    }
+
+    [Fact]
+    public void Without_a_role_map_no_role_is_said_to_grant_a_permission()
+    {
+        Assert.Empty(Provider().RolesGranting(Permissions.ConfigManage)!);
     }
 
     [Fact]
@@ -146,6 +174,14 @@ public sealed class AppUnderTest : WebApplicationFactory<Program>
 
     private readonly Dictionary<string, string> _settings;
 
+    private static readonly Dictionary<string, string[]> TestRoleMap = new()
+    {
+        ["Agent"] = new[] { Permissions.CasesRead, Permissions.CasesCreate, Permissions.CasesWrite, Permissions.CasesResolve, Permissions.CustomersRead, Permissions.CustomersWrite },
+        ["Team Lead"] = new[] { Permissions.CasesRead, Permissions.CasesCreate, Permissions.CasesWrite, Permissions.CasesTransfer, Permissions.CasesResolve, Permissions.CasesAssign, Permissions.CasesViewTeam, Permissions.CustomersRead, Permissions.CustomersWrite, Permissions.MonitoringView, Permissions.MonitoringNudge, Permissions.AuditView },
+        ["Supervisor"] = new[] { Permissions.CasesRead, Permissions.CasesCreate, Permissions.CasesWrite, Permissions.CasesTransfer, Permissions.CasesResolve, Permissions.CasesAssign, Permissions.CasesViewAll, Permissions.CasesSupervise, Permissions.CustomersRead, Permissions.CustomersWrite, Permissions.MonitoringView, Permissions.MonitoringNudge, Permissions.AuditView, Permissions.TeamsManage },
+        ["Admin"] = new[] { Permissions.Everything, Permissions.PiiUnmask },
+    };
+
     public AppUnderTest(string connectionString, Dictionary<string, string>? extra = null)
     {
         _settings = new Dictionary<string, string>
@@ -160,6 +196,10 @@ public sealed class AppUnderTest : WebApplicationFactory<Program>
             ["HostIntegration:Jwt:Issuer"] = Issuer,
             ["HostIntegration:ProvisionCacheSeconds"] = "0",
         };
+        // The tests sign tokens carrying role names and no Host capabilities, so the test app maps those names explicitly
+        // (production has no such map: the Host grants capabilities).
+        foreach (var (role, perms) in TestRoleMap)
+            for (var i = 0; i < perms.Length; i++) _settings[$"HostIntegration:RolePermissions:{role}:{i}"] = perms[i];
         if (extra != null) foreach (var kv in extra) _settings[kv.Key] = kv.Value;
     }
 

@@ -85,7 +85,13 @@ public class DashboardService : IDashboardService
                 .Select(d => new NamedOptionDto { Id = d.Id, Name = d.Name }).ToListAsync(ct),
             async db => result.CaseTypes = await db.CaseTypeConfigs.AsNoTracking().Where(t => t.IsActive).OrderBy(t => t.DisplayOrder)
                 .Select(t => new FilterOptionDto { Value = t.Name, Label = t.Name }).ToListAsync(ct),
-            async db => result.Statuses = await Lookup(db, "CASE_STATUS", ct),
+            // Every active status, worded as configured (Configurable Settings → Status).
+            async db =>
+            {
+                var statuses = await db.CaseStatusDefinitions.AsNoTracking().Where(d => d.IsActive).OrderBy(d => d.Level)
+                    .Select(d => new FilterOptionDto { Value = d.Key, Label = d.Label }).ToListAsync(ct);
+                result.Statuses = statuses.Count > 0 ? statuses : await Lookup(db, "CASE_STATUS", ct);
+            },
             async db => result.Priorities = await db.PrioritySlaRules.AsNoTracking().Where(r => r.IsActive).OrderBy(r => r.DisplayOrder).Select(r => r.Priority).ToListAsync(ct),
             async db => result.SlaStatuses = await Lookup(db, "SLA_STATUS", ct),
             async db => ranges = await Lookup(db, "DASHBOARD_DATE_RANGE", ct),
@@ -103,12 +109,15 @@ public class DashboardService : IDashboardService
     /// context — and the page waits for the slowest one rather than the sum of all of them. Without a context factory
     /// (a test that builds the service by hand) the same reads simply run one after another on the request's context.
     /// </summary>
-    private static CaseStatus? ParseStatus(string? value)
+    /// <summary>A status filter: a system status (exactly that status, not a custom one of its category) or a custom status key.</summary>
+    private sealed record StatusFilter(CaseStatus? System, string? Key);
+
+    private static StatusFilter? ParseStatus(string? value)
     {
         if (string.IsNullOrWhiteSpace(value)) return null;
-        if (!Enum.TryParse<CaseStatus>(value.Replace(" ", "").Replace("_", ""), true, out var status))
-            throw new ArgumentException($"'{value}' is not a case status.");
-        return status;
+        var text = value.Replace(" ", "").Replace("_", "");
+        if (Enum.TryParse<CaseStatus>(text, true, out var status) && Enum.IsDefined(status)) return new StatusFilter(status, null);
+        return new StatusFilter(null, value.Trim());
     }
 
     /// <summary>
@@ -116,7 +125,7 @@ public class DashboardService : IDashboardService
     /// for people who see every team (see <see cref="DashboardFiltersDto.CanFilterByTeam"/>); anyone else's team
     /// filter is ignored rather than allowed to suggest a cross-team view they do not have.
     /// </summary>
-    private IQueryable<Case> ApplyFilters(AppDbContext db, DashboardQuery q, CaseStatus? statusFilter, DateTime? start, DateTime? end)
+    private IQueryable<Case> ApplyFilters(AppDbContext db, DashboardQuery q, StatusFilter? statusFilter, DateTime? start, DateTime? end)
     {
         IQueryable<Case> query = _caseAccess?.Apply(db.Cases.AsNoTracking(), db) ?? db.Cases.AsNoTracking();
         if (q.TeamId.HasValue && SeesAllTeams) query = query.Where(c => c.TeamId == q.TeamId.Value);
@@ -124,7 +133,8 @@ public class DashboardService : IDashboardService
         if (!string.IsNullOrWhiteSpace(q.CaseType)) query = query.Where(c => c.CaseType == q.CaseType);
         if (!string.IsNullOrWhiteSpace(q.Severity)) query = query.Where(c => c.Severity == q.Severity);
         if (q.OwnerId.HasValue) query = query.Where(c => c.OwnerId == q.OwnerId.Value);
-        if (statusFilter.HasValue) query = query.Where(c => c.Status == statusFilter.Value);
+        if (statusFilter?.System is { } system) query = query.Where(c => c.Status == system && c.StatusKey == null);
+        else if (statusFilter?.Key is { } key) query = query.Where(c => c.StatusKey == key);
         if (start.HasValue) query = query.Where(c => c.CreatedAt >= start.Value);
         if (end.HasValue) query = query.Where(c => c.CreatedAt < end.Value);
         return query;
@@ -151,6 +161,8 @@ public class DashboardService : IDashboardService
         // ---- round 1: every independent read --------------------------------------------------------------------
         var total = 0;
         Dictionary<CaseStatus, int> byStatus = new();
+        List<(CaseStatus Status, string? Key, int Count)> byStatusKey = new();
+        List<CaseStatusDefinition> statusDefinitions = new();
         List<(string Severity, int Count)> bySeverity = new();
         var unassigned = 0;
         List<(string Priority, int DisplayOrder)> order = new();
@@ -164,8 +176,10 @@ public class DashboardService : IDashboardService
 
         await ReadAllAsync(ct,
             async db => total = await Filtered(db).CountAsync(ct),
-            async db => byStatus = await Filtered(db).GroupBy(c => c.Status).Select(g => new { Status = g.Key, Count = g.Count() })
-                .ToDictionaryAsync(x => x.Status, x => x.Count, ct),
+            async db => byStatusKey = (await Filtered(db).GroupBy(c => new { c.Status, c.StatusKey })
+                .Select(g => new { g.Key.Status, g.Key.StatusKey, Count = g.Count() }).ToListAsync(ct))
+                .Select(x => (x.Status, x.StatusKey, x.Count)).ToList(),
+            async db => statusDefinitions = await db.CaseStatusDefinitions.AsNoTracking().ToListAsync(ct),
             async db => bySeverity = (await Filtered(db).GroupBy(c => c.Severity).Select(g => new { Severity = g.Key, Count = g.Count() }).ToListAsync(ct))
                 .Select(x => (x.Severity, x.Count)).ToList(),
             async db => unassigned = await Filtered(db).CountAsync(c => c.OwnerId == emptyGuid, ct),
@@ -216,9 +230,25 @@ public class DashboardService : IDashboardService
                 .ToListAsync(ct);
             });
 
+        // Category totals (the tiles) and one row per status, custom statuses included, in the configured order.
+        byStatus = byStatusKey.GroupBy(x => x.Status).ToDictionary(g => g.Key, g => g.Sum(x => x.Count));
+        var definitions = statusDefinitions.Count > 0 ? statusDefinitions : Services.Statuses.CaseStatusCatalog.Defaults().ToList();
+        var breakdown = byStatusKey.GroupBy(x => x.Key ?? x.Status.ToString(), StringComparer.OrdinalIgnoreCase)
+            .Select(g =>
+            {
+                var d = definitions.FirstOrDefault(x => string.Equals(x.Key, g.Key, StringComparison.OrdinalIgnoreCase));
+                return new StatusCaseCount
+                {
+                    Key = g.Key, Label = d?.Label ?? CaseWorkflow.Label(g.First().Status), Category = d?.Category ?? "",
+                    Color = d?.Color ?? "slate", Level = d?.Level ?? 999, Count = g.Sum(x => x.Count),
+                };
+            })
+            .OrderBy(x => x.Level).ThenBy(x => x.Label).ToList();
+
         var result = new DashboardSummaryDto
         {
             TotalCases = total,
+            CasesByStatus = breakdown,
             OpenCases = byStatus.GetValueOrDefault(CaseStatus.Open),
             InProgressCases = byStatus.GetValueOrDefault(CaseStatus.InProgress),
             WaitingOnCustomerCases = byStatus.GetValueOrDefault(CaseStatus.WaitingOnCustomer),

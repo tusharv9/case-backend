@@ -189,6 +189,52 @@ public class CasesController : BaseApiController
     public async Task<IActionResult> RespondToSwarm(Guid id, Guid requestId, [FromBody] RespondSwarmRequestDto dto)
         => Ok(await _collaboration.RespondToSwarmAsync(id, requestId, dto, CurrentUserId));
 
+    /// <summary>
+    /// The emails received on this case (the one that opened it and every reply), oldest first, each with the timeline entry it
+    /// belongs to. Entries written before entries were linked to their email are matched by subject and time.
+    /// </summary>
+    [HttpGet("{id:guid}/emails")]
+    public async Task<IActionResult> GetEmails(Guid id, [FromServices] Data.AppDbContext db, CancellationToken ct)
+    {
+        var emails = await db.InboundEmails.AsNoTracking().Where(e => e.CaseId == id).OrderBy(e => e.ReceivedAt)
+            .Select(e => new { e.Id, e.FromAddress, e.FromName, e.Subject, e.ReceivedAt, e.Status, HasOriginal = e.RawKey != null })
+            .ToListAsync(ct);
+        var events = await db.CaseEvents.AsNoTracking()
+            .Where(ev => ev.CaseId == id && ev.ActionType == "EMAIL_REPLY_RECEIVED")
+            .Select(ev => new { ev.Id, ev.InboundEmailId, ev.Message, ev.CreatedAt }).ToListAsync(ct);
+
+        var used = new HashSet<Guid>();
+        var result = emails.Select((e, index) =>
+        {
+            var linked = events.FirstOrDefault(ev => ev.InboundEmailId == e.Id)
+                ?? events.Where(ev => ev.InboundEmailId == null && !used.Contains(ev.Id)
+                        && ev.Message.Contains($": {e.Subject}", StringComparison.Ordinal)
+                        && Math.Abs((ev.CreatedAt - e.ReceivedAt).TotalMinutes) < 30)
+                    .OrderBy(ev => Math.Abs((ev.CreatedAt - e.ReceivedAt).TotalSeconds)).FirstOrDefault();
+            if (linked != null) used.Add(linked.Id);
+            return new
+            {
+                e.Id, e.FromAddress, e.FromName, e.Subject, e.ReceivedAt, e.HasOriginal,
+                // The email that opened the case (directly or through its ticket) has no reply entry: it is the case's description.
+                IsOriginal = linked == null && index == 0,
+                EventId = linked?.Id,
+            };
+        }).ToList();
+        return Ok(result);
+    }
+
+    /// <summary>One received email as sent: its HTML (signature, footer and pictures) made safe, or its text.</summary>
+    [HttpGet("{id:guid}/emails/{emailId:guid}/body")]
+    public async Task<IActionResult> GetEmailBody(Guid id, Guid emailId, [FromServices] Data.AppDbContext db,
+        [FromServices] Services.EmailIntake.IEmailBodyRenderer renderer, CancellationToken ct)
+    {
+        // The email must belong to THIS case (the case itself was already checked by [CaseAccess]).
+        var email = await db.InboundEmails.AsNoTracking().FirstOrDefaultAsync(e => e.Id == emailId && e.CaseId == id, ct)
+                    ?? throw new KeyNotFoundException("Email not found.");
+        Response.Headers["Cache-Control"] = "private, no-store";
+        return Ok(await renderer.RenderAsync(email, ct));
+    }
+
     [HttpGet("{id:guid}/attachments")]
     public async Task<IActionResult> GetAttachments(Guid id, [FromServices] ICaseAccessScope access, CancellationToken ct)
     {
@@ -391,6 +437,11 @@ public class CasesController : BaseApiController
     [HttpGet("{id:guid}/escalation-options")]
     public async Task<IActionResult> GetEscalationOptions(Guid id, CancellationToken ct)
         => Ok(await _caseService.GetEscalationOptionsAsync(id, CurrentUserId, ct));
+
+    /// <summary>The case's escalations, manual and automatic, newest first.</summary>
+    [HttpGet("{id:guid}/escalations")]
+    public async Task<IActionResult> GetEscalationHistory(Guid id, CancellationToken ct)
+        => Ok(await _caseService.GetEscalationHistoryAsync(id, ct));
 
     [HttpGet("escalation-matrix")]
     public async Task<IActionResult> GetEscalationMatrix([FromQuery] Guid? caseId, CancellationToken ct)

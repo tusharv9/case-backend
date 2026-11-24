@@ -20,6 +20,11 @@ public class CaseEmailMessage
     public string ToAddress { get; set; } = string.Empty;
     public string Subject { get; set; } = string.Empty;
     public string BodyText { get; set; } = string.Empty;
+
+    /// <summary>A calendar invite (iCalendar text) sent with the email, for a meeting invitation, update or cancellation.</summary>
+    public string? CalendarIcs { get; set; }
+    /// <summary>The invite's method: REQUEST (add or update) or CANCEL.</summary>
+    public string? CalendarMethod { get; set; }
     /// <summary>Our Message-ID (normalised, no angle brackets): a reply to it threads into the case.</summary>
     public string MessageId { get; set; } = string.Empty;
     public string? InReplyTo { get; set; }

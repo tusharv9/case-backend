@@ -102,6 +102,9 @@ public class ExceptionMiddleware
         // Nobody is signed in (the permission filters answer 403 themselves for "signed in but not allowed").
         UnauthorizedAccessException => (401, ex.Message, null),
 
+        // A query the database cannot run is a defect, not the person's mistake: never shown to them (it is logged as an error).
+        InvalidOperationException when ex.Message.Contains("could not be translated", StringComparison.Ordinal) =>
+            (500, "Something went wrong reading this. It has been logged; please try again or tell your administrator.", null),
         ArgumentException or InvalidOperationException or FormatException => (400, ex.Message, null),
 
         // Two people changed the same thing, or a unique/foreign-key rule was hit.

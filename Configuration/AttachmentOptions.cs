@@ -25,6 +25,19 @@ public class AttachmentOptions
     /// </summary>
     public string? StoragePath { get; set; }
 
+    /// <summary>
+    /// Where new files go: "Database" (default — every server sharing the database can read them) or "LocalDisk" (the folder
+    /// above only; a file received by one server cannot be opened on another). Reads always also look on the local disk, so
+    /// files saved there before the switch keep opening.
+    /// </summary>
+    public string Store { get; set; } = "Database";
+
+    /// <summary>
+    /// With the Database store: on startup, copy any file still only on this server's disk into the database (once, idempotent),
+    /// so files received by this server before the switch open everywhere.
+    /// </summary>
+    public bool ImportLocalFilesOnStartup { get; set; } = true;
+
     public HashSet<string> GetAllowedExtensionSet()
     {
         if (string.IsNullOrWhiteSpace(AllowedExtensions)) return new HashSet<string>();

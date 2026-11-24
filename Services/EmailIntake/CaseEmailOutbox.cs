@@ -213,7 +213,22 @@ public sealed class CaseEmailSender(AppDbContext db, IMailboxClient mail, IMailb
         var html = "<div style=\"font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#1f2937;line-height:1.5\">"
             + string.Join("", m.BodyText.Replace("\r\n", "\n").Split("\n\n").Select(p => $"<p>{System.Net.WebUtility.HtmlEncode(p).Replace("\n", "<br>")}</p>"))
             + "</div>";
-        email.Body = new BodyBuilder { TextBody = m.BodyText, HtmlBody = html }.ToMessageBody();
+        var body = new BodyBuilder { TextBody = m.BodyText, HtmlBody = html };
+        if (!string.IsNullOrWhiteSpace(m.CalendarIcs))
+        {
+            // A meeting invitation: the calendar invite as its own attachment, which mail programs offer to add (or update/remove).
+            var method = string.IsNullOrWhiteSpace(m.CalendarMethod) ? "REQUEST" : m.CalendarMethod!;
+            var invite = new MimePart("text", "calendar")
+            {
+                Content = new MimeContent(new MemoryStream(System.Text.Encoding.UTF8.GetBytes(m.CalendarIcs))),
+                ContentTransferEncoding = ContentEncoding.Base64,
+                FileName = method == "CANCEL" ? "cancel.ics" : "invite.ics",
+            };
+            invite.ContentType.Parameters.Add("method", method);
+            invite.ContentType.Charset = "utf-8";
+            body.Attachments.Add(invite);
+        }
+        email.Body = body.ToMessageBody();
         return email;
     }
 }

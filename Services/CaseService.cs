@@ -27,6 +27,7 @@ public class CaseService : ICaseService
     private readonly IFieldValidationEngine? _fieldValidation;
     private readonly ISlaClockProvider? _slaClockProvider;
     private readonly IEscalationService? _escalation;
+    private readonly IEscalationExecutor _escalationExecutor;
     private readonly IMentionService _mentions;
     private readonly ILogger<CaseService> _logger;
     private readonly IConfigCache? _configCache;
@@ -38,6 +39,12 @@ public class CaseService : ICaseService
     private IQueryable<Case> Visible(IQueryable<Case> cases) => _caseAccess?.Apply(cases) ?? cases;
     private readonly IAssignmentEligibilityService _eligibility;
     private readonly ICurrentUserAccessor? _currentUser;
+    private readonly Statuses.ICaseStatusCatalog? _statusCatalog;
+
+    /// <summary>The configured statuses (Configurable Settings → Status); the built-in five when none are configured.</summary>
+    private Task<Statuses.CaseStatusSnapshot> StatusesAsync(CancellationToken ct = default) =>
+        _statusCatalog?.GetAsync(ct)
+        ?? new Statuses.CaseStatusCatalog(_context, new ConfigCache(new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()))).GetAsync(ct);
 
     /// <summary>The caller may supervise cases (act on escalated cases someone else holds, bulk operations).</summary>
     private bool CallerSupervises => _currentUser?.Has(Permissions.CasesSupervise) ?? false;
@@ -51,8 +58,9 @@ public class CaseService : ICaseService
     }
 
     /// <summary>What the caller may do with the case's status now (the same rules the endpoints enforce).</summary>
-    public CaseWorkflowDto WorkflowFor(Case c, Guid actorId, string? holderName = null)
+    public CaseWorkflowDto WorkflowFor(Case c, Guid actorId, string? holderName = null, Statuses.CaseStatusSnapshot? statuses = null)
     {
+        statuses ??= new Statuses.CaseStatusSnapshot(Statuses.CaseStatusCatalog.Defaults(), Statuses.CaseStatusCatalog.DefaultTransitions());
         var lockReason = CaseWorkflow.LockReason(c, actorId, CallerSupervises, holderName);
         var locked = lockReason != null;
         // An Open case waits for Handle: the status menu offers nothing (Handle is the way out of Open), and only a supervisor
@@ -65,7 +73,8 @@ public class CaseService : ICaseService
             CanSupervise = CallerSupervises,
             AwaitingHandle = open,
             CanHandle = open && c.OwnerId == actorId,
-            AllowedStatuses = locked || open ? new() : CaseWorkflow.StatusChangesFrom(c.Status).Select(x => x.ToString()).ToList(),
+            // The configured manual moves from the status the case is in (Configurable Settings → Status → Allowed moves).
+            AllowedStatuses = locked || open ? new() : statuses.MovesFrom(c.EffectiveStatusKey).Select(d => d.Key).ToList(),
             CanResolve = !locked && CaseWorkflow.CanResolveFrom(c.Status) && (!open || CallerSupervises),
             CanEscalate = !locked && CaseWorkflow.CanEscalateFrom(c.Status),
             CanReopen = c.Status == CaseStatus.Resolved,
@@ -93,8 +102,11 @@ public class CaseService : ICaseService
         ICustomer360CustomerService? customer360 = null,
         ICustomerIdentifierProtector? customerIdentifiers = null,
         ICaseAccessScope? caseAccess = null,
-        ICurrentUserAccessor? currentUser = null)
+        ICurrentUserAccessor? currentUser = null,
+        Statuses.ICaseStatusCatalog? statusCatalog = null,
+        IEscalationExecutor? escalationExecutor = null)
     {
+        _statusCatalog = statusCatalog;
         _caseAccess = caseAccess;
         _currentUser = currentUser;
         _customer360 = customer360;
@@ -112,6 +124,7 @@ public class CaseService : ICaseService
         _fieldValidation = fieldValidation;
         _slaClockProvider = slaClockProvider;
         _escalation = escalation;
+        _escalationExecutor = escalationExecutor ?? new EscalationExecutor(context);
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<CaseService>.Instance;
         _mentions = mentions ?? new MentionService(context, notificationService, Microsoft.Extensions.Logging.Abstractions.NullLogger<MentionService>.Instance);
     }
@@ -437,7 +450,8 @@ public class CaseService : ICaseService
             if (_currentUser?.LocalUserId is { } me)
             {
                 var row = new Case { Id = caseDetail.Id, Status = ParseStatus(caseDetail.Status), OwnerId = caseDetail.OwnerId };
-                caseDetail.Workflow = WorkflowFor(row, me, caseDetail.OwnerName);
+                row.StatusKey = caseDetail.StatusKey;
+                caseDetail.Workflow = WorkflowFor(row, me, caseDetail.OwnerName, await StatusesAsync(ct));
             }
         }
         return caseDetail;
@@ -521,39 +535,56 @@ public class CaseService : ICaseService
         if (existingCase.Status == CaseStatus.Resolved)
             throw new InvalidOperationException("A resolved case cannot change status. Reopen it first.");
 
-        var newStatus = ParseStatus(dto.Status);
-        if (existingCase.Status == newStatus)
-            throw new InvalidOperationException($"Case is already {CaseWorkflow.Label(newStatus)}.");
+        // The status asked for, from the configured catalog (a system status or one an administrator added).
+        var statuses = await StatusesAsync();
+        var target = statuses.Find(dto.Status) ?? statuses.Find(ParseStatusOrNull(dto.Status)?.ToString())
+            ?? throw new InvalidOperationException($"'{dto.Status}' is not a valid case status.");
+        if (!target.IsActive)
+            throw new InvalidOperationException($"{target.Label} is no longer offered. Choose another status.");
+        var newStatus = target.IsSystem && Enum.TryParse<CaseStatus>(target.Key, out var systemStatus)
+            ? systemStatus : CaseStatusCategories.SystemStatusOf(target.Category);
+        var fromKey = existingCase.EffectiveStatusKey;
+        var fromDefinition = statuses.Find(fromKey);
+        var fromLabel = statuses.LabelOf(fromKey);
+        if (string.Equals(fromKey, target.Key, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"Case is already {target.Label}.");
 
         // Resolved and Escalated have their own workflows (a resolution, a recipient); Open is never returned to.
-        if (newStatus == CaseStatus.Resolved)
+        if (target.Category == CaseStatusCategories.Closed)
             throw new InvalidOperationException("Use the Resolve workflow to resolve a case.");
-        if (newStatus == CaseStatus.Escalated)
+        if (target.Category == CaseStatusCategories.Escalated)
             throw new InvalidOperationException("Use the Escalate workflow to escalate a case.");
+        if (target.Category == CaseStatusCategories.Open)
+            throw new InvalidOperationException($"A case that is {fromLabel} cannot be moved to {target.Label}: a case never returns to Open.");
 
         await EnsureNotLockedAsync(existingCase, dto.UserId);
 
-        if (!CaseWorkflow.CanChangeStatus(existingCase.Status, newStatus))
+        // Handle is the one way out of Open; every other move must be one the configuration allows.
+        if (!viaHandle && !statuses.CanMove(fromKey, target.Key))
         {
-            var allowed = CaseWorkflow.StatusChangesFrom(existingCase.Status).Select(CaseWorkflow.Label).ToList();
+            var allowed = statuses.MovesFrom(fromKey).Select(d => d.Label).ToList();
             throw new InvalidOperationException(
-                $"A case that is {CaseWorkflow.Label(existingCase.Status)} cannot be moved to {CaseWorkflow.Label(newStatus)}." +
+                $"A case that is {fromLabel} cannot be moved to {target.Label}." +
                 (allowed.Count > 0 ? $" It can be moved to: {string.Join(", ", allowed)}." : string.Empty));
         }
 
         var oldStatus = existingCase.Status;
+        var oldKey = existingCase.StatusKey;
 
-        // SLA clock: Waiting on Customer pauses it, leaving that status resumes it, and the first move to In Progress
-        // counts as the first response. The clock owns what each of those means for the due dates.
+        // SLA clock: entering a status whose SLA is paused pauses it, leaving for one where it runs resumes it (moving between
+        // two paused statuses keeps the one pause), and the first move to In Progress counts as the first response.
         var clock = await GetClockAsync();
         var transitionAt = DateTime.UtcNow;
+        var pausedBefore = fromDefinition != null ? fromDefinition.SlaBehaviour == SlaBehaviours.Paused : oldStatus == CaseStatus.WaitingOnCustomer;
+        var pausedAfter = target.SlaBehaviour == SlaBehaviours.Paused;
 
-        if (newStatus == CaseStatus.WaitingOnCustomer)
+        if (pausedAfter && !pausedBefore)
             clock.Pause(existingCase, transitionAt);
-        else if (oldStatus == CaseStatus.WaitingOnCustomer)
+        else if (pausedBefore && !pausedAfter)
             clock.Resume(existingCase, transitionAt);
 
         existingCase.Status = newStatus;
+        if (!target.IsSystem) existingCase.StatusKey = target.Key;
 
         if (newStatus == CaseStatus.InProgress)
             clock.RecordFirstResponse(existingCase, transitionAt);
@@ -563,23 +594,28 @@ public class CaseService : ICaseService
             CaseId = caseId,
             EventType = EventType.Update,
             ActionType = "STATUS_CHANGED",
-            OldValue = CaseWorkflow.Label(oldStatus),
-            NewValue = CaseWorkflow.Label(newStatus),
+            OldValue = fromLabel,
+            NewValue = target.Label,
             Message = string.IsNullOrWhiteSpace(dto.Note)
-                ? $"Status changed from {CaseWorkflow.Label(oldStatus)} to {CaseWorkflow.Label(newStatus)}"
-                : $"Status changed from {CaseWorkflow.Label(oldStatus)} to {CaseWorkflow.Label(newStatus)}. {dto.Note.Trim()}",
+                ? $"Status changed from {fromLabel} to {target.Label}"
+                : $"Status changed from {fromLabel} to {target.Label}. {dto.Note.Trim()}",
             CreatedAt = transitionAt,
             UserId = dto.UserId
         };
 
         await ExecuteInTransactionAsync(async () =>
         {
-            // Leaving Open is claimed in the database first: of two Handles at once, the second finds the case no longer Open.
-            if (oldStatus == CaseStatus.Open && _context.Database.IsRelational())
+            // The move is claimed in the database first, from the status this request read: of two changes at once (two Handles,
+            // or two people choosing different statuses), the second finds the case already moved and is refused, never applied
+            // on top of the first.
+            if (_context.Database.IsRelational())
             {
-                var claimed = await _context.Cases.Where(x => x.Id == caseId && x.Status == CaseStatus.Open)
-                    .ExecuteUpdateAsync(set => set.SetProperty(x => x.Status, newStatus));
-                if (claimed == 0) throw new CaseHandleException($"{existingCase.CaseNumber} was started by someone else a moment ago.");
+                var claimed = await _context.Cases.Where(x => x.Id == caseId && x.Status == oldStatus && x.StatusKey == oldKey)
+                    .ExecuteUpdateAsync(set => set.SetProperty(x => x.Status, newStatus).SetProperty(x => x.StatusKey, existingCase.StatusKey));
+                if (claimed == 0)
+                    throw oldStatus == CaseStatus.Open
+                        ? new CaseHandleException($"{existingCase.CaseNumber} was started by someone else a moment ago.")
+                        : new CaseHandleException($"{existingCase.CaseNumber} was just moved by someone else. Reload the case to see its status.");
             }
             await _caseRepository.UpdateAsync(existingCase);
             await _caseRepository.AddEventAsync(caseEvent);
@@ -591,10 +627,16 @@ public class CaseService : ICaseService
             {
                 await _notificationService.CreateNotificationAsync(
                     existingCase.OwnerId, "CASE_STATUS_CHANGED", "Case Status Updated",
-                    $"Case {existingCase.CaseNumber} is now {CaseWorkflow.Label(newStatus)}.", existingCase.Id, existingCase.CaseNumber);
+                    $"Case {existingCase.CaseNumber} is now {target.Label}.", existingCase.Id, existingCase.CaseNumber);
             }
             catch (Exception ex) { _logger.LogWarning(ex, "Notification Trigger Error"); }
         }
+    }
+
+    private static CaseStatus? ParseStatusOrNull(string? raw)
+    {
+        var text = (raw ?? string.Empty).Trim().Replace(" ", string.Empty).Replace("_", string.Empty);
+        return Enum.TryParse<CaseStatus>(text, true, out var status) && Enum.IsDefined(status) ? status : null;
     }
 
     private static CaseStatus ParseStatus(string? raw)
@@ -1359,9 +1401,9 @@ public class CaseService : ICaseService
     }
 
     /// <summary>
-    /// The levels above the case's current one and, for each, who may receive it — the people holding the level's role
-    /// (narrowed by team and department, never the caller or the holder). What the Escalate dialog offers; the escalation
-    /// itself checks the same list again.
+    /// Where this person may escalate the case by hand: the one level directly above both the case's level and their own (their
+    /// Host role's level), with the people its routing reaches. What the Escalate dialog offers; the escalation itself decides
+    /// the level again on the server and checks the same people.
     /// </summary>
     public async Task<EscalationOptionsDto> GetEscalationOptionsAsync(Guid caseId, Guid userId, CancellationToken ct = default)
     {
@@ -1369,13 +1411,15 @@ public class CaseService : ICaseService
             ?? throw new KeyNotFoundException("Case not found.");
         var escalation = _escalation ?? throw new InvalidOperationException("Escalation is not configured.");
         var policy = await escalation.GetPolicyAsync(ct);
-        var current = policy.ActiveLevels.FirstOrDefault(l => l.LevelNumber == c.EscalationLevel);
+        var callerRole = await _context.Users.AsNoTracking().Where(u => u.Id == userId).Select(u => u.Role).FirstOrDefaultAsync(ct);
+        var effective = policy.EffectiveLevel(c);
 
         var result = new EscalationOptionsDto
         {
             CaseId = c.Id,
-            CurrentLevel = c.EscalationLevel,
-            CurrentLevelName = c.EscalationLevel > 0 ? current?.Name ?? $"Level {c.EscalationLevel}" : "Not escalated",
+            CurrentLevel = effective,
+            CurrentLevelName = effective > 0 ? policy.NameOf(effective) : "Not escalated",
+            CallerLevelName = policy.LevelOfRole(callerRole)?.Name,
         };
 
         result.BlockedReason =
@@ -1383,41 +1427,68 @@ public class CaseService : ICaseService
             ?? (CaseWorkflow.CanEscalateFrom(c.Status) ? null
                 : c.Status == CaseStatus.Open
                     ? "Start work on the case (In Progress) before escalating it."
-                    : $"A case that is {CaseWorkflow.Label(c.Status)} cannot be escalated.");
+                    : $"A case that is {CaseWorkflow.Label(c.Status)} cannot be escalated.")
+            ?? MayEscalate(c, userId, policy, callerRole);
 
-        foreach (var level in escalation.LevelsAbove(c, policy))
+        var level = escalation.ManualTarget(c, policy, callerRole);
+        if (level != null)
         {
             var option = new EscalationLevelOptionDto
             {
                 LevelNumber = level.LevelNumber,
                 Name = level.Name,
-                Role = level.TargetRole,
+                Role = string.Join(", ", EscalationLevelRules.RoleNames(level)),
                 Trigger = EscalationTriggers.Describe(level.TriggerType, level.TriggerValue),
                 Description = level.ActionDescription,
+                Routing = level.RoutingStrategy,
             };
             try
             {
-                option.Recipients = (await escalation.RecipientsAsync(c, level, userId, ct)).Select(r => new EscalationRecipientDto
+                var target = await escalation.ResolveAsync(c, level, policy, userId, ct);
+                option.LevelNumber = target.Level.LevelNumber;
+                option.Name = target.Level.Name;
+                option.Role = string.Join(", ", EscalationLevelRules.RoleNames(target.Level));
+                option.FallbackNote = target.FallbackNote;
+                option.Recipients = target.Recipients.Select(r => new EscalationRecipientDto
                 {
                     UserId = r.User.Id, Name = r.User.Name, Email = r.User.Email, Role = r.User.Role, Scope = r.Scope,
                 }).ToList();
+                if (option.Recipients.Count == 0)
+                    option.RecipientsUnavailableMessage = target.FallbackNote ?? $"Nobody can receive {level.Name} for this case.";
             }
             catch (HostUsersException ex) { option.RecipientsUnavailableMessage = ex.Message; }
             result.Levels.Add(option);
         }
 
-        if (result.BlockedReason == null && result.Levels.Count == 0)
+        if (result.BlockedReason == null && level == null)
             result.BlockedReason = policy.ActiveLevels.Count == 0
                 ? "No complete escalation level is configured. An administrator sets them up under Escalation Maintenance."
-                : $"This case is at the highest escalation level ({result.CurrentLevelName}).";
+                : policy.Above(Math.Max(effective, policy.LevelOfRole(callerRole)?.LevelNumber ?? 0)) is { ManualAllowed: false } manualOff
+                    ? $"{manualOff.Name} is reached automatically only; it cannot be chosen by hand."
+                    : $"There is no escalation level above {(effective > 0 ? policy.NameOf(effective) : "this case's")} for you to escalate to.";
+        if (result.BlockedReason == null && result.Levels.All(l => l.Recipients.Count == 0))
+            result.BlockedReason = result.Levels.FirstOrDefault()?.RecipientsUnavailableMessage ?? "Nobody can receive this escalation.";
         result.CanEscalate = result.BlockedReason == null;
         return result;
     }
 
     /// <summary>
-    /// Manual escalation, following the same matrix as automatic escalation: the chosen level must be above the case's
-    /// current one, the recipient must hold that level's role and be offered for this case (<see cref="GetEscalationOptionsAsync"/>),
-    /// and nobody escalates to themselves. The recipient becomes the holder and the case becomes Escalated.
+    /// Only the person holding the case, a Supervisor, or someone whose role sits above the case's level may escalate it.
+    /// </summary>
+    private string? MayEscalate(Case c, Guid userId, EscalationPolicy policy, string? callerRole)
+    {
+        if (c.OwnerId == userId || CallerSupervises) return null;
+        var callerLevel = policy.LevelOfRole(callerRole)?.LevelNumber ?? 0;
+        return callerLevel > policy.EffectiveLevel(c)
+            ? null
+            : "Only the person holding the case, someone senior to them in the escalation hierarchy, or a Supervisor can escalate it.";
+    }
+
+    /// <summary>
+    /// Manual escalation, following the hierarchy: the level is the one directly above both the case's level and the caller's
+    /// own (a level sent by the client is never trusted), the recipient must be one the level's routing offers for this case,
+    /// and nobody escalates to themselves. The recipient becomes the holder and the case becomes Escalated. Two escalations at
+    /// once: the second is refused.
     /// </summary>
     public async Task EscalateCaseAsync(Guid caseId, EscalateCaseDto dto, Guid userId)
     {
@@ -1445,61 +1516,43 @@ public class CaseService : ICaseService
 
         var escalation = _escalation ?? throw new InvalidOperationException("Escalation is not configured.");
         var policy = await escalation.GetPolicyAsync();
-        var above = escalation.LevelsAbove(existingCase, policy);
-        if (above.Count == 0)
-            throw new InvalidOperationException(policy.ActiveLevels.Count == 0
+        var currentUser = await _context.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId);
+        if (MayEscalate(existingCase, userId, policy, currentUser?.Role) is { } refusal) throw new InvalidOperationException(refusal);
+
+        var level = escalation.ManualTarget(existingCase, policy, currentUser?.Role)
+            ?? throw new InvalidOperationException(policy.ActiveLevels.Count == 0
                 ? "No complete escalation level is configured."
-                : "Case has reached the maximum escalation level and cannot be escalated further.");
+                : "There is no escalation level above this case's (and yours) that can be chosen by hand.");
+        if (dto.LevelNumber.HasValue && dto.LevelNumber.Value != level.LevelNumber)
+            throw new ArgumentException($"This case can only be escalated to the next level ({level.Name}).");
 
-        var level = dto.LevelNumber.HasValue ? above.FirstOrDefault(l => l.LevelNumber == dto.LevelNumber.Value) : above[0];
-        if (level == null)
-            throw new ArgumentException($"Level {dto.LevelNumber} is not a level this case can be escalated to.");
-
-        var recipients = await escalation.RecipientsAsync(existingCase, level, userId);
-        var target = recipients.FirstOrDefault(r => r.User.Id == dto.TargetUserId.Value)?.User
-            ?? throw new ArgumentException($"The chosen person cannot receive {level.Name} on this case. Choose someone holding the role '{level.TargetRole}'.");
-
-        var previousOwnerName = existingCase.Owner?.Name ?? "the previous holder";
-        var previousLevel = existingCase.EscalationLevel;
-        var now = DateTime.UtcNow;
+        var target = await escalation.ResolveAsync(existingCase, level, policy, userId);
+        var chosen = target.Recipients.FirstOrDefault(r => r.User.Id == dto.TargetUserId.Value)
+            ?? throw new ArgumentException($"The chosen person cannot receive {target.Level.Name} on this case. Choose one of the people offered.");
 
         // Escalating ends a pause: the case is now an active escalation, not waiting on the customer.
-        (await GetClockAsync()).Resume(existingCase, now);
-        existingCase.OwnerId = target.Id;
-        existingCase.EscalationLevel = level.LevelNumber;
-        existingCase.Status = CaseStatus.Escalated;
+        (await GetClockAsync()).Resume(existingCase, DateTime.UtcNow);
 
-        var noteText = !string.IsNullOrWhiteSpace(dto.Note) ? $" Note: {dto.Note.Trim()}" : "";
-        var currentUser = await _context.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId);
-        var caseEvent = new CaseEvent
-        {
-            CaseId = caseId,
-            EventType = EventType.Escalate,
-            ActionType = "MANUAL_ESCALATION",
-            OldValue = $"{previousOwnerName} · {(previousLevel > 0 ? $"Level {previousLevel}" : "Not escalated")}",
-            NewValue = $"{target.Name} · {level.Name}",
-            Message = $"[Manual Escalation] Case escalated to {level.Name} ({level.TargetRole}: {target.Name}) from {previousOwnerName} by {currentUser?.Name ?? "a user"}. Reason: {reason.Text}.{noteText}",
-            CreatedAt = now,
-            UserId = userId
-        };
+        await _escalationExecutor.ApplyAsync(existingCase, new EscalationCommand(
+            EscalationTypes.Manual, target with { Recipients = [chosen] }, NewOwnerId: chosen.User.Id, ReasonText: reason.Text,
+            Comment: dto.Note, ActorUserId: userId, ActorName: currentUser?.Name, ActorExternalId: currentUser?.ExternalUserId));
+    }
 
-        await ExecuteInTransactionAsync(async () =>
+    /// <summary>The case's escalations, newest first (the escalation history).</summary>
+    public async Task<List<CaseEscalationDto>> GetEscalationHistoryAsync(Guid caseId, CancellationToken ct = default)
+    {
+        var rows = await _context.CaseEscalations.AsNoTracking().Where(e => e.CaseId == caseId)
+            .OrderByDescending(e => e.CreatedAt).ToListAsync(ct);
+        var people = rows.SelectMany(r => new[] { r.FromOwnerId, r.ToOwnerId, r.ActorUserId }).OfType<Guid>().Distinct().ToList();
+        var names = await _context.Users.AsNoTracking().Where(u => people.Contains(u.Id)).ToDictionaryAsync(u => u.Id, u => u.Name, ct);
+        string? Name(Guid? id) => id is { } g && names.TryGetValue(g, out var n) ? n : null;
+        return rows.Select(r => new CaseEscalationDto
         {
-            await _context.SaveChangesAsync();
-            await _caseRepository.AddEventAsync(caseEvent);
-        });
-
-        try
-        {
-            await _notificationService.CreateNotificationAsync(
-                target.Id, "CASE_ESCALATED", $"Case Escalated ({level.Name})",
-                $"Case {existingCase.CaseNumber} has been escalated to you by {currentUser?.Name ?? "a user"}. Reason: {reason.Text}",
-                existingCase.Id, existingCase.CaseNumber, level.NotificationPriority);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Escalate Notification Error");
-        }
+            Id = r.Id, Type = r.Type, FromLevel = r.FromLevel, ToLevel = r.ToLevel, ToLevelName = r.ToLevelName, Trigger = r.Trigger,
+            SlaConsumedPercent = r.SlaConsumedPercent, Reason = r.ReasonText, Comment = r.Comment, FromOwner = Name(r.FromOwnerId),
+            ToOwner = Name(r.ToOwnerId), Recipients = r.RecipientNames, FallbackNote = r.FallbackNote,
+            Actor = r.ActorUserId == null ? "System (SLA monitor)" : Name(r.ActorUserId), CreatedAt = r.CreatedAt,
+        }).ToList();
     }
 
     public async Task<EscalationMatrixResponseDto> GetEscalationMatrixConfigAsync(Guid? caseId = null, CancellationToken ct = default)
@@ -1508,20 +1561,20 @@ public class CaseService : ICaseService
 
         var escalation = _escalation ?? throw new InvalidOperationException("Escalation is not configured.");
         var policy = await escalation.GetPolicyAsync(ct);
-        var next = c != null ? escalation.LevelsAbove(c, policy).FirstOrDefault() : null;
+        var next = c != null ? policy.Above(policy.EffectiveLevel(c)) : null;
 
         return new EscalationMatrixResponseDto
         {
             Title = "Escalation Matrix",
-            Subtitle = "Levels are reached automatically at their SLA consumption threshold (notification only) or by manual escalation to a person holding the level's role.",
-            CurrentLevel = c?.EscalationLevel ?? 0,
+            Subtitle = "A case moves up one level at a time: automatically when the next level's trigger is met, or by hand to the level directly above.",
+            CurrentLevel = c != null ? policy.EffectiveLevel(c) : 0,
             NextLevel = next?.LevelNumber,
-            NextTargetRole = next?.TargetRole,
+            NextTargetRole = next == null ? null : string.Join(", ", EscalationLevelRules.RoleNames(next)),
             Levels = policy.ActiveLevels.Select(l => new EscalationMatrixLevelDto
             {
                 Level = l.LevelNumber,
                 Name = l.Name,
-                Role = l.TargetRole,
+                Role = string.Join(", ", EscalationLevelRules.RoleNames(l)),
                 Trigger = EscalationTriggers.Describe(l.TriggerType, l.TriggerValue),
                 Action = l.ActionDescription,
             }).ToList()
@@ -1568,7 +1621,10 @@ public class CaseService : ICaseService
                 CreatedAt = e.CreatedAt,
                 UserName = e.User != null ? e.User.Name : string.Empty,
                 IsInternal = e.IsInternal,
-                Channel = e.Channel
+                Channel = e.Channel,
+                ActionType = e.ActionType,
+                InboundEmailId = e.InboundEmailId,
+                MeetingId = e.MeetingId,
             })
             .ToListAsync(ct);
         // A background worker's event names a person only because an event must: show it as the system's.
@@ -1723,10 +1779,12 @@ public class CaseService : ICaseService
                 errors.Add(new FieldError("subCategory", $"Sub-category '{subCategoryInput}' is invalid for department '{department.Name}'."));
         }
 
-        // Email cases keep to email: a case whose source is Email is answered by email, whatever the form sent, and email needs
-        // an address. The address is kept on the case, so a reply never depends on a customer record having one.
+        // A case whose source is Email is answered by email unless the agent chose another preferred channel (the form
+        // starts from Email and leaves it editable). Email needs an address, kept on the case so a reply never depends on a
+        // customer record having one.
         var sourceInput = !string.IsNullOrWhiteSpace(dto.SourceChannel) ? dto.SourceChannel : dto.CommunicationChannel;
-        var preferred = IsEmailChannel(sourceInput) ? "Email" : dto.PreferredCommunicationChannel;
+        var preferred = !string.IsNullOrWhiteSpace(dto.PreferredCommunicationChannel) ? dto.PreferredCommunicationChannel
+            : IsEmailChannel(sourceInput) ? "Email" : dto.PreferredCommunicationChannel;
         var contactEmail = string.IsNullOrWhiteSpace(dto.ContactEmail) ? null : dto.ContactEmail.Trim().ToLowerInvariant();
         if (contactEmail != null && !IsValidEmail(contactEmail))
             errors.Add(new FieldError("contactEmail", "Enter a valid email address, e.g. name@company.com."));

@@ -28,7 +28,30 @@ public class EscalationOptionsDto
     public bool CanEscalate { get; set; }
     /// <summary>Why the case cannot be escalated now (status, lock, no level above).</summary>
     public string? BlockedReason { get; set; }
+    /// <summary>The caller's own level in the hierarchy (from their Host role), when they have one.</summary>
+    public string? CallerLevelName { get; set; }
+    /// <summary>The one level this person may escalate to (empty when they cannot).</summary>
     public List<EscalationLevelOptionDto> Levels { get; set; } = new();
+}
+
+/// <summary>One escalation of a case, as the history shows it.</summary>
+public class CaseEscalationDto
+{
+    public Guid Id { get; set; }
+    public string Type { get; set; } = string.Empty;
+    public int FromLevel { get; set; }
+    public int ToLevel { get; set; }
+    public string ToLevelName { get; set; } = string.Empty;
+    public string? Trigger { get; set; }
+    public decimal? SlaConsumedPercent { get; set; }
+    public string Reason { get; set; } = string.Empty;
+    public string? Comment { get; set; }
+    public string? FromOwner { get; set; }
+    public string? ToOwner { get; set; }
+    public string Recipients { get; set; } = string.Empty;
+    public string? FallbackNote { get; set; }
+    public string? Actor { get; set; }
+    public DateTime CreatedAt { get; set; }
 }
 
 public class EscalationLevelOptionDto
@@ -39,7 +62,11 @@ public class EscalationLevelOptionDto
     public string Trigger { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
     public List<EscalationRecipientDto> Recipients { get; set; } = new();
-    /// <summary>Set when the people holding the role could not be read from OmniConnect.</summary>
+    /// <summary><see cref="Models.EscalationRouting"/> of the level.</summary>
+    public string Routing { get; set; } = string.Empty;
+    /// <summary>Set when the level had nobody and its fallback chose instead (e.g. the level above).</summary>
+    public string? FallbackNote { get; set; }
+    /// <summary>Set when the people holding the role could not be read from OmniConnect, or nobody can receive the case.</summary>
     public string? RecipientsUnavailableMessage { get; set; }
 }
 
@@ -159,6 +186,7 @@ public class BulkCaseRowDto
     public string CaseNumber { get; set; } = string.Empty;
     public string Title { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
+    public string? StatusKey { get; set; }
     public string Priority { get; set; } = string.Empty;
     public Guid? DepartmentId { get; set; }
     public string? DepartmentName { get; set; }

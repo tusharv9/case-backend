@@ -47,7 +47,8 @@ public class HostIntegrationOptions
 
     /// <summary>
     /// Role (as it appears in the Host's role claim, matched case-insensitively and EXACTLY) → permissions.
-    /// "*" grants everything. When empty, <see cref="Permissions.DefaultRolePermissions"/> applies.
+    /// "*" grants everything. Empty by default, and should stay empty: the Host's Roles &amp; Permissions is the source of
+    /// what a role may do. Nothing is granted by a role's name unless this is configured explicitly.
     /// </summary>
     public Dictionary<string, string[]> RolePermissions { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 

@@ -214,6 +214,7 @@ if (string.IsNullOrWhiteSpace(connectionString))
 
 builder.Services.AddSingleton<IConfigCache, ConfigCache>();
 builder.Services.AddSingleton<ConfigChangeInterceptor>();
+builder.Services.AddSingleton<CaseAuditInterceptor>();
 
 // Pooled contexts, handed out two ways: one per request (the usual AppDbContext), and on demand through
 // IDbContextFactory for work that runs independent queries side by side (the dashboard), each on its own
@@ -227,7 +228,8 @@ builder.Services.AddPooledDbContextFactory<AppDbContext>((serviceProvider, optio
             npgsqlOptions.EnableRetryOnFailure(maxRetryCount: 5, maxRetryDelay: TimeSpan.FromSeconds(10), errorCodesToAdd: null);
         })
         // Any save of configuration data clears the configuration cache (see ConfigChangeInterceptor).
-        .AddInterceptors(serviceProvider.GetRequiredService<ConfigChangeInterceptor>()));
+        // …and every new timeline / audit event gets its central audit copy in the same save (CaseAuditInterceptor).
+        .AddInterceptors(serviceProvider.GetRequiredService<ConfigChangeInterceptor>(), serviceProvider.GetRequiredService<CaseAuditInterceptor>()));
 builder.Services.AddScoped(sp => sp.GetRequiredService<IDbContextFactory<AppDbContext>>().CreateDbContext());
 
 // ---- Host App integration -------------------------------------------------------------------
@@ -324,6 +326,12 @@ builder.Services.AddScoped<IConfigurableSettingsRepository, ConfigurableSettings
 // Register Services
 builder.Services.AddScoped<ICaseService, CaseService>();
 builder.Services.AddScoped<ICaseAccessScope, CaseAccessScope>();
+builder.Services.AddScoped<ICaseAudience, CaseAudience>();
+builder.Services.AddScoped<PauseLimitService>();
+builder.Services.AddScoped<CaseManagement.Api.Services.Calendar.ICaseCalendarService, CaseManagement.Api.Services.Calendar.CaseCalendarService>();
+builder.Services.AddScoped<CaseManagement.Api.Services.Meetings.ICaseMeetingService, CaseManagement.Api.Services.Meetings.CaseMeetingService>();
+builder.Services.AddScoped<CaseManagement.Api.Services.Statuses.ICaseStatusCatalog, CaseManagement.Api.Services.Statuses.CaseStatusCatalog>();
+builder.Services.AddScoped<CaseManagement.Api.Services.Statuses.ICaseStatusAdminService, CaseManagement.Api.Services.Statuses.CaseStatusAdminService>();
 builder.Services.AddScoped<IMailboxAccessScope, MailboxAccessScope>();
 
 // The Host's user directory, read with the caller's token, for choosing team members (HostIntegration/HostUsers.cs).
@@ -353,11 +361,22 @@ builder.Services.AddScoped<CaseManagement.Api.Services.Customer360.ICustomer360C
 builder.Services.AddScoped<CaseManagement.Api.Services.Customer360.ICaseCustomerNames, CaseManagement.Api.Services.Customer360.CaseCustomerNames>();
 builder.Services.AddSingleton<CaseManagement.Api.Services.Customer360.ICustomer360Handoff, CaseManagement.Api.Services.Customer360.Customer360Handoff>();
 builder.Services.AddScoped<ICustomerService, CustomerService>();
-// Notifications are delivered by OmniConnect's central system (AuthService): events are queued and sent in the background.
-builder.Services.AddHttpClient<CaseManagement.Api.Services.Notifications.HostNotificationsClient>(http => http.Timeout = TimeSpan.FromSeconds(15));
-builder.Services.AddSingleton<CaseManagement.Api.Services.Notifications.CaseNotificationDispatcher>();
-builder.Services.AddSingleton<CaseManagement.Api.Services.Notifications.ICaseNotificationSink>(sp => sp.GetRequiredService<CaseManagement.Api.Services.Notifications.CaseNotificationDispatcher>());
-builder.Services.AddHostedService(sp => sp.GetRequiredService<CaseManagement.Api.Services.Notifications.CaseNotificationDispatcher>());
+// Notifications and the central audit copy leave through this service's outbox (OmniConnect.Outbox, table OutboxMessages):
+// written with the change (or right after it), then delivered by the platform's dispatcher to the Notification Service
+// (NotificationService__BaseUrl) and the Audit Service (AuditService__BaseUrl) until they answer. The key presented is this
+// service's own (AuthService__InternalApiKey unless set per service). See docs/NOTIFICATION-AND-AUDIT-SERVICES.md.
+// Two outbox tables, each with its own dispatcher: AuditOutboxMessages (AppDbContext; every new timeline event's central copy,
+// saved with it) and NotificationOutboxMessages (NotificationOutboxDbContext, same database; notifications).
+builder.Services.AddDbContextFactory<NotificationOutboxDbContext>(options => options.UseNpgsql(connectionString, npgsqlOptions =>
+{
+    npgsqlOptions.CommandTimeout(90);
+    npgsqlOptions.EnableRetryOnFailure(maxRetryCount: 5, maxRetryDelay: TimeSpan.FromSeconds(10), errorCodesToAdd: null);
+}));
+OmniConnect.Outbox.OutboxServiceCollectionExtensions.AddOutbox<AppDbContext>(builder.Services, runDispatcher: !MigrationMode.IsRequested(args));
+OmniConnect.Outbox.OutboxServiceCollectionExtensions.AddOutbox<NotificationOutboxDbContext>(builder.Services, runDispatcher: !MigrationMode.IsRequested(args));
+OmniConnect.Outbox.OutboxServiceCollectionExtensions.AddPlatformOutboxRoutes(builder.Services);
+builder.Services.AddScoped<CaseManagement.Api.Services.Notifications.NotificationOutboxStore>();
+builder.Services.AddScoped<CaseManagement.Api.Services.Notifications.ICaseNotificationSink, CaseManagement.Api.Services.Notifications.OutboxNotificationSink>();
 builder.Services.AddScoped<INotificationService, NotificationService>();
 // Live changes (an agent's status) pushed to every open Case Management tab: GET /api/live.
 builder.Services.AddSingleton<ILiveEvents, LiveEvents>();
@@ -370,6 +389,7 @@ builder.Services.AddScoped<IIdFormatService, IdFormatService>();
 builder.Services.AddScoped<IFieldTypeChangeChecker, FieldTypeChangeChecker>();
 builder.Services.AddScoped<IBusinessTimeService, BusinessTimeService>();
 builder.Services.AddScoped<IEscalationService, EscalationService>();
+builder.Services.AddScoped<IEscalationExecutor, EscalationExecutor>();
 builder.Services.AddScoped<ISlaClockProvider, SlaClockProvider>();
 builder.Services.AddScoped<CaseManagement.Api.Services.Tickets.TicketSlaMonitor>();
 builder.Services.AddScoped<CaseManagement.Api.Services.EmailIntake.ReviewSlaMonitor>();
@@ -386,7 +406,14 @@ builder.Services.Configure<TeamMonitoringOptions>(builder.Configuration.GetSecti
 builder.Services.AddScoped<IAssignmentStrategy, RoundRobinAssignmentStrategy>();
 builder.Services.AddScoped<IAssignmentStrategy, LeastOccupancyAssignmentStrategy>();
 builder.Services.Configure<CaseManagement.Api.Configuration.NotificationOptions>(builder.Configuration.GetSection(CaseManagement.Api.Configuration.NotificationOptions.SectionName));
-builder.Services.AddSingleton<IAttachmentStore, LocalDiskAttachmentStore>();
+// Files live in the shared database by default (any server can open them); "LocalDisk" keeps the old per-server folder.
+builder.Services.AddSingleton<LocalDiskAttachmentStore>();
+if (string.Equals(builder.Configuration["Attachments:Store"], "LocalDisk", StringComparison.OrdinalIgnoreCase))
+    builder.Services.AddSingleton<IAttachmentStore>(sp => sp.GetRequiredService<LocalDiskAttachmentStore>());
+else
+    builder.Services.AddSingleton<IAttachmentStore, DatabaseAttachmentStore>();
+builder.Services.AddHostedService<LocalFileImporter>();
+builder.Services.AddScoped<CaseManagement.Api.Services.EmailIntake.IEmailBodyRenderer, CaseManagement.Api.Services.EmailIntake.EmailBodyRenderer>();
 builder.Services.AddScoped<IAttachmentService, AttachmentService>();
 builder.Services.AddScoped<IMentionService, MentionService>();
 builder.Services.AddScoped<ICaseCollaborationService, CaseCollaborationService>();

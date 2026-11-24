@@ -76,7 +76,8 @@ public class CaseLifecycleTests : IDisposable
     private static EscalationLevelConfig Level(int n, string role, decimal pct) => new()
     {
         LevelNumber = n, Name = $"Level {n}", AssignmentType = "Role", TargetRole = role, TriggerType = "SlaPercentage", TriggerValue = pct,
-        ActionDescription = $"Escalate to {role}", NotifyRoleHolders = true, NotificationPriority = "High", IsActive = true,
+        ActionDescription = $"Escalate to {role}", IsActive = true, RoutingStrategy = EscalationRouting.Team,
+        FallbackPolicy = n == 3 ? EscalationFallbacks.Administrators : EscalationFallbacks.NextLevel,
     };
 
     private Case AddCase(CaseStatus status, Guid ownerId, int level = 0, Guid? teamId = null)
@@ -107,7 +108,8 @@ public class CaseLifecycleTests : IDisposable
         new(new CaseRepository(db), new Mock<INotificationService>().Object, new Mock<IConfigurableSettingsService>().Object, db,
             new Mock<IWebHostEnvironment>().Object,
             escalation: new EscalationService(db, new ConfigCache(new MemoryCache(new MemoryCacheOptions())), new FakeOrgDirectory(db)),
-            currentUser: new Caller(callerId, permissions));
+            currentUser: new Caller(callerId, permissions),
+            escalationExecutor: new EscalationExecutor(db, notifications: TestNotificationOutbox.Store(db)));
 
     private CaseCollaborationService Collaboration()
     {
@@ -205,18 +207,65 @@ public class CaseLifecycleTests : IDisposable
     // ------------------------------------------------------------------------------------------------ manual escalation
 
     [Fact]
-    public async Task Escalation_offers_only_holders_of_the_levels_role_and_never_the_caller()
+    public async Task An_agent_may_escalate_only_to_the_next_level_and_it_reaches_the_case_teams_lead()
+    {
+        var c = AddCase(CaseStatus.InProgress, agent.Id);
+
+        var options = await Cases(agent.Id).GetEscalationOptionsAsync(c.Id, agent.Id);
+
+        Assert.True(options.CanEscalate);
+        Assert.Equal(new[] { 1 }, options.Levels.Select(l => l.LevelNumber));
+        Assert.Equal(new[] { (lead.Id, "CaseTeam") }, options.Levels[0].Recipients.Select(r => (r.UserId, r.Scope)));   // not Loans' lead
+    }
+
+    [Fact]
+    public async Task A_team_lead_escalates_to_the_level_above_their_own()
     {
         var c = AddCase(CaseStatus.InProgress, agent.Id);
 
         var options = await Cases(lead.Id).GetEscalationOptionsAsync(c.Id, lead.Id);
 
-        Assert.True(options.CanEscalate);
-        Assert.Equal(new[] { 1, 2, 3 }, options.Levels.Select(l => l.LevelNumber));
-        // The case team's only Team Lead is the caller, so Level 1 falls back to the role's other holders.
-        Assert.Equal(new[] { (otherLead.Id, "Role") }, options.Levels[0].Recipients.Select(r => (r.UserId, r.Scope)));
-        Assert.Equal(new[] { holder.Id }, options.Levels[1].Recipients.Select(r => r.UserId));    // Manager
-        Assert.Equal(new[] { supervisor.Id }, options.Levels[2].Recipients.Select(r => r.UserId));
+        Assert.Equal("Level 1", options.CallerLevelName);
+        Assert.Equal(new[] { 2 }, options.Levels.Select(l => l.LevelNumber));
+        Assert.Equal(new[] { holder.Id }, options.Levels[0].Recipients.Select(r => r.UserId));    // the Manager in the case's team
+    }
+
+    [Fact]
+    public async Task Skipping_a_level_through_the_API_is_refused()
+    {
+        var c = AddCase(CaseStatus.InProgress, agent.Id);
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(() => Cases(agent.Id).EscalateCaseAsync(c.Id,
+            new EscalateCaseDto { LevelNumber = 3, TargetUserId = supervisor.Id, Reason = "Complex" }, agent.Id));
+
+        Assert.Contains("only be escalated to the next level (Level 1)", ex.Message);
+    }
+
+    [Fact]
+    public async Task Someone_neither_holding_the_case_nor_senior_to_it_cannot_escalate_it()
+    {
+        var c = AddCase(CaseStatus.InProgress, agent.Id);
+
+        var options = await Cases(outsider.Id).GetEscalationOptionsAsync(c.Id, outsider.Id);
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => Cases(outsider.Id).EscalateCaseAsync(c.Id,
+            new EscalateCaseDto { TargetUserId = lead.Id, Reason = "Complex" }, outsider.Id));
+
+        Assert.False(options.CanEscalate);
+        Assert.Contains("Only the person holding the case", ex.Message);
+    }
+
+    [Fact]
+    public async Task A_level_with_nobody_in_the_case_team_goes_up_to_the_next_level()
+    {
+        var c = AddCase(CaseStatus.InProgress, agent.Id);
+        db.Teams.Single(t => t.Id == team.Id).OwnerId = null;   // Cards has no team lead
+        await db.SaveChangesAsync();
+
+        var options = await Cases(agent.Id).GetEscalationOptionsAsync(c.Id, agent.Id);
+
+        Assert.Equal(2, options.Levels.Single().LevelNumber);
+        Assert.Equal(new[] { holder.Id }, options.Levels[0].Recipients.Select(r => r.UserId));
+        Assert.Contains("Level 1 had nobody", options.Levels[0].FallbackNote);
     }
 
     [Fact]
@@ -236,7 +285,7 @@ public class CaseLifecycleTests : IDisposable
         var c = AddCase(CaseStatus.InProgress, agent.Id);
 
         await Assert.ThrowsAsync<ArgumentException>(() => Cases(agent.Id).EscalateCaseAsync(c.Id,
-            new EscalateCaseDto { LevelNumber = 2, TargetUserId = supervisor.Id, Reason = "Complex" }, agent.Id));
+            new EscalateCaseDto { LevelNumber = 1, TargetUserId = supervisor.Id, Reason = "Complex" }, agent.Id));
     }
 
     [Fact]
@@ -253,16 +302,24 @@ public class CaseLifecycleTests : IDisposable
     {
         var c = AddCase(CaseStatus.WaitingOnCustomer, agent.Id);
 
-        await Cases(agent.Id).EscalateCaseAsync(c.Id, new EscalateCaseDto { LevelNumber = 2, TargetUserId = holder.Id, Reason = "Complex" }, agent.Id);
+        await Cases(agent.Id).EscalateCaseAsync(c.Id, new EscalateCaseDto { LevelNumber = 1, TargetUserId = lead.Id, Reason = "Complex", Note = "Customer is upset" }, agent.Id);
 
         var after = await db.Cases.AsNoTracking().FirstAsync(x => x.Id == c.Id);
-        Assert.Equal(holder.Id, after.OwnerId);
-        Assert.Equal(2, after.EscalationLevel);
+        Assert.Equal(lead.Id, after.OwnerId);
+        Assert.Equal(1, after.EscalationLevel);
         Assert.Equal(CaseStatus.Escalated, after.Status);
         Assert.Null(after.SlaPausedAt);
         var audit = await db.CaseEvents.SingleAsync(e => e.CaseId == c.Id && e.ActionType == "MANUAL_ESCALATION");
         Assert.Equal(agent.Id, audit.UserId);
         Assert.Contains("Reason: Complex", audit.Message);
+        var history = await db.CaseEscalations.SingleAsync(e => e.CaseId == c.Id);
+        Assert.Equal((EscalationTypes.Manual, 0, 1, (Guid?)agent.Id, (Guid?)lead.Id, "Customer is upset"),
+            (history.Type, history.FromLevel, history.ToLevel, history.FromOwnerId, history.ToOwnerId, history.Comment));
+        Assert.Equal(audit.Id, history.CaseEventId);
+        var told = TestNotificationOutbox.Sent(db).Single();
+        Assert.Empty(db.OutboxMessages.Where(m => m.Topic == OmniConnect.Outbox.OutboxTopics.Notification));   // notifications have their own table
+        Assert.Equal(("remote.casemanagement.cases:" + CaseManagement.Api.Services.Notifications.CaseNotificationKinds.Escalated, Guid.Parse(lead.ExternalUserId!), "Complex"),
+            (told.Kind, told.SubjectUserIds!.Single(), told.Values!["reason"]));
     }
 
     // ------------------------------------------------------------------------------------------------ collaboration and swarm

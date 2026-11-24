@@ -1,9 +1,9 @@
 namespace CaseManagement.Api.HostIntegration;
 
 /// <summary>
-/// The permissions Case Management enforces. The Host App decides which of its roles carry which
-/// permissions (via claims or <see cref="HostIntegrationOptions.RolePermissions"/>); this class is the
-/// vocabulary shared with the Host team.
+/// The permissions Case Management enforces. The Host decides which of its roles carry which permissions (Roles &amp;
+/// Permissions, read live from AuthService and translated by <see cref="HostPermissionCatalog"/>); this class is only the
+/// vocabulary. No role name appears anywhere in this service: a role called "Admin" or "Agent" grants nothing by its name.
 /// </summary>
 public static class Permissions
 {
@@ -28,10 +28,16 @@ public static class Permissions
     public const string CasesAssign = "cases.assign";
 
     /// <summary>
-    /// See every team's cases. Without it a person sees the cases they hold or take part in, and those of the teams
-    /// they lead or are an active member of (<see cref="ICaseAccessScope"/>).
+    /// See every team's cases. Without it a person sees the cases they hold or collaborate on, plus — with
+    /// <see cref="CasesViewTeam"/> — those of the teams they lead (<see cref="ICaseAccessScope"/>).
     /// </summary>
     public const string CasesViewAll = "cases.viewall";
+
+    /// <summary>
+    /// See the cases of the teams the person leads. Leading a team (Team Management) is not enough on its own: the Host
+    /// must also grant <c>cases:ViewTeam</c>, so who sees a team's cases is decided in the Host, not by the team structure.
+    /// </summary>
+    public const string CasesViewTeam = "cases.viewteam";
 
     /// <summary>
     /// Supervise cases: bulk reassign and bulk resolve, act on an escalated case someone else holds, and be offered as a
@@ -77,21 +83,8 @@ public static class Permissions
 
     public static readonly string[] All =
     {
-        CasesRead, CasesCreate, CasesWrite, CasesTransfer, CasesResolve, CasesAssign, CasesViewAll, CasesSupervise, CustomersRead, CustomersWrite, ConfigManage,
+        CasesRead, CasesCreate, CasesWrite, CasesTransfer, CasesResolve, CasesAssign, CasesViewAll, CasesViewTeam, CasesSupervise, CustomersRead, CustomersWrite, ConfigManage,
         TeamsManage, MonitoringView, MonitoringNudge, AuditView, EmailInboxView, EmailManage, TicketsView, TicketsAssign,
         TicketsViewAll, PiiUnmask
     };
-
-    /// <summary>
-    /// Placeholder role mapping used until the Host team confirms its roles. Replace through
-    /// configuration (HostIntegration:RolePermissions); nothing in code needs to change.
-    /// </summary>
-    public static readonly IReadOnlyDictionary<string, string[]> DefaultRolePermissions =
-        new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["Agent"] = new[] { CasesRead, CasesCreate, CasesWrite, CasesResolve, CustomersRead, CustomersWrite },
-            ["Team Lead"] = new[] { CasesRead, CasesCreate, CasesWrite, CasesTransfer, CasesResolve, CasesAssign, CustomersRead, CustomersWrite, MonitoringView, MonitoringNudge, AuditView },
-            ["Supervisor"] = new[] { CasesRead, CasesCreate, CasesWrite, CasesTransfer, CasesResolve, CasesAssign, CasesViewAll, CasesSupervise, CustomersRead, CustomersWrite, MonitoringView, MonitoringNudge, AuditView, TeamsManage },
-            ["Admin"] = new[] { Everything, PiiUnmask }
-        };
 }
