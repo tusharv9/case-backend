@@ -20,7 +20,7 @@ public class EmailCaseAssignmentTests : IDisposable
 {
     private readonly AppDbContext db;
     private readonly User lead = new() { Name = "Lena Lead", Email = "lena@x.test", IsActive = true, Status = UserStatus.Available, CreatedAt = DateTime.UtcNow };
-    private readonly User agent = new() { Name = "Arun Agent", Email = "arun@x.test", IsActive = true, Status = UserStatus.Available, CreatedAt = DateTime.UtcNow };
+    private readonly User agent = new() { Name = "Arun Agent", Email = "arun@x.test", IsActive = true, Status = UserStatus.Available, LastSeenAt = DateTime.UtcNow, CreatedAt = DateTime.UtcNow };   // has Case Management open
     private readonly Team team;
 
     public EmailCaseAssignmentTests()

@@ -49,7 +49,7 @@ public sealed class EmailIntakeAdminService(AppDbContext db, IMailboxSecretProte
         Guid? organisationId = null)
     {
         page = Math.Max(1, page);
-        pageSize = Math.Clamp(pageSize, 1, 100);
+        pageSize = Math.Clamp(pageSize, 1, Paging.MaxPageSize);
         var query = Filter(VisibleEmails(), filter);
         if (mailboxId is { } mb) query = query.Where(e => e.MailboxId == mb);
         if (organisationId is { } org) query = query.Where(e => e.OrganisationId == org);

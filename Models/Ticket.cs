@@ -80,6 +80,14 @@ public class Ticket : AuditableEntity
     /// <summary>"Met" or "Breached", set when the ticket is assigned or closed (null without a target).</summary>
     public string? SlaOutcome { get; set; }
 
+    /// <summary>
+    /// Who is working on the ticket right now (its Assign or Close form is open), until <see cref="ClaimedUntil"/>. Others see it as
+    /// being processed and cannot assign or close it; the claim lapses on its own (a closed browser never locks a ticket), is
+    /// extended while the form stays open, and a Supervisor may take it over. The version check stays the final authority.
+    /// </summary>
+    public Guid? ClaimedById { get; set; }
+    public DateTime? ClaimedUntil { get; set; }
+
     public List<TicketAttachment> Attachments { get; set; } = new();
 }
 

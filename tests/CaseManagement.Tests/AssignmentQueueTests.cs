@@ -8,7 +8,7 @@ using Xunit;
 
 namespace CaseManagement.Tests;
 
-/// <summary>Agent Assignment → Needs an agent: which open cases nobody is working, and the refusal of a hand-picked agent.</summary>
+/// <summary>Agent Assignment → Needs an agent: which open cases nobody is working (and why), and the refusal of a hand-picked agent.</summary>
 /// <remarks>
 /// Nothing on a case says "needs an agent"; the list is worked out from who holds each case now. Getting it wrong either hides a
 /// case a customer is waiting on (a lead holding it, or an agent who left) or floods supervisors with cases an agent is working.
@@ -24,7 +24,8 @@ public class AssignmentQueueTests : IDisposable
     public AssignmentQueueTests()
     {
         db = new AppDbContext(new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase($"assign-queue-{Guid.NewGuid()}").Options);
-        User U(Guid id, string name, bool active = true) => new() { Id = id, Name = name, Email = $"{id:N}@x.test", Role = "Agent", IsActive = active, CreatedAt = DateTime.UtcNow };
+        // Everyone is here (Case Management open) unless a test says otherwise.
+        User U(Guid id, string name, bool active = true) => new() { Id = id, Name = name, Email = $"{id:N}@x.test", Role = "Agent", IsActive = active, CreatedAt = DateTime.UtcNow, LastSeenAt = DateTime.UtcNow };
         db.Users.AddRange(U(lead, "Lena Lead"), U(agent, "Ann Agent"), U(leaver, "Leo Left"), U(gone, "Gil Gone", active: false), U(workingLead, "Wes Working Lead"));
         db.Teams.AddRange(
             new Team { Id = cards, Name = "Cards", Code = "CD", OwnerId = lead, IsActive = true, CreatedAt = DateTime.UtcNow },
@@ -92,6 +93,37 @@ public class AssignmentQueueTests : IDisposable
 
         Assert.Equal("C-1", Assert.Single(held.Items).CaseNumber);
         Assert.Equal((2, 1), (held.NeedsAgentCount, held.Total));
+    }
+
+    [Fact]
+    public async Task The_person_a_case_was_escalated_to_or_an_agent_active_in_another_team_has_not_left()
+    {
+        var escalated = Case("C-7", cards, leaver);
+        db.CaseEscalations.Add(new CaseEscalation { CaseId = escalated.Id, ToLevel = 2, ToLevelName = "Level 2", Type = EscalationTypes.Manual, ReasonText = "x", ToOwnerId = leaver, CreatedAt = DateTime.UtcNow });
+        Case("C-8", cards, workingLead);   // leads Loans and takes cases there: working this one from another team
+        db.SaveChanges();
+
+        var queue = await Read();
+
+        Assert.Empty(queue.Items);
+        Assert.Equal(0, queue.AgentLeftCount);
+    }
+
+    [Fact]
+    public async Task An_agent_who_is_away_leaves_their_case_waiting_as_unavailable_but_a_busy_one_does_not()
+    {
+        Case("C-9", cards, agent);
+        Case("C-10", loans, workingLead);
+        db.Users.Single(u => u.Id == agent).LastSeenAt = DateTime.UtcNow.AddMinutes(-10);   // closed the tab ten minutes ago
+        db.Users.Single(u => u.Id == workingLead).Status = UserStatus.Busy;
+        db.SaveChanges();
+
+        var queue = await Read();
+        var unavailable = await Read(AssignmentQueue.AgentUnavailable);
+
+        Assert.Equal(("C-9", AssignmentQueue.AgentUnavailable, "Ann Agent"), queue.Items.Select(i => (i.CaseNumber, i.Reason, i.HolderName)).Single());
+        Assert.Equal((1, 1, 0, 0), (queue.NeedsAgentCount, queue.AgentUnavailableCount, queue.AgentLeftCount, queue.HeldByLeadCount));
+        Assert.Equal("C-9", Assert.Single(unavailable.Items).CaseNumber);
     }
 
     [Fact]

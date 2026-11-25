@@ -347,4 +347,70 @@ public class TicketServiceTests : IDisposable
         Assert.Empty((await service.ListAsync("overdue", null, null, 1, 25, default)).Items);
         Assert.Equal(TicketSlaStates.None, (await service.ListAsync("new", null, null, 1, 25, default)).Items.Single().Sla!.State);
     }
+
+    // ------------------------------------------------------------------------------------------------ claims (several supervisors)
+
+    [Fact]
+    public async Task The_first_to_start_processing_claims_the_ticket_and_the_others_are_told_who_has_it()
+    {
+        var ticket = await Waiting(restricted);
+
+        var mine = await Service(assigner, Permissions.TicketsViewAll).ClaimAsync(ticket.Id, assigner.Id, takeOver: false, mayTakeOver: false, default);
+        var refused = await Assert.ThrowsAsync<TicketConflictException>(() =>
+            Service(agent, Permissions.TicketsViewAll).ClaimAsync(ticket.Id, agent.Id, takeOver: false, mayTakeOver: false, default));
+        var seenByAgent = await Service(agent, Permissions.TicketsViewAll).GetAsync(ticket.Id, default, agent.Id);
+
+        Assert.True(mine.IsMine);
+        Assert.Contains("Asha Triage is processing this ticket", refused.Message);
+        Assert.Equal(("Asha Triage", false), (seenByAgent.Claim!.ClaimedByName, seenByAgent.Claim.IsMine));
+    }
+
+    [Fact]
+    public async Task Someone_else_cannot_close_a_ticket_being_processed_and_a_supervisor_can_take_it_over()
+    {
+        var ticket = await Waiting(restricted);
+        await Service(assigner, Permissions.TicketsViewAll).ClaimAsync(ticket.Id, assigner.Id, false, false, default);
+
+        var blocked = await Assert.ThrowsAsync<TicketConflictException>(() =>
+            Service(agent, Permissions.TicketsViewAll).CloseAsync(ticket.Id, new CloseTicketDto { Reason = "Spam", Version = ticket.Version }, agent.Id, default));
+        var noRight = await Assert.ThrowsAsync<TicketConflictException>(() =>
+            Service(agent, Permissions.TicketsViewAll).ClaimAsync(ticket.Id, agent.Id, takeOver: true, mayTakeOver: false, default));
+        var taken = await Service(agent, Permissions.TicketsViewAll).ClaimAsync(ticket.Id, agent.Id, takeOver: true, mayTakeOver: true, default);
+        var closed = await Service(agent, Permissions.TicketsViewAll).CloseAsync(ticket.Id, new CloseTicketDto { Reason = "Spam", Version = ticket.Version }, agent.Id, default);
+
+        Assert.Contains("is processing this ticket", blocked.Message);
+        Assert.Contains("Try again when they are done", noRight.Message);
+        Assert.True(taken.IsMine);
+        Assert.Equal(("Closed", (TicketClaimDto?)null), (closed.Status, closed.Claim));   // closing lets the claim go
+    }
+
+    [Fact]
+    public async Task A_claim_lapses_on_its_own_so_an_abandoned_ticket_is_never_locked()
+    {
+        var ticket = await Waiting(restricted);
+        await Service(assigner, Permissions.TicketsViewAll).ClaimAsync(ticket.Id, assigner.Id, false, false, default);
+        var stored = await db.Tickets.SingleAsync(t => t.Id == ticket.Id);
+        stored.ClaimedUntil = DateTime.UtcNow.AddMinutes(-1);   // the browser went away ten minutes ago
+        await db.SaveChangesAsync();
+
+        var claim = await Service(agent, Permissions.TicketsViewAll).ClaimAsync(ticket.Id, agent.Id, false, false, default);
+
+        Assert.True(claim.IsMine);
+        Assert.Equal("Bala Agent", claim.ClaimedByName);
+    }
+
+    [Fact]
+    public async Task Releasing_lets_go_of_ones_own_claim_only()
+    {
+        var ticket = await Waiting(restricted);
+        await Service(assigner, Permissions.TicketsViewAll).ClaimAsync(ticket.Id, assigner.Id, false, false, default);
+
+        await Service(agent, Permissions.TicketsViewAll).ReleaseAsync(ticket.Id, agent.Id, default);
+        var stillHeld = (await db.Tickets.AsNoTracking().SingleAsync(t => t.Id == ticket.Id)).ClaimedById;
+        await Service(assigner, Permissions.TicketsViewAll).ReleaseAsync(ticket.Id, assigner.Id, default);
+        var released = (await db.Tickets.AsNoTracking().SingleAsync(t => t.Id == ticket.Id)).ClaimedById;
+
+        Assert.Equal(assigner.Id, stillHeld);
+        Assert.Null(released);
+    }
 }

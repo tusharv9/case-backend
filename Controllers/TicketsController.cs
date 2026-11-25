@@ -28,7 +28,23 @@ public class TicketsController(TicketService tickets, EmailIntakeAdminService ad
     public async Task<IActionResult> Mailboxes(CancellationToken ct) => Ok(await admin.AccessibleMailboxesAsync(ct));
 
     [HttpGet("{id:guid}")]
-    public async Task<IActionResult> Get(Guid id, CancellationToken ct) => Ok(await tickets.GetAsync(id, ct));
+    public async Task<IActionResult> Get(Guid id, CancellationToken ct) => Ok(await tickets.GetAsync(id, ct, CurrentUserId));
+
+    /// <summary>
+    /// Claims the ticket while the caller works on it (opening its Assign or Close form), or extends their claim; 409 names who is
+    /// processing it. <paramref name="takeOver"/>: a Supervisor takes someone else's claim.
+    /// </summary>
+    [HttpPost("{id:guid}/claim")]
+    public async Task<IActionResult> Claim(Guid id, [FromQuery] bool takeOver, CancellationToken ct) =>
+        Ok(await tickets.ClaimAsync(id, CurrentUserId, takeOver, user.Has(Permissions.CasesSupervise), ct));
+
+    /// <summary>Lets go of the caller's claim (the form was closed).</summary>
+    [HttpPost("{id:guid}/release")]
+    public async Task<IActionResult> Release(Guid id, CancellationToken ct)
+    {
+        await tickets.ReleaseAsync(id, CurrentUserId, ct);
+        return NoContent();
+    }
 
     [HttpGet("{id:guid}/attachments/{attachmentId:guid}")]
     public async Task<IActionResult> Attachment(Guid id, Guid attachmentId, CancellationToken ct)

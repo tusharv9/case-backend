@@ -11,7 +11,7 @@ public class LeastOccupancyAssignmentStrategy : IAssignmentStrategy
         // Fewest open cases first; an Available agent before a Busy one; then a stable order.
         var best = request.Eligible
             .OrderBy(c => c.OpenCases)
-            .ThenByDescending(c => c.User.Status == UserStatus.Available)
+            .ThenByDescending(c => AgentPresence.Effective(c.User, DateTime.UtcNow) == UserStatus.Available)
             .ThenBy(c => c.User.Id)
             .FirstOrDefault();
 

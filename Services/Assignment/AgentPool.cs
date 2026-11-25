@@ -45,7 +45,8 @@ public class AgentPoolService : IAgentPoolService
         var members = team.Candidates.Where(c => c.IsMember && c.IsAssignable && c.User.IsActive).ToList();
         if (members.Count == 0) return new AgentPool(Array.Empty<AgentCandidate>(), NoAgentReason.NoMembers, 0, 0);
 
-        var online = members.Count(c => c.User.Status is UserStatus.Available or UserStatus.Busy);
+        var now = DateTime.UtcNow;
+        var online = members.Count(c => AgentPresence.IsOnline(c.User, now));
         if (online == 0) return new AgentPool(Array.Empty<AgentCandidate>(), NoAgentReason.NoneOnline, members.Count, 0);
 
         var eligible = team.Eligible.Select(c => new AgentCandidate(c.User, c.OpenCases)).ToList();

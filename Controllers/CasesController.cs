@@ -40,7 +40,7 @@ public class CasesController : BaseApiController
     {
         // Always paged. (A call without a page used to return every case in the database — hundreds of MB at scale.)
         var paged = await _caseService.GetPaginatedBoardCasesAsync(
-            status, Math.Max(1, page ?? 1), Math.Clamp(pageSize ?? 30, 1, 100),
+            status, Math.Max(1, page ?? 1), Math.Clamp(pageSize ?? Paging.DefaultPageSize, 1, Paging.MaxPageSize),
             CrossTeamFilter(access, teamId), caseType, search, priority, channel, ct);
         return Ok(paged);
     }
@@ -84,13 +84,47 @@ public class CasesController : BaseApiController
 
     [HttpPost]
     [RequirePermission(Permissions.CasesCreate)]
-    public async Task<IActionResult> CreateCase([FromBody] CreateCaseDto dto, [FromServices] ICurrentUserAccessor user)
+    public async Task<IActionResult> CreateCase([FromBody] CreateCaseDto dto, [FromServices] ICurrentUserAccessor user, [FromServices] AppDbContext db,
+        [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey = null)
     {
-        var newCase = await _caseService.CreateCaseAsync(dto, CurrentUserId, callerMayAssignAnyCase: user.Has(Permissions.CasesAssign));
+        // The same submission twice (a double click, a retry after a timeout, a second tab sending the same form) makes one case:
+        // the key the form sends is stored with the case, in its transaction, and a repeat is answered with the case already made.
+        var key = string.IsNullOrWhiteSpace(idempotencyKey) ? null : idempotencyKey.Trim();
+        if (key is { Length: > 100 }) return BadRequest(new { error = "The Idempotency-Key header is at most 100 characters." });
+        if (key != null && await ExistingForKeyAsync(db, key) is { } earlier) return earlier;
+
+        Models.Case newCase;
+        try
+        {
+            newCase = await _caseService.CreateCaseAsync(dto, CurrentUserId, key == null ? null : async created =>
+            {
+                db.CaseCreationRequests.Add(new Models.CaseCreationRequest { Key = key, CaseId = created.Id, CreatedById = CurrentUserId });
+                await db.SaveChangesAsync();
+            }, callerMayAssignAnyCase: user.Has(Permissions.CasesAssign));
+        }
+        catch (DbUpdateException ex) when (key != null && ex.InnerException is Npgsql.PostgresException { SqlState: "23505" })
+        {
+            // Two copies of the submission arrived together: the other one made the case (this one rolled back).
+            db.ChangeTracker.Clear();
+            if (await ExistingForKeyAsync(db, key) is { } winner) return winner;
+            throw;
+        }
+        if (key != null && db.Database.IsRelational())
+            await db.CaseCreationRequests.Where(r => r.CreatedAt < DateTime.UtcNow.AddDays(-1)).ExecuteDeleteAsync();   // kept a day
         // The same shape every screen reads a case in (owner, team and creator named, SLA verdict, masking applied), so the
         // list can show the new case straight away. A Customer 360 customer's name is not stored; the form that chose them has it.
         var created = await _caseService.GetCaseDetailsAsync(newCase.Id);
         return CreatedAtAction(nameof(GetCaseDetails), new { id = newCase.Id }, (object?)created ?? new { id = newCase.Id, caseNumber = newCase.CaseNumber });
+    }
+
+    /// <summary>The case an earlier submission with this key made, as Create Case answers it (200 instead of 201), or null.</summary>
+    private async Task<IActionResult?> ExistingForKeyAsync(AppDbContext db, string key)
+    {
+        var earlier = await db.CaseCreationRequests.AsNoTracking().Where(r => r.Key == key).Select(r => new { r.CaseId, r.CreatedById }).FirstOrDefaultAsync();
+        if (earlier == null) return null;
+        if (earlier.CreatedById != CurrentUserId) return Conflict(new { error = "This form was already submitted by someone else. Open Create Case again." });
+        var details = await _caseService.GetCaseDetailsAsync(earlier.CaseId);
+        return Ok((object?)details ?? new { id = earlier.CaseId });
     }
 
     [HttpPut("{id:guid}/status")]

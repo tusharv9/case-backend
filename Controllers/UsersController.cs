@@ -69,17 +69,19 @@ public class UsersController : BaseApiController
         var user = await _context.Users.FindAsync(CurrentUserId);
         if (user == null) return NotFound("User not found.");
 
+        // Three statuses: Available, Busy, Away. ("Offline" from an older screen means Away.)
         if (!Enum.TryParse<UserStatus>(dto.Status, true, out var newStatus) || !Enum.IsDefined(newStatus))
         {
-            return BadRequest($"Invalid status '{dto.Status}'. Allowed values: {string.Join(", ", Enum.GetNames<UserStatus>())}.");
+            return BadRequest($"Invalid status '{dto.Status}'. Allowed values: Available, Busy, Away.");
         }
+        if (newStatus == UserStatus.Offline) newStatus = UserStatus.Away;
 
         user.Status = newStatus;
         user.StatusUpdatedAt = DateTime.UtcNow;   // the person chose it (Team Monitoring tells this apart from the default)
         await _context.SaveChangesAsync();
 
         // Every open Case Management tab (the person's other tabs, Team Monitoring, the Teams page) shows it at once.
-        _live?.Publish(new LiveEvent("agent-status", new { userId = user.Id, status = newStatus.ToString(), at = user.StatusUpdatedAt }));
+        _live?.Publish(new LiveEvent("agent-status", new { userId = user.Id, status = AgentPresence.Label(AgentPresence.Effective(user, DateTime.UtcNow)), at = user.StatusUpdatedAt }));
 
         return Ok(new { message = "Status updated successfully.", status = newStatus.ToString() });
     }

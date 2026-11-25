@@ -40,7 +40,7 @@ public class TeamService : ITeamService
 
     public async Task<TeamDto?> GetTeamByIdAsync(Guid id, CancellationToken ct = default) => (await LoadAsync(id, ct)).FirstOrDefault();
 
-    private sealed record MemberRow(Guid Id, Guid DepartmentId, Guid UserId, string? ExternalUserId, string Name, string Email, string? MemberRole, string? UserRole, UserStatus Status, bool IsAssignable);
+    private sealed record MemberRow(Guid Id, Guid DepartmentId, Guid UserId, string? ExternalUserId, string Name, string Email, string? MemberRole, string? UserRole, UserStatus Status, bool IsAssignable, DateTime? LastSeenAt);
 
     /// <summary>
     /// All teams (or one) in a fixed number of queries, run side by side; case counts are computed in the database, not by
@@ -61,7 +61,7 @@ public class TeamService : ITeamService
                 .Where(d => onlyId == null || d.Id == onlyId).OrderBy(d => d.Name).ToListAsync(ct),
             async db => members = await db.TeamMembers.AsNoTracking()
                 .Where(m => (onlyId == null || m.TeamId == onlyId) && m.IsActive)
-                .Select(m => new MemberRow(m.Id, m.TeamId, m.UserId, m.User.ExternalUserId, m.User.Name, m.User.Email, m.MemberRole, m.User.Role, m.User.Status, m.IsAssignable))
+                .Select(m => new MemberRow(m.Id, m.TeamId, m.UserId, m.User.ExternalUserId, m.User.Name, m.User.Email, m.MemberRole, m.User.Role, m.User.Status, m.IsAssignable, m.User.LastSeenAt))
                 .ToListAsync(ct),
             async db => openCounts = await db.Cases.AsNoTracking()
                 .Where(c => (onlyId == null || c.TeamId == onlyId) && c.Status != CaseStatus.Resolved && c.Status != CaseStatus.Closed && c.Status != CaseStatus.Cancelled)
@@ -91,7 +91,7 @@ public class TeamService : ITeamService
                     Name = m.Name,
                     Email = m.Email,
                     Role = !string.IsNullOrWhiteSpace(m.MemberRole) ? m.MemberRole : (string.IsNullOrWhiteSpace(m.UserRole) ? "Service Agent" : m.UserRole),
-                    Status = m.Status.ToString(),
+                    Status = AgentPresence.Label(AgentPresence.Effective(m.Status, m.LastSeenAt, DateTime.UtcNow)),
                     IsLead = d.OwnerId == m.UserId,
                     IsAssignable = m.IsAssignable,
                 })

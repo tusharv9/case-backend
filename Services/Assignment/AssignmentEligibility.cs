@@ -255,7 +255,7 @@ public class AssignmentEligibilityService : IAssignmentEligibilityService
             : !user.IsActive ? IneligibilityReason.UserInactive
             : policy.RequireAssignableFlag && !isAssignable ? IneligibilityReason.NotAssignable
             : policy.RequireManualSelection && !asLead && !canManual ? IneligibilityReason.NotSelected
-            : policy.RequireOnline && user.Status is not (UserStatus.Available or UserStatus.Busy) ? IneligibilityReason.Unavailable
+            : policy.RequireOnline && !AgentPresence.IsOnline(user, DateTime.UtcNow) ? IneligibilityReason.Unavailable
             : policy.EnforceCapacity && openCases >= capacity ? IneligibilityReason.AtCapacity
             : IneligibilityReason.None;
         return new AssigneeVerdict(user, isMember, isLead, isAssignable, role, openCases, capacity, reason, team.Id, team.Name);

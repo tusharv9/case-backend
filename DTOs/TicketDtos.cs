@@ -2,6 +2,8 @@ namespace CaseManagement.Api.DTOs;
 
 public sealed class TicketListItemDto
 {
+    /// <summary>Who is working on it right now, when someone is.</summary>
+    public string? ClaimedByName { get; set; }
     public Guid Id { get; set; }
     public string TicketNumber { get; set; } = string.Empty;
     public string Source { get; set; } = string.Empty;
@@ -82,8 +84,20 @@ public sealed class TicketAttachmentDto
     public long SizeBytes { get; set; }
 }
 
+/// <summary>Who is working on a ticket right now, and until when (see <c>Ticket.ClaimedById</c>).</summary>
+public sealed class TicketClaimDto
+{
+    public Guid? ClaimedById { get; set; }
+    public string? ClaimedByName { get; set; }
+    public DateTime? ClaimedUntil { get; set; }
+    /// <summary>The caller holds it.</summary>
+    public bool IsMine { get; set; }
+}
+
 public sealed class TicketDetailDto
 {
+    /// <summary>Set while someone is working on the ticket (its claim has not lapsed).</summary>
+    public TicketClaimDto? Claim { get; set; }
     public Guid Id { get; set; }
     public string TicketNumber { get; set; } = string.Empty;
     public string Source { get; set; } = string.Empty;

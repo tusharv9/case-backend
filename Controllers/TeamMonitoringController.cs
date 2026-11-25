@@ -76,7 +76,7 @@ public class TeamMonitoringController : BaseApiController
             }
         }
         var filter = new AuditQueryParameters { ActionType = actionType, ActorId = agentId, From = from, To = to }.ToFilter();
-        return Ok(await _audit.ListAsync(filter, page, Math.Clamp(pageSize, 1, 50), ct));
+        return Ok(await _audit.ListAsync(filter, page, Math.Clamp(pageSize, 1, Paging.MaxPageSize), ct));
     }
 
     /// <summary>
@@ -135,7 +135,7 @@ public sealed class MonitoringExportParameters
     public string? Kind { get; set; }
     public Guid? TeamId { get; set; }
     public Guid? AgentId { get; set; }
-    /// <summary>Available, On interaction, Break, Offline, or <c>notset</c>; empty for every state.</summary>
+    /// <summary>Available, Busy, Away, or <c>notset</c>; empty for every state.</summary>
     public string? State { get; set; }
     public int PeriodDays { get; set; } = 7;
     public string? ActionType { get; set; }

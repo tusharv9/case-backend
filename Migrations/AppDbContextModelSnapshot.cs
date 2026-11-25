@@ -425,6 +425,10 @@ namespace CaseManagement.Api.Migrations
                         .HasDatabaseName("IX_Cases_Open_SlaStart")
                         .HasFilter("\"Status\" NOT IN ('Resolved', 'Closed', 'Cancelled')");
 
+                    b.HasIndex("SourceTicketId")
+                        .IsUnique()
+                        .HasFilter("\"SourceTicketId\" IS NOT NULL");
+
                     b.HasIndex("StatusKey")
                         .HasFilter("\"StatusKey\" IS NOT NULL");
 
@@ -587,6 +591,30 @@ namespace CaseManagement.Api.Migrations
                         .IsDescending(false, true);
 
                     b.ToTable("CaseCollaborationActivities");
+                });
+
+            modelBuilder.Entity("CaseManagement.Api.Models.CaseCreationRequest", b =>
+                {
+                    b.Property<string>("Key")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<Guid>("CaseId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("CreatedById")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Key");
+
+                    b.HasIndex("CaseId");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.ToTable("CaseCreationRequests");
                 });
 
             modelBuilder.Entity("CaseManagement.Api.Models.CaseCustomAttribute", b =>
@@ -2805,6 +2833,12 @@ namespace CaseManagement.Api.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)");
 
+                    b.Property<Guid?>("ClaimedById")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("ClaimedUntil")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<string>("CloseReason")
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
@@ -2917,9 +2951,15 @@ namespace CaseManagement.Api.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("CaseId");
+                    b.HasIndex("CaseId")
+                        .IsUnique()
+                        .HasFilter("\"CaseId\" IS NOT NULL");
 
-                    b.HasIndex("InboundEmailId");
+                    b.HasIndex("ClaimedUntil");
+
+                    b.HasIndex("InboundEmailId")
+                        .IsUnique()
+                        .HasFilter("\"InboundEmailId\" IS NOT NULL");
 
                     b.HasIndex("OrganisationId");
 
@@ -2995,6 +3035,9 @@ namespace CaseManagement.Api.Migrations
 
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean");
+
+                    b.Property<DateTime?>("LastSeenAt")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<DateTime?>("LastSyncedAt")
                         .HasColumnType("timestamp with time zone");
@@ -3272,6 +3315,17 @@ namespace CaseManagement.Api.Migrations
                     b.Navigation("Case");
 
                     b.Navigation("TargetUser");
+                });
+
+            modelBuilder.Entity("CaseManagement.Api.Models.CaseCreationRequest", b =>
+                {
+                    b.HasOne("CaseManagement.Api.Models.Case", "Case")
+                        .WithMany()
+                        .HasForeignKey("CaseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Case");
                 });
 
             modelBuilder.Entity("CaseManagement.Api.Models.CaseCustomAttribute", b =>

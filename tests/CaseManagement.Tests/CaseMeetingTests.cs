@@ -206,4 +206,61 @@ public class CaseMeetingTests : IDisposable
         var folded = MeetingInvite.Fold("DESCRIPTION:" + new string('x', 200));
         Assert.All(folded.Split("\r\n"), line => Assert.True(System.Text.Encoding.UTF8.GetByteCount(line) <= 75));
     }
+
+    // ------------------------------------------------------------------------------------------------ choosing the mailbox
+
+    /// <summary>A second mailbox the case's team works, so the invitation's mailbox must be chosen.</summary>
+    private async Task<EmailMailbox> SecondTeamMailboxAsync()
+    {
+        var second = new EmailMailbox { Id = Guid.NewGuid(), Name = "Cards desk", Address = "cards@bank.example", IsEnabled = true, PasswordEncrypted = "x" };
+        db.Add(second);
+        db.Add(new EmailMailboxTeam { MailboxId = second.Id, TeamId = team.Id });
+        await db.SaveChangesAsync();
+        return second;
+    }
+
+    [Fact]
+    public async Task With_several_team_mailboxes_the_form_offers_them_instead_of_refusing_the_invitation()
+    {
+        await SecondTeamMailboxAsync();
+
+        var options = await As(agent).OptionsAsync(c.Id);
+
+        Assert.True(options.CanEmail);
+        Assert.Null(options.Reason);
+        Assert.Equal(new[] { "cards@bank.example", "support@bank.example" }, options.Mailboxes!.Select(m => m.Address));
+    }
+
+    [Fact]
+    public async Task The_invitation_goes_from_the_chosen_mailbox_and_its_update_from_the_same_one_without_asking_again()
+    {
+        var second = await SecondTeamMailboxAsync();
+        var unchosen = await Assert.ThrowsAsync<FieldValidationException>(() => As(agent).ScheduleAsync(c.Id, Form()));
+        var form = Form();
+        form.MailboxId = second.Id;
+
+        var meeting = await As(agent).ScheduleAsync(c.Id, form);
+        var invite = await LastEmail();
+        await As(agent).RescheduleAsync(c.Id, meeting.Id, Form("11:00", "11:30"));
+        var update = await LastEmail();
+
+        Assert.Contains(unchosen.Errors, e => e.Field == "mailboxId" && e.Message.StartsWith("Choose the mailbox"));
+        Assert.Equal(second.Id, invite.MailboxId);
+        Assert.Equal(second.Id, update.MailboxId);   // the customer's calendar sees the same organizer
+    }
+
+    [Fact]
+    public async Task A_mailbox_the_cases_team_does_not_work_cannot_be_chosen()
+    {
+        await SecondTeamMailboxAsync();
+        var elsewhere = new EmailMailbox { Id = Guid.NewGuid(), Name = "Loans", Address = "loans@bank.example", IsEnabled = true, PasswordEncrypted = "x" };
+        db.Add(elsewhere);
+        await db.SaveChangesAsync();
+        var form = Form();
+        form.MailboxId = elsewhere.Id;
+
+        var ex = await Assert.ThrowsAsync<FieldValidationException>(() => As(agent).ScheduleAsync(c.Id, form));
+
+        Assert.Contains(ex.Errors, e => e.Field == "mailboxId" && e.Message.Contains("this case's team works"));
+    }
 }

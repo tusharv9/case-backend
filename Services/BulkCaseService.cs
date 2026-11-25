@@ -58,7 +58,7 @@ public class BulkCaseService(
             q = q.Where(c => EF.Functions.ILike(c.CaseNumber, pattern) || EF.Functions.ILike(c.Title, pattern) || EF.Functions.ILike(c.Owner.Name, pattern));
         }
 
-        var pageSize = Math.Clamp(query.PageSize, 1, 100);
+        var pageSize = Math.Clamp(query.PageSize, 1, Paging.MaxPageSize);
         var page = Math.Max(1, query.Page);
         var total = await q.CountAsync(ct);
         var items = await q.OrderByDescending(c => c.CreatedAt).ThenBy(c => c.Id)

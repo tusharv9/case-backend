@@ -69,6 +69,7 @@ public class AppDbContext : DbContext, OmniConnect.Outbox.IOutboxContext
     public DbSet<CaseSlaPause> CaseSlaPauses { get; set; } = null!;
     public DbSet<CaseMeeting> CaseMeetings { get; set; } = null!;
     public DbSet<EscalationLevelRole> EscalationLevelRoles { get; set; } = null!;
+    public DbSet<CaseCreationRequest> CaseCreationRequests { get; set; } = null!;
     public DbSet<CaseEscalation> CaseEscalations { get; set; } = null!;
     /// <summary>
     /// The audit outbox (<c>AuditOutboxMessages</c>): each new timeline / audit event's central copy, saved with it and delivered
@@ -407,8 +408,10 @@ public class AppDbContext : DbContext, OmniConnect.Outbox.IOutboxContext
             e.HasIndex(t => t.TicketNumber).IsUnique();
             e.HasIndex(t => new { t.Status, t.ReceivedAt });
             e.HasIndex(t => new { t.MailboxId, t.ReceivedAt });
-            e.HasIndex(t => t.CaseId);
-            e.HasIndex(t => t.InboundEmailId);
+            // One ticket makes at most one case, and one email at most one ticket: enforced by the database, whatever reaches it at once.
+            e.HasIndex(t => t.CaseId).IsUnique().HasFilter("\"CaseId\" IS NOT NULL");
+            e.HasIndex(t => t.InboundEmailId).IsUnique().HasFilter("\"InboundEmailId\" IS NOT NULL");
+            e.HasIndex(t => t.ClaimedUntil);
             e.Property(t => t.Version).IsConcurrencyToken();
             e.Property(t => t.TicketNumber).HasMaxLength(20);
             e.Property(t => t.Source).HasMaxLength(20);
@@ -654,6 +657,17 @@ public class AppDbContext : DbContext, OmniConnect.Outbox.IOutboxContext
             e.Property(l => l.TriggerPriorities).HasMaxLength(500);
             e.HasMany(l => l.Roles).WithOne(r => r.Level!).HasForeignKey(r => r.LevelId).OnDelete(DeleteBehavior.Cascade);
         });
+
+        modelBuilder.Entity<CaseCreationRequest>(e =>
+        {
+            e.HasKey(x => x.Key);
+            e.Property(x => x.Key).HasMaxLength(100);
+            e.HasOne(x => x.Case).WithMany().HasForeignKey(x => x.CaseId).OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(x => x.CreatedAt);
+        });
+
+        // A ticket becomes at most one case (the database's backstop behind the ticket's version check).
+        modelBuilder.Entity<Case>().HasIndex(c => c.SourceTicketId).IsUnique().HasFilter("\"SourceTicketId\" IS NOT NULL");
 
         modelBuilder.Entity<EscalationLevelRole>(e =>
         {

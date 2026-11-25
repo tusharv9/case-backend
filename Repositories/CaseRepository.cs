@@ -179,7 +179,7 @@ public class CaseRepository : ICaseRepository
     {
         if (page < 1) page = 1;
         if (pageSize < 1) pageSize = 30;
-        if (pageSize > 100) pageSize = 100;
+        if (pageSize > Paging.MaxPageSize) pageSize = Paging.MaxPageSize;
 
         // The filtered cases, built for whichever context runs the query: the count and the page are independent reads.
         IQueryable<Case> Build(AppDbContext db)
@@ -343,7 +343,7 @@ public class CaseRepository : ICaseRepository
             throw new ArgumentException("Name the customer: a local customer id, or a Customer 360 customer type and key.");
 
         page = Math.Max(page, 1);
-        pageSize = Math.Clamp(pageSize, 1, 100);
+        pageSize = Math.Clamp(pageSize, 1, Paging.MaxPageSize);
         var total = await query.CountAsync(ct);
         var items = await query.OrderByDescending(c => c.CreatedAt).Skip((page - 1) * pageSize).Take(pageSize).MapToCaseSummary().ToListAsync(ct);
         return new PagedResponseDto<CaseSummaryDto> { Items = items, TotalCount = total, Page = page, PageSize = pageSize };
@@ -556,7 +556,7 @@ public class CaseRepository : ICaseRepository
     {
         if (page < 1) page = 1;
         if (pageSize < 1) pageSize = 10;
-        if (pageSize > 100) pageSize = 100;
+        if (pageSize > Paging.MaxPageSize) pageSize = Paging.MaxPageSize;
 
         // The count and the page are independent reads: side by side, each on its own context.
         var totalCount = 0;

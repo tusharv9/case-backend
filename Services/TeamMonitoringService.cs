@@ -52,7 +52,7 @@ public class TeamMonitoringService : ITeamMonitoringService
         DateTime WaitingSince, CaseStatus Status, SlaInputs Inputs);   // WaitingSince = when its SLA clock started
 
     private sealed record MemberRow(Guid TeamId, string TeamName, bool IsTeamLead, bool IsAssignable, Guid UserId, string Name, string Email,
-        string Role, UserStatus Status, DateTime? StatusUpdatedAt);
+        string Role, UserStatus Status, DateTime? StatusUpdatedAt, DateTime? LastSeenAt);
 
     private sealed record ResolvedRow(Guid OwnerId, DateTime ResolvedAt, double Minutes);
 
@@ -135,7 +135,7 @@ public class TeamMonitoringService : ITeamMonitoringService
             async db => memberRows = await db.TeamMembers.AsNoTracking()
                 .Where(m => m.IsActive && m.User.IsActive && teamIds.Contains(m.TeamId))
                 .Select(m => new MemberRow(m.TeamId, m.Team.Name, m.Team.OwnerId == m.UserId, m.IsAssignable, m.UserId, m.User.Name, m.User.Email,
-                    m.User.Role, m.User.Status, m.User.StatusUpdatedAt))
+                    m.User.Role, m.User.Status, m.User.StatusUpdatedAt, m.User.LastSeenAt))
                 .ToListAsync(ct),
             async db => teamCapacity = await db.AssignmentConfigurations.AsNoTracking()
                 .Where(c => c.TeamId != null && c.IsActive).ToDictionaryAsync(c => c.TeamId!.Value, c => c.MaxConcurrentCapacity, ct),
@@ -196,7 +196,7 @@ public class TeamMonitoringService : ITeamMonitoringService
                 Role = string.IsNullOrWhiteSpace(a.Row.Role) ? "Service Agent" : a.Row.Role,
                 TeamName = string.Join(", ", a.Teams.Select(t => t.Name)),
                 Teams = a.Teams,
-                State = StateOf(a.Row.Status),
+                State = StateOf(AgentPresence.Effective(a.Row.Status, a.Row.LastSeenAt, now)),
                 StatusSetAt = a.Row.StatusUpdatedAt,
                 IsAssignable = a.IsAssignable,
                 OpenCasesCount = mine.Count,
@@ -208,7 +208,7 @@ public class TeamMonitoringService : ITeamMonitoringService
             };
         }).OrderBy(a => a.Name).ToList();
 
-        var online = agents.Where(a => a.Row.Status is UserStatus.Available or UserStatus.Busy).ToList();
+        var online = agents.Where(a => AgentPresence.Effective(a.Row.Status, a.Row.LastSeenAt, now) is UserStatus.Available or UserStatus.Busy).ToList();
         var onlineCapacity = online.Sum(a => a.Capacity);
         var onlineOpen = online.Sum(a => (openByOwner.GetValueOrDefault(a.Row.UserId)?.Count) ?? 0);
 
@@ -221,7 +221,7 @@ public class TeamMonitoringService : ITeamMonitoringService
             TeamsCount = selected.Count,
             OnlineAgentsCount = online.Count,
             TotalAgentsCount = agents.Count,
-            AgentsBreakCount = agents.Count(a => a.Row.Status == UserStatus.Away),
+            AgentsBreakCount = agents.Count(a => AgentPresence.Effective(a.Row.Status, a.Row.LastSeenAt, now) == UserStatus.Away),
             AgentsStatusNotSetCount = agents.Count(a => a.Row.StatusUpdatedAt == null),
             LongestQueueWaitMinutes = longest == null ? null : (int)Math.Max(0, (now - longest.WaitingSince).TotalMinutes),
             LongestQueueCaseNumber = longest?.CaseNumber,
@@ -375,7 +375,7 @@ public class TeamMonitoringService : ITeamMonitoringService
 
     private static string StateOf(UserStatus status) => status switch
     {
-        UserStatus.Available => "Available", UserStatus.Busy => "On interaction", UserStatus.Away => "Break", _ => "Offline",
+        UserStatus.Available => "Available", UserStatus.Busy => "Busy", _ => "Away",
     };
 
     /// <summary>The UTC bounds of a calendar day in the business time zone (offset by whole days from today).</summary>
@@ -445,7 +445,7 @@ public class TeamMonitoringService : ITeamMonitoringService
             Email = user.Email,
             Role = string.IsNullOrWhiteSpace(user.Role) ? "Service Agent" : user.Role,
             IsActive = user.IsActive,
-            State = StateOf(user.Status),
+            State = StateOf(AgentPresence.Effective(user, DateTime.UtcNow)),
             StatusSetAt = user.StatusUpdatedAt,
             Teams = teams,
             OpenCasesCount = openInputs.Count,
@@ -462,7 +462,7 @@ public class TeamMonitoringService : ITeamMonitoringService
     {
         await EnsureCanMonitorAsync(agentId, ct);
         if (page < 1) page = 1;
-        pageSize = Math.Clamp(pageSize, 1, 50);
+        pageSize = Math.Clamp(pageSize, 1, Paging.MaxPageSize);
         var resolvedOnly = string.Equals(scope, "resolved", StringComparison.OrdinalIgnoreCase);
 
         var query = Visible(_context.Cases.AsNoTracking(), _context).Where(c => c.OwnerId == agentId);

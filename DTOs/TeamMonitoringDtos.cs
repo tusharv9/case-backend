@@ -73,7 +73,8 @@ public class AgentStatusItemDto
     /// <summary>The teams in scope this person belongs to, comma-separated (kept for compact displays).</summary>
     public string TeamName { get; set; } = string.Empty;
     public List<AgentTeamDto> Teams { get; set; } = new();
-    public string State { get; set; } = "Available"; // "Available", "On interaction", "Break", "Offline"
+    /// <summary>Available, Busy or Away: the status the agent chose, while they have Case Management open (Away otherwise).</summary>
+    public string State { get; set; } = "Away";
     /// <summary>When the person last set their status themselves; null = never (the state is the default, not confirmed).</summary>
     public DateTime? StatusSetAt { get; set; }
     public bool IsAssignable { get; set; } = true;

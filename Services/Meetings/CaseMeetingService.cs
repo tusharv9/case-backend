@@ -47,6 +47,11 @@ public sealed class SaveCaseMeetingDto
     public string? JoinUrl { get; set; }
     public string? AttendeeEmail { get; set; }
     public string? AttendeeName { get; set; }
+    /// <summary>
+    /// The mailbox the invitation goes from, when the case's team works several and the case has none of its own
+    /// (<see cref="MeetingOptionsDto.Mailboxes"/>). Ignored otherwise; a change to a meeting keeps the mailbox it was first sent from.
+    /// </summary>
+    public Guid? MailboxId { get; set; }
 }
 
 public sealed class CancelCaseMeetingDto
@@ -57,8 +62,11 @@ public sealed class CancelCaseMeetingDto
 /// <summary>What the Schedule Meeting form needs: the time zone times are in, who it goes to and from, and whether it can be emailed.</summary>
 /// <param name="CustomerEmailSource">Where <paramref name="CustomerEmail"/> came from: "case" (the case's contact address), "email" (the
 /// email the case came from), "customer" (the customer record), or null when none is known and the agent types it.</param>
+/// <param name="Mailboxes">Set when the invitation's mailbox must be chosen: the case has none of its own and its team works several.
+/// The form then asks, and sends the choice as <see cref="SaveCaseMeetingDto.MailboxId"/>.</param>
 public sealed record MeetingOptionsDto(string TimeZone, string TimeZoneLabel, string? CustomerEmail, string? CustomerName, string OrganizerName,
-    bool CanEmail, string? MailboxAddress, string? Reason, string? CustomerEmailSource = null, string? SourceChannel = null);
+    bool CanEmail, string? MailboxAddress, string? Reason, string? CustomerEmailSource = null, string? SourceChannel = null,
+    IReadOnlyList<MailboxOptionDto>? Mailboxes = null);
 
 public interface ICaseMeetingService
 {
@@ -105,10 +113,17 @@ public sealed class CaseMeetingService(AppDbContext db, ISlaClockProvider clocks
         var me = await db.Users.AsNoTracking().Where(u => u.Id == Me).Select(u => u.Name).FirstOrDefaultAsync(ct) ?? "You";
         var (email, source) = await CustomerEmailAsync(c, ct);
         string? mailbox = null, reason = null;
-        try { mailbox = (await MailboxForAsync(c, email ?? "customer@example.invalid", ct)).Address; }
+        IReadOnlyList<MailboxOptionDto>? choices = null;
+        try { mailbox = (await MailboxForAsync(c, email ?? "customer@example.invalid", null, null, ct)).Address; }
         catch (FieldValidationException ex) { reason = ex.Errors.FirstOrDefault()?.Message; }
-        return new MeetingOptionsDto(zone.Id, ZoneLabel(zone, DateTime.UtcNow), email, c.Customer?.FullName, me, mailbox != null, mailbox, reason,
-            source, c.SourceChannel);
+        // Several mailboxes and none of the case's own: not a dead end — the person chooses which one the invitation goes from.
+        if (mailbox == null && c.ReplyMailboxId == null && await TeamMailboxesAsync(c, ct) is { Count: > 1 } shared)
+        {
+            choices = shared.Select(m => new MailboxOptionDto(m.Id, m.Name, m.Address)).ToList();
+            reason = null;
+        }
+        return new MeetingOptionsDto(zone.Id, ZoneLabel(zone, DateTime.UtcNow), email, c.Customer?.FullName, me, mailbox != null || choices != null, mailbox, reason,
+            source, c.SourceChannel, choices);
     }
 
     public async Task<CaseMeetingDto> ScheduleAsync(Guid caseId, SaveCaseMeetingDto dto, CancellationToken ct = default)
@@ -121,7 +136,7 @@ public sealed class CaseMeetingService(AppDbContext db, ISlaClockProvider clocks
         if (await db.CaseMeetings.AnyAsync(m => m.CaseId == caseId && m.Status == CaseMeetingStatuses.Scheduled && m.StartUtc == start && m.AttendeeEmail == attendee, ct))
             throw new FieldValidationException([new FieldError("startTime", "A meeting with this customer at this time is already scheduled on this case.")]);
 
-        var mailbox = await MailboxForAsync(c, attendee, ct);
+        var mailbox = await MailboxForAsync(c, attendee, dto.MailboxId, null, ct);
         var meeting = new CaseMeeting
         {
             CaseId = caseId, Title = title, StartUtc = start, EndUtc = end, TimeZone = zone.Id, Agenda = Clean(dto.Agenda, 4000), JoinUrl = url,
@@ -140,7 +155,7 @@ public sealed class CaseMeetingService(AppDbContext db, ISlaClockProvider clocks
         var meeting = await ChangeableAsync(c, meetingId, ct);
         var zone = (await clocks.GetAsync(ct)).Calendar.TimeZone;
         var (title, start, end, url, attendee) = Validate(dto, zone);
-        var mailbox = await MailboxForAsync(c, attendee, ct);
+        var mailbox = await MailboxForAsync(c, attendee, dto.MailboxId, meeting.Id, ct);
         var before = When(meeting, zone);
 
         meeting.Title = title; meeting.StartUtc = start; meeting.EndUtc = end; meeting.JoinUrl = url; meeting.TimeZone = zone.Id;
@@ -156,7 +171,7 @@ public sealed class CaseMeetingService(AppDbContext db, ISlaClockProvider clocks
         var c = await LoadCaseAsync(caseId, ct, allowFinished: true);
         var meeting = await ChangeableAsync(c, meetingId, ct);
         var zone = (await clocks.GetAsync(ct)).Calendar.TimeZone;
-        var mailbox = await MailboxForAsync(c, meeting.AttendeeEmail, ct);
+        var mailbox = await MailboxForAsync(c, meeting.AttendeeEmail, null, meeting.Id, ct);
         meeting.Status = CaseMeetingStatuses.Cancelled;
         meeting.CancelReason = Clean(dto.Reason, 500);
         meeting.Sequence++; meeting.UpdatedAt = DateTime.UtcNow; meeting.Version++;
@@ -259,8 +274,29 @@ public sealed class CaseMeetingService(AppDbContext db, ISlaClockProvider clocks
         return TimeZoneInfo.ConvertTimeToUtc(unspecified, zone);
     }
 
-    private async Task<EmailMailbox> MailboxForAsync(Case c, string attendee, CancellationToken ct) =>
-        await CaseEmailOutbox.ResolveMailboxAsync(db, new Case { Id = c.Id, TeamId = c.TeamId, ReplyMailboxId = c.ReplyMailboxId, ContactEmail = attendee }, null, ct);
+    /// <summary>
+    /// The mailbox an invitation goes from. A change to a meeting (update, cancellation) goes from the mailbox its invitation was
+    /// first sent from, so the customer's calendar sees the same organizer; a new one from the case's own mailbox, its team's only
+    /// one, or — the team working several — the one chosen (<paramref name="chosenMailboxId"/>).
+    /// </summary>
+    private async Task<EmailMailbox> MailboxForAsync(Case c, string attendee, Guid? chosenMailboxId, Guid? meetingId, CancellationToken ct)
+    {
+        if (meetingId is { } id)
+        {
+            var first = await db.CaseEmailMessages.AsNoTracking()
+                .Where(m => m.CaseEventId != null && db.CaseEvents.Any(e => e.Id == m.CaseEventId && e.MeetingId == id))
+                .OrderBy(m => m.CreatedAt).Select(m => (Guid?)m.MailboxId).FirstOrDefaultAsync(ct);
+            if (first is { } used && await db.EmailMailboxes.AsNoTracking().FirstOrDefaultAsync(m => m.Id == used, ct) is { IsEnabled: true, PasswordEncrypted: not null } box)
+                return box;
+        }
+        return await CaseEmailOutbox.ResolveMailboxAsync(db, new Case { Id = c.Id, TeamId = c.TeamId, ReplyMailboxId = c.ReplyMailboxId, ContactEmail = attendee },
+            chosenMailboxId, ct);
+    }
+
+    /// <summary>The usable mailboxes the case's team works (what a person may choose an invitation's mailbox from).</summary>
+    private Task<List<EmailMailbox>> TeamMailboxesAsync(Case c, CancellationToken ct) =>
+        db.EmailMailboxes.AsNoTracking()
+            .Where(m => m.IsEnabled && m.PasswordEncrypted != null && m.Teams.Any(t => t.TeamId == c.TeamId)).OrderBy(m => m.Name).ToListAsync(ct);
 
     /// <summary>The timeline entry, the email with its calendar invite (sent by the outbox), saved together.</summary>
     private async Task RecordAsync(Case c, CaseMeeting meeting, EmailMailbox mailbox, string action, string method, TimeZoneInfo zone, string summary, CancellationToken ct)

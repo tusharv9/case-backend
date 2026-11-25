@@ -32,6 +32,12 @@ public class User : AuditableEntity
     /// </summary>
     public DateTime? StatusUpdatedAt { get; set; }
 
+    /// <summary>
+    /// When this person last had Case Management open (its live connection), kept fresh while it stays open. Older than
+    /// <see cref="AgentPresence.Window"/>, or never, means they are not here: Away, whatever status they last chose.
+    /// </summary>
+    public DateTime? LastSeenAt { get; set; }
+
     public string? Team { get; set; }
     public string? Queue { get; set; }
 }

@@ -742,7 +742,7 @@ public class CaseService : ICaseService
                         TeamRole = v.MemberRole,
                         IsTeamLead = v.IsTeamLead,
                         IsTeamMember = v.IsMember,
-                        Status = v.User.Status.ToString(),
+                        Status = AgentPresence.Label(AgentPresence.Effective(v.User, DateTime.UtcNow)),
                         HomeTeamName = v.HomeTeamName,
                         IsCrossTeam = v.IsCrossTeam,
                         OpenCases = v.OpenCases,

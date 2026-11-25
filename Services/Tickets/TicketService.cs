@@ -66,7 +66,7 @@ public sealed class TicketService(
     public async Task<PagedResponseDto<TicketListItemDto>> ListAsync(string? status, string? search, Guid? mailboxId, int page, int pageSize, CancellationToken ct)
     {
         page = Math.Max(1, page);
-        pageSize = Math.Clamp(pageSize, 1, 100);
+        pageSize = Math.Clamp(pageSize, 1, Paging.MaxPageSize);
         var now = DateTime.UtcNow;
         var query = Visible();
         var filter = (status ?? "new").ToLowerInvariant();
@@ -99,6 +99,7 @@ public sealed class TicketService(
                     MailboxId = t.MailboxId, MailboxName = t.Mailbox!.Name, MailboxAddress = t.Mailbox.Address, Priority = t.Priority,
                     SenderVerification = t.SenderVerification, Status = t.Status, ReceivedAt = t.ReceivedAt, AttachmentCount = t.Attachments.Count,
                     ReplyCount = db.InboundEmails.Count(e => e.TicketId == t.Id && e.Status == EmailStatuses.LinkedToTicket),
+                    ClaimedByName = t.ClaimedById != null && t.ClaimedUntil > now ? db.Users.Where(u => u.Id == t.ClaimedById).Select(u => u.Name).FirstOrDefault() : null,
                     CaseId = t.CaseId, CaseNumber = t.Case != null ? t.Case.CaseNumber : null, CaseOwnerName = t.Case != null ? t.Case.Owner.Name : null,
                 },
                 t.AssignTargetMinutes, t.HandledAt, t.AssignedWithinMinutes,
@@ -126,7 +127,7 @@ public sealed class TicketService(
         };
     }
 
-    public async Task<TicketDetailDto> GetAsync(Guid id, CancellationToken ct)
+    public async Task<TicketDetailDto> GetAsync(Guid id, CancellationToken ct, Guid? viewerId = null)
     {
         var t = await Visible().Include(x => x.Mailbox).Include(x => x.Attachments).Include(x => x.Case).ThenInclude(c => c!.Owner)
             .Include(x => x.Organisation).Include(x => x.VerifiedSender).ThenInclude(s => s!.VerifiedDomain)
@@ -147,6 +148,7 @@ public sealed class TicketService(
             t.HandledAt, t.AssignedWithinMinutes, DateTime.UtcNow);
         return new TicketDetailDto
         {
+            Claim = await ClaimOfAsync(t, viewerId, ct),
             Id = t.Id, TicketNumber = t.TicketNumber, Source = t.Source, MailboxId = t.MailboxId, MailboxName = t.Mailbox?.Name ?? "",
             MailboxAddress = t.Mailbox?.Address ?? "", InboundEmailId = t.InboundEmailId, RequesterName = t.RequesterName, RequesterEmail = t.RequesterEmail,
             RequesterPhone = t.RequesterPhone, Subject = t.Subject, Description = t.Description, Priority = t.Priority, CaseType = t.CaseType,
@@ -188,6 +190,7 @@ public sealed class TicketService(
     {
         var ticket = await Visible().Include(t => t.Attachments).FirstOrDefaultAsync(t => t.Id == id, ct) ?? throw new KeyNotFoundException("Ticket not found.");
         await EnsureOpenAsync(ticket, dto.Version, ct);
+        await EnsureNotClaimedByOtherAsync(ticket, actorId, ct);
 
         var caseDto = dto.Case;
         caseDto.Title = string.IsNullOrWhiteSpace(caseDto.Title) ? ticket.Subject : caseDto.Title;
@@ -212,11 +215,12 @@ public sealed class TicketService(
         }
         if (caseDto.OrganisationContactId is { } contact && contact != ticket.VerifiedSenderId)
             throw new FieldValidationException([new FieldError("selectCustomer", "The organisation contact must be the registered sender who wrote this ticket.")]);
+        Guid? createdCustomer = null;
         if (caseDto.CustomerId == null && caseDto.Customer360 == null && caseDto.OrganisationContactId == null)
         {
             if (!dto.CreateCustomerFromRequester)
                 throw new FieldValidationException([new FieldError("selectCustomer", "Choose the customer, or use the requester as a new customer.")]);
-            caseDto.CustomerId = await CustomerFromRequesterAsync(ticket, caseDto.PreferredLanguage, ct);
+            (caseDto.CustomerId, createdCustomer) = await CustomerFromRequesterAsync(ticket, caseDto.PreferredLanguage, ct);
         }
         // Automatic assignment from a ticket must not fail on an empty team: the lead holds it, as for an email's case.
         caseDto.UnstaffedTeamAction ??= UnstaffedTeamActions.AssignToSupervisor;
@@ -236,6 +240,8 @@ public sealed class TicketService(
                 var handledAt = DateTime.UtcNow;
                 tracked.Status = TicketStatuses.Converted;
                 tracked.CaseId = newCase.Id;
+                tracked.ClaimedById = null;
+                tracked.ClaimedUntil = null;
                 tracked.HandledById = actorId;
                 tracked.HandledAt = handledAt;
                 clock.Stop(tracked, targets.Of(tracked), handledAt);   // the ticket's own SLA ends here; the case's begins
@@ -263,13 +269,25 @@ public sealed class TicketService(
         }
         catch (DbUpdateConcurrencyException)
         {
+            await ForgetCustomerAsync(createdCustomer);
             throw new TicketConflictException("This ticket was just assigned or closed by someone else.");
+        }
+        catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException { SqlState: "23505" })
+        {
+            // The unique index on the ticket's case caught a second case for the same ticket.
+            await ForgetCustomerAsync(createdCustomer);
+            throw new TicketConflictException("This ticket was just assigned by someone else.");
+        }
+        catch
+        {
+            await ForgetCustomerAsync(createdCustomer);
+            throw;
         }
 
         // The case is saved; its files follow through the case's own checks. A refused file is named on the case, never lost.
         await CopyAttachmentsAsync(ticket, created.Id, actorId);
         Publish(ticket, TicketStatuses.Converted);
-        return await GetAsync(ticket.Id, ct);
+        return await GetAsync(ticket.Id, ct, actorId);
     }
 
     public async Task<TicketDetailDto> CloseAsync(Guid id, CloseTicketDto dto, Guid actorId, CancellationToken ct)
@@ -280,8 +298,11 @@ public sealed class TicketService(
         var ticket = visible ? await db.Tickets.FirstOrDefaultAsync(t => t.Id == id, ct) : null;
         if (ticket == null) throw new KeyNotFoundException("Ticket not found.");
         await EnsureOpenAsync(ticket, dto.Version, ct);
+        await EnsureNotClaimedByOtherAsync(ticket, actorId, ct);
         var handledAt = DateTime.UtcNow;
         ticket.Status = TicketStatuses.Closed;
+        ticket.ClaimedById = null;
+        ticket.ClaimedUntil = null;
         ticket.CloseReason = dto.Reason.Trim();
         ticket.HandledById = actorId;
         ticket.HandledAt = handledAt;
@@ -291,7 +312,7 @@ public sealed class TicketService(
         try { await db.SaveChangesAsync(ct); }
         catch (DbUpdateConcurrencyException) { throw new TicketConflictException("This ticket was just assigned or closed by someone else."); }
         Publish(ticket);
-        return await GetAsync(id, ct);
+        return await GetAsync(id, ct, actorId);
     }
 
     // ───────────────────────────── helpers ─────────────────────────────
@@ -310,12 +331,13 @@ public sealed class TicketService(
     }
 
     /// <summary>The Case Management customer with the requester's email, or a new one with their name, email and phone.</summary>
-    private async Task<Guid> CustomerFromRequesterAsync(Ticket ticket, string? language, CancellationToken ct)
+    /// <returns>The customer, and its id again when it was created just now (so a failed conversion can take it back).</returns>
+    private async Task<(Guid Id, Guid? Created)> CustomerFromRequesterAsync(Ticket ticket, string? language, CancellationToken ct)
     {
         var email = ticket.RequesterEmail.ToLower();
         if (email.Length > 0 && await db.Customers.AsNoTracking().Where(c => c.Email != null && c.Email.ToLower() == email)
                 .OrderBy(c => c.CreatedAt).Select(c => (Guid?)c.Id).FirstOrDefaultAsync(ct) is { } existing)
-            return existing;
+            return (existing, null);
         var customer = new Customer
         {
             FullName = EmailParsing.Truncate(ticket.RequesterName, 200), Email = email.Length == 0 ? null : email,
@@ -324,7 +346,98 @@ public sealed class TicketService(
         };
         db.Customers.Add(customer);
         await db.SaveChangesAsync(ct);
-        return customer.Id;
+        return (customer.Id, customer.Id);
+    }
+
+    /// <summary>
+    /// Takes back a customer made from the requester for a conversion that did not happen (someone else was faster): the loser of
+    /// two simultaneous conversions must not leave a stray customer behind. Only one with no case at all is removed.
+    /// </summary>
+    private async Task ForgetCustomerAsync(Guid? customerId)
+    {
+        if (customerId is not { } id) return;
+        try
+        {
+            db.ChangeTracker.Clear();
+            var customer = await db.Customers.FirstOrDefaultAsync(c => c.Id == id && !db.Cases.Any(x => x.CustomerId == id));
+            if (customer == null) return;
+            db.Customers.Remove(customer);
+            await db.SaveChangesAsync();
+        }
+        catch (Exception ex) { logger.LogWarning(ex, "Could not remove the customer {CustomerId} made for a conversion that did not happen.", id); }
+    }
+
+    // ───────────────────────────── claims ─────────────────────────────
+
+    /// <summary>How long a claim lasts unless the open form extends it (a closed browser never locks a ticket for longer).</summary>
+    public static readonly TimeSpan ClaimFor = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// Claims the ticket for the caller while they work on it (or extends their claim). Atomic: of several people opening it at once,
+    /// one claims it and the others are told who is processing it. A Supervisor may take over someone else's claim.
+    /// </summary>
+    public async Task<TicketClaimDto> ClaimAsync(Guid id, Guid actorId, bool takeOver, bool mayTakeOver, CancellationToken ct)
+    {
+        if (!await Visible().AnyAsync(t => t.Id == id, ct)) throw new KeyNotFoundException("Ticket not found.");
+        var now = DateTime.UtcNow;
+        var until = now + ClaimFor;
+        var force = takeOver && mayTakeOver;
+        int claimed;
+        if (db.Database.IsRelational())
+        {
+            claimed = await db.Tickets
+                .Where(t => t.Id == id && t.Status == TicketStatuses.New
+                    && (force || t.ClaimedById == null || t.ClaimedById == actorId || t.ClaimedUntil == null || t.ClaimedUntil < now))
+                .ExecuteUpdateAsync(s => s.SetProperty(t => t.ClaimedById, actorId).SetProperty(t => t.ClaimedUntil, until), ct);
+        }
+        else
+        {
+            var t = await db.Tickets.FirstAsync(x => x.Id == id, ct);
+            claimed = t.Status == TicketStatuses.New && (force || t.ClaimedById == null || t.ClaimedById == actorId || t.ClaimedUntil == null || t.ClaimedUntil < now) ? 1 : 0;
+            if (claimed == 1) { t.ClaimedById = actorId; t.ClaimedUntil = until; await db.SaveChangesAsync(ct); }
+        }
+
+        var ticket = await db.Tickets.AsNoTracking().FirstAsync(t => t.Id == id, ct);
+        if (claimed == 0)
+        {
+            if (ticket.Status != TicketStatuses.New) await EnsureOpenAsync(ticket, ticket.Version, ct);   // says who assigned or closed it
+            var claim = await ClaimOfAsync(ticket, actorId, ct);
+            throw new TicketConflictException($"{claim?.ClaimedByName ?? "Someone"} is processing this ticket (until {claim?.ClaimedUntil:HH:mm} UTC)."
+                + (mayTakeOver ? " You can take it over." : " Try again when they are done."));
+        }
+        if (force && ticket.ClaimedById == actorId) Publish(ticket);
+        return (await ClaimOfAsync(ticket, actorId, ct))!;
+    }
+
+    /// <summary>Lets go of the caller's claim (the form was closed). Someone else's claim is never touched.</summary>
+    public async Task ReleaseAsync(Guid id, Guid actorId, CancellationToken ct)
+    {
+        if (db.Database.IsRelational())
+        {
+            await db.Tickets.Where(t => t.Id == id && t.ClaimedById == actorId)
+                .ExecuteUpdateAsync(s => s.SetProperty(t => t.ClaimedById, (Guid?)null).SetProperty(t => t.ClaimedUntil, (DateTime?)null), ct);
+            return;
+        }
+        var t = await db.Tickets.FirstOrDefaultAsync(x => x.Id == id && x.ClaimedById == actorId, ct);
+        if (t == null) return;
+        t.ClaimedById = null; t.ClaimedUntil = null;
+        await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>The ticket's live claim, or null when nobody holds one (or it lapsed).</summary>
+    private async Task<TicketClaimDto?> ClaimOfAsync(Ticket t, Guid? viewerId, CancellationToken ct)
+    {
+        if (t.ClaimedById is not { } by || t.ClaimedUntil is not { } until || until <= DateTime.UtcNow) return null;
+        var name = await db.Users.AsNoTracking().Where(u => u.Id == by).Select(u => u.Name).FirstOrDefaultAsync(ct);
+        return new TicketClaimDto { ClaimedById = by, ClaimedByName = name, ClaimedUntil = DateTime.SpecifyKind(until, DateTimeKind.Utc), IsMine = viewerId == by };
+    }
+
+    /// <summary>Refuses to assign or close a ticket someone else is processing (their claim has not lapsed).</summary>
+    private async Task EnsureNotClaimedByOtherAsync(Ticket ticket, Guid actorId, CancellationToken ct)
+    {
+        if (ticket.ClaimedById is not { } by || by == actorId || ticket.ClaimedUntil is not { } until || until <= DateTime.UtcNow) return;
+        var name = await db.Users.AsNoTracking().Where(u => u.Id == by).Select(u => u.Name).FirstOrDefaultAsync(ct);
+        throw new TicketConflictException($"{name ?? "Someone else"} is processing this ticket. Take it over (Supervisors), or wait until they are done.");
     }
 
     private async Task CopyAttachmentsAsync(Ticket ticket, Guid caseId, Guid actorId)
