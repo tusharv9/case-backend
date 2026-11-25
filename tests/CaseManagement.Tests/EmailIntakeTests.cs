@@ -422,6 +422,24 @@ public class EmailIntakeTests : IDisposable
     }
 
     [Fact]
+    public async Task A_reply_with_a_file_on_a_waiting_ticket_adds_the_file_to_that_ticket()
+    {
+        // A new file added to a ticket already in the database must be inserted, not taken for an existing row: the second
+        // made every reply with an attachment fail with "expected to affect 1 row(s), but actually affected 0".
+        var first = await Receive(Email("ravi@sbi.co.in"));
+        var reply = Email("ravi@sbi.co.in", "Re: Card blocked [Ticket T-00001]", inReplyTo: mail.Sent.Single().MessageId);
+        var body = new BodyBuilder { TextBody = "Statement attached." };
+        body.Attachments.Add("statement.pdf", "%PDF-1.4 test"u8.ToArray(), new ContentType("application", "pdf"));
+        reply.Body = body.ToMessageBody();
+
+        var email = await Receive(reply);
+
+        Assert.Equal((EmailStatuses.LinkedToTicket, first.TicketId), (email.Status, email.TicketId));
+        var file = Assert.Single(await db.TicketAttachments.AsNoTracking().ToListAsync());
+        Assert.Equal(("statement.pdf", first.TicketId), (file.FileName, (Guid?)file.TicketId));
+    }
+
+    [Fact]
     public async Task One_sender_is_not_sent_more_acknowledgements_than_the_hourly_limit()
     {
         for (var i = 0; i < 12; i++) mail.Inbox.Add(Email("ravi@sbi.co.in", $"Issue {i}"));

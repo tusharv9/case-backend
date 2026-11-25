@@ -514,7 +514,9 @@ public sealed class EmailIntakeProcessor(
     private async Task LinkToTicketAsync(InboundEmail email, MimeMessage message, Ticket ticket, EmailVerifiedDomain? domain, string verification, string note, CancellationToken ct)
     {
         var tracked = await db.Tickets.Include(t => t.Attachments).FirstAsync(t => t.Id == ticket.Id, ct);
-        tracked.Attachments.AddRange((await StoreAttachmentsAsync(message, ct)).Select(a => { a.TicketId = tracked.Id; return a; }));
+        // Added through the set, not the ticket's list: a new file already carries its Id, so found on a ticket that is already
+        // stored it is taken for an existing row and updated — 0 rows, and the whole reply fails.
+        db.TicketAttachments.AddRange((await StoreAttachmentsAsync(message, ct)).Select(a => { a.TicketId = tracked.Id; return a; }));
         tracked.Version++;
         tracked.UpdatedAt = DateTime.UtcNow;
         email.TicketId = ticket.Id;
